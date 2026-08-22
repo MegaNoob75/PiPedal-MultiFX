@@ -1,0 +1,13 @@
+[Unit]
+Description=PiPedal ydotool daemon
+After=local-fs.target
+Before=pipedal-encoder.service
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/ydotoold
+Restart=always
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target

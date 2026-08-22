@@ -1,0 +1,79 @@
+PiPedal MultiFX — Footswitch Protocol v1
+==============================================
+
+Scope
+-----
+This first controller version intentionally supports FOOTSWITCHES ONLY in the
+MultiFX Controller Settings UI. Other controls can be added later without
+changing the footswitch identity model.
+
+Maximum visible/logical footswitches: 12
+
+Physical switch MIDI identity
+-----------------------------
+SW1  = CC40
+SW2  = CC41
+...
+SW12 = CC51
+
+CC value >= 64 = pressed
+CC value < 64  = released
+
+These CC numbers are physical identities only. They never mean "Preset 1",
+"Bank Up", etc. MultiFX assigns the musical action separately.
+
+GPIO configuration
+------------------
+The browser controller config stores:
+
+    hardwareSwitch: logical SW1..SW12
+    gpioPin:         physical ESP32-S3 GPIO
+
+Changing gpioPin does NOT change the assigned action.
+
+The Pi bridge transmits the pin map to the ESP32 with a private SysEx message:
+
+    F0 7D 4D 46 58 01 COUNT [SW PIN]... F7
+
+7D       non-commercial/educational SysEx manufacturer ID
+4D4658   ASCII "MFX"
+01       protocol version
+COUNT    number of SW/PIN pairs
+SW       1..12
+PIN      GPIO number, or 127 = disabled
+
+The ESP32 validates the complete map, rejects duplicate/unsupported pins and
+stores valid mappings in ESP32 Preferences. It therefore survives reboot and
+does not require Arduino source edits when wiring changes.
+
+Current default eight-switch wiring
+-----------------------------------
+SW1 GPIO6
+SW2 GPIO7
+SW3 GPIO15
+SW4 GPIO16
+SW5 GPIO1
+SW6 GPIO2
+SW7 GPIO4
+SW8 GPIO5
+
+SW9..SW12 disabled by default.
+
+Current conservative selectable GPIO list
+-----------------------------------------
+1, 2, 3, 4, 5, 6, 7, 9, 10, 14, 15, 16, 39, 40, 41, 42, 47
+
+The current pot/encoder pins are reserved. USB pins GPIO19/20, possible
+flash/PSRAM pins GPIO35/36/37, and strapping-sensitive pins are intentionally
+not offered in this first version.
+
+PiPedal MIDI boundary
+---------------------
+PiPedal's native MIDI system is not removed or replaced.
+
+Use PiPedal-native MIDI/bindings where PiPedal already owns the function
+(program/bank changes, system MIDI bindings, plugin parameters). MultiFX-only
+controller/UI functions remain MultiFX-owned.
+
+This protocol intentionally gives the ESP32 no knowledge of presets, banks,
+snapshots or plugin parameters.

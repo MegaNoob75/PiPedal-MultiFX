@@ -1,0 +1,180 @@
+{
+  "columns": 4,
+  "rows": 2,
+  "gap": 10,
+  "outerPadding": 12,
+  "headerPadding": "clamp(8px, 1.5vh, 16px) clamp(12px, 2.4vw, 24px)",
+  "longPressMs": 700,
+  "sizing": {
+    "gridTopMargin": 10,
+    "switchPadding": "clamp(6px, 1.35vw, 14px)",
+    "switchBorderRadius": 12,
+    "switchLabelFontSize": "clamp(0.62rem, 1.35vw, 0.90rem)",
+    "switchValueFontSize": "clamp(0.78rem, 1.95vw, 1.25rem)",
+    "switchValueMarginTop": 4,
+    "bankTitleFontSize": "clamp(0.76rem, 1.6vw, 1.05rem)",
+    "bankNameFontSize": "clamp(1.35rem, 4.2vw, 2.8rem)",
+    "activePresetLabelFontSize": "clamp(0.72rem, 1.5vw, 0.95rem)",
+    "activePresetNameFontSize": "clamp(0.95rem, 2.5vw, 1.55rem)",
+    "marqueeDelaySeconds": 2.5,
+    "marqueePixelsPerSecond": 45,
+    "marqueeEndPauseSeconds": 1.0
+  },
+  "colors": {
+    "pageBackground": "#0D0B12",
+    "pageText": "#F5F3FF",
+    "headerBackground": "#15121B",
+    "headerBorder": "#2B2535",
+    "headerShadow": "0 4px 22px rgba(0, 0, 0, 0.58)",
+    "bankTitleText": "#A770E4",
+    "bankNameText": "#F5F3FF",
+    "activePresetLabelText": "#A8A3B3",
+    "activePresetNameText": "#22D3EE",
+    "headerDivider": "#2B2535",
+    "switchBackground": "#18151E",
+    "switchBorder": "#34303D",
+    "switchLabelText": "#938D9E",
+    "switchValueText": "#F5F3FF",
+    "bankSwitchBackground": "#24143A",
+    "bankSwitchBorder": "#A770E4",
+    "bankSwitchLabelText": "#D8B4FE",
+    "bankSwitchValueText": "#FFFFFF",
+    "activeSwitchBackground": "#083344",
+    "activeSwitchBorder": "#22D3EE",
+    "activeSwitchLabelText": "#A5F3FC",
+    "activeSwitchValueText": "#ECFEFF",
+    "activeSwitchShadow": "0 0 22px rgba(34, 211, 238, 0.38)",
+    "disabledSwitchOpacity": 0.45,
+    "configErrorBackground": "#3A171C",
+    "configErrorBorder": "#FB7185",
+    "configErrorText": "#FECDD3"
+  },
+  "switches": [
+    {
+      "id": "sw1",
+      "label": "SW 1",
+      "hardwareSwitch": 1,
+      "gpioPin": 6,
+      "action": {
+        "type": "preset",
+        "presetIndex": 0
+      },
+      "longPressAction": {
+        "type": "none",
+        "text": "Unused"
+      },
+      "row": 1,
+      "column": 1
+    },
+    {
+      "id": "sw2",
+      "label": "SW 2",
+      "hardwareSwitch": 2,
+      "gpioPin": 7,
+      "action": {
+        "type": "preset",
+        "presetIndex": 1
+      },
+      "longPressAction": {
+        "type": "none",
+        "text": "Unused"
+      },
+      "row": 1,
+      "column": 2
+    },
+    {
+      "id": "sw3",
+      "label": "SW 3",
+      "hardwareSwitch": 3,
+      "gpioPin": 15,
+      "action": {
+        "type": "preset",
+        "presetIndex": 2
+      },
+      "longPressAction": {
+        "type": "none",
+        "text": "Unused"
+      },
+      "row": 1,
+      "column": 3
+    },
+    {
+      "id": "sw4",
+      "label": "SW 4",
+      "hardwareSwitch": 4,
+      "gpioPin": 16,
+      "action": {
+        "type": "bankUp"
+      },
+      "longPressAction": {
+        "type": "none",
+        "text": "Unused"
+      },
+      "row": 1,
+      "column": 4
+    },
+    {
+      "id": "sw5",
+      "label": "SW 5",
+      "hardwareSwitch": 5,
+      "gpioPin": 1,
+      "action": {
+        "type": "preset",
+        "presetIndex": 3
+      },
+      "longPressAction": {
+        "type": "none",
+        "text": "Unused"
+      },
+      "row": 2,
+      "column": 1
+    },
+    {
+      "id": "sw6",
+      "label": "SW 6",
+      "hardwareSwitch": 6,
+      "gpioPin": 2,
+      "action": {
+        "type": "preset",
+        "presetIndex": 4
+      },
+      "longPressAction": {
+        "type": "none",
+        "text": "Unused"
+      },
+      "row": 2,
+      "column": 2
+    },
+    {
+      "id": "sw7",
+      "label": "SW 7",
+      "hardwareSwitch": 7,
+      "gpioPin": 4,
+      "action": {
+        "type": "preset",
+        "presetIndex": 5
+      },
+      "longPressAction": {
+        "type": "none",
+        "text": "Unused"
+      },
+      "row": 2,
+      "column": 3
+    },
+    {
+      "id": "sw8",
+      "label": "SW 8",
+      "hardwareSwitch": 8,
+      "gpioPin": 5,
+      "action": {
+        "type": "bankDown"
+      },
+      "longPressAction": {
+        "type": "none",
+        "text": "Unused"
+      },
+      "row": 2,
+      "column": 4
+    }
+  ]
+}

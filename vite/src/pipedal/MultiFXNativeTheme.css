@@ -1,0 +1,748 @@
+
+/* ================================================================
+   MultiFX viewport scaling
+   Baseline: 1024x600. The JavaScript sizing helper sets
+   --mfx-ui-scale without changing the page structure.
+   ================================================================ */
+
+html.multifx-active,
+body.multifx-active {
+    font-size: var(--mfx-font-size, 16px);
+}
+
+body.multifx-active .MuiButton-root,
+body.multifx-active .MuiIconButton-root,
+body.multifx-active .MuiListItemButton-root {
+    min-height: var(--mfx-touch-height, 40px);
+}
+
+body.multifx-active .MuiToolbar-root {
+    min-height: var(--mfx-header-height, 56px);
+}
+
+body.multifx-active .MuiDialog-paper,
+body.multifx-active .MuiPopover-paper,
+body.multifx-active .MuiMenu-paper {
+    max-width: calc(100vw - (16px * var(--mfx-ui-scale, 1)));
+    max-height: calc(100vh - (16px * var(--mfx-ui-scale, 1)));
+}
+
+/* MultiFX officially targets 1024x600 and larger. Screens below the
+   baseline are down-scaled by the shared viewport helper but are not
+   part of the recommended hardware specification. */
+
+/*
+ * PiPedal MultiFX native-component theme
+ *
+ * Everything in this file is deliberately scoped behind .multifx-active.
+ * MultiFXApp adds that class while the alternative UI is mounted and removes
+ * it when the user returns to Original PiPedal. This lets us reuse PiPedal's
+ * mature editor/dialog components without permanently changing the upstream UI.
+ */
+
+:root.multifx-active,
+body.multifx-active {
+    color-scheme: dark;
+    --mfx-bg: #0D0B12;
+    --mfx-panel: #18151E;
+    --mfx-panel-alt: #211D27;
+    --mfx-panel-raised: #27212F;
+    --mfx-purple: #A770E4;
+    --mfx-purple-light: #D8B4FE;
+    --mfx-purple-surface: #2B1E3B;
+    --mfx-cyan: #22D3EE;
+    --mfx-cyan-surface: #083344;
+    --mfx-cyan-text: #ECFEFF;
+    --mfx-text: #F5F3F7;
+    --mfx-muted: #B7AFBF;
+    --mfx-border: #42384D;
+    --mfx-danger: #F87171;
+    --mfx-shadow: rgba(0, 0, 0, 0.62);
+
+    background: var(--mfx-bg) !important;
+}
+
+/* -------------------------------------------------------------------------
+   Global/native surfaces
+   ------------------------------------------------------------------------- */
+
+body.multifx-active,
+body.multifx-active #root {
+    background: var(--mfx-bg) !important;
+    color: var(--mfx-text) !important;
+}
+
+body.multifx-active * {
+    scrollbar-color: var(--mfx-purple) var(--mfx-panel);
+}
+
+body.multifx-active *::-webkit-scrollbar {
+    width: 10px;
+    height: 10px;
+}
+
+body.multifx-active *::-webkit-scrollbar-track {
+    background: var(--mfx-panel);
+}
+
+body.multifx-active *::-webkit-scrollbar-thumb {
+    background: var(--mfx-purple);
+    border: 2px solid var(--mfx-panel);
+    border-radius: 10px;
+}
+
+/*
+ * Dialogs, popovers, menus, drawers, autocomplete lists and cards.
+ * These are generally rendered through MUI portals directly under body,
+ * which is why the body-level scope is important.
+ */
+body.multifx-active .MuiDialog-paper,
+body.multifx-active .MuiPopover-paper,
+body.multifx-active .MuiMenu-paper,
+body.multifx-active .MuiDrawer-paper,
+body.multifx-active .MuiAutocomplete-paper,
+body.multifx-active .MuiPaper-root {
+    background-color: var(--mfx-panel) !important;
+    background-image: none !important;
+    color: var(--mfx-text) !important;
+    border-color: var(--mfx-border) !important;
+}
+
+body.multifx-active .MuiDialog-paper {
+    border: 1px solid var(--mfx-border) !important;
+    box-shadow: 0 16px 46px var(--mfx-shadow) !important;
+}
+
+body.multifx-active .MuiBackdrop-root {
+    background-color: rgba(4, 3, 7, 0.74) !important;
+}
+
+/* -------------------------------------------------------------------------
+   App bars / toolbars / headers
+   ------------------------------------------------------------------------- */
+
+body.multifx-active .MuiAppBar-root {
+    color: var(--mfx-text) !important;
+    background: linear-gradient(
+        90deg,
+        #21172E 0%,
+        var(--mfx-purple-surface) 58%,
+        #15262A 100%
+    ) !important;
+    box-shadow: 0 1px 0 var(--mfx-border), 0 5px 18px rgba(0,0,0,0.35) !important;
+}
+
+body.multifx-active .MuiToolbar-root {
+    color: var(--mfx-text) !important;
+}
+
+body.multifx-active .MuiDialogTitle-root,
+body.multifx-active .MuiTypography-h4,
+body.multifx-active .MuiTypography-h5,
+body.multifx-active .MuiTypography-h6 {
+    color: var(--mfx-purple-light) !important;
+}
+
+body.multifx-active .MuiDialogContent-root {
+    color: var(--mfx-text) !important;
+    background: var(--mfx-panel) !important;
+}
+
+body.multifx-active .MuiDialogActions-root {
+    background: var(--mfx-panel) !important;
+    border-top: 1px solid var(--mfx-border) !important;
+}
+
+/* -------------------------------------------------------------------------
+   Text
+   ------------------------------------------------------------------------- */
+
+body.multifx-active .MuiTypography-root {
+    color: inherit;
+}
+
+body.multifx-active .MuiTypography-colorTextSecondary,
+body.multifx-active .MuiFormHelperText-root,
+body.multifx-active .MuiInputLabel-root {
+    color: var(--mfx-muted) !important;
+}
+
+body.multifx-active .MuiInputLabel-root.Mui-focused {
+    color: var(--mfx-purple-light) !important;
+}
+
+/* -------------------------------------------------------------------------
+   Buttons and icon buttons
+   ------------------------------------------------------------------------- */
+
+body.multifx-active .MuiButton-root {
+    border-radius: 9px !important;
+    font-weight: 800 !important;
+    letter-spacing: 0.01em;
+}
+
+body.multifx-active .MuiButton-contained,
+body.multifx-active .MuiButton-containedPrimary {
+    color: #160D20 !important;
+    background: var(--mfx-purple) !important;
+    box-shadow: none !important;
+}
+
+body.multifx-active .MuiButton-contained:hover,
+body.multifx-active .MuiButton-containedPrimary:hover {
+    background: var(--mfx-purple-light) !important;
+}
+
+body.multifx-active .MuiButton-outlined,
+body.multifx-active .MuiButton-outlinedPrimary {
+    color: var(--mfx-purple-light) !important;
+    border-color: var(--mfx-purple) !important;
+    background: rgba(167,112,228,0.08) !important;
+}
+
+body.multifx-active .MuiButton-text,
+body.multifx-active .MuiButton-textPrimary {
+    color: var(--mfx-purple-light) !important;
+}
+
+body.multifx-active .MuiIconButton-root {
+    color: var(--mfx-purple-light) !important;
+}
+
+body.multifx-active .MuiIconButton-root:hover {
+    background: rgba(167,112,228,0.13) !important;
+}
+
+body.multifx-active .Mui-disabled {
+    opacity: 0.42 !important;
+}
+
+/* -------------------------------------------------------------------------
+   Lists / menus / navigation
+   ------------------------------------------------------------------------- */
+
+body.multifx-active .MuiList-root,
+body.multifx-active .MuiMenu-list {
+    color: var(--mfx-text) !important;
+}
+
+body.multifx-active .MuiListSubheader-root {
+    color: var(--mfx-purple-light) !important;
+    background: var(--mfx-panel) !important;
+    font-weight: 850 !important;
+}
+
+body.multifx-active .MuiListItemButton-root,
+body.multifx-active .MuiMenuItem-root {
+    color: var(--mfx-text) !important;
+    border-radius: 7px;
+}
+
+body.multifx-active .MuiListItemButton-root:hover,
+body.multifx-active .MuiMenuItem-root:hover {
+    background: rgba(167,112,228,0.10) !important;
+}
+
+body.multifx-active .MuiListItemButton-root.Mui-selected,
+body.multifx-active .MuiMenuItem-root.Mui-selected {
+    color: var(--mfx-purple-light) !important;
+    background: var(--mfx-purple-surface) !important;
+    box-shadow: inset 3px 0 0 var(--mfx-purple);
+}
+
+body.multifx-active .MuiListItemButton-root.Mui-selected:hover,
+body.multifx-active .MuiMenuItem-root.Mui-selected:hover {
+    background: #352448 !important;
+}
+
+body.multifx-active .MuiListItemText-secondary {
+    color: var(--mfx-muted) !important;
+}
+
+body.multifx-active .MuiListItemIcon-root {
+    color: var(--mfx-purple-light) !important;
+    fill: var(--mfx-purple-light) !important;
+}
+
+/* -------------------------------------------------------------------------
+   Inputs / selects / autocomplete
+   ------------------------------------------------------------------------- */
+
+body.multifx-active .MuiInputBase-root,
+body.multifx-active .MuiOutlinedInput-root,
+body.multifx-active .MuiFilledInput-root {
+    color: var(--mfx-text) !important;
+    background: var(--mfx-panel-alt) !important;
+    border-radius: 8px !important;
+}
+
+body.multifx-active .MuiOutlinedInput-notchedOutline {
+    border-color: var(--mfx-border) !important;
+}
+
+body.multifx-active .MuiOutlinedInput-root:hover .MuiOutlinedInput-notchedOutline {
+    border-color: var(--mfx-purple) !important;
+}
+
+body.multifx-active .MuiOutlinedInput-root.Mui-focused .MuiOutlinedInput-notchedOutline {
+    border-color: var(--mfx-purple-light) !important;
+    border-width: 2px !important;
+}
+
+body.multifx-active .MuiInputBase-input,
+body.multifx-active input,
+body.multifx-active textarea {
+    color: var(--mfx-text) !important;
+    caret-color: var(--mfx-cyan) !important;
+}
+
+body.multifx-active .MuiSelect-icon,
+body.multifx-active .MuiAutocomplete-popupIndicator,
+body.multifx-active .MuiAutocomplete-clearIndicator {
+    color: var(--mfx-purple-light) !important;
+}
+
+/* -------------------------------------------------------------------------
+   Tabs
+   ------------------------------------------------------------------------- */
+
+body.multifx-active .MuiTabs-root {
+    border-bottom: 1px solid var(--mfx-border);
+}
+
+body.multifx-active .MuiTab-root {
+    color: var(--mfx-muted) !important;
+    font-weight: 800 !important;
+}
+
+body.multifx-active .MuiTab-root.Mui-selected {
+    color: var(--mfx-purple-light) !important;
+}
+
+body.multifx-active .MuiTabs-indicator {
+    background: var(--mfx-purple) !important;
+    height: 3px !important;
+}
+
+/* -------------------------------------------------------------------------
+   Sliders, knobs represented by sliders, switches and selection controls.
+   Purple is navigation/control; cyan indicates a control that is ON/active.
+   ------------------------------------------------------------------------- */
+
+body.multifx-active .MuiSlider-root {
+    color: var(--mfx-purple) !important;
+}
+
+body.multifx-active .MuiSlider-rail {
+    color: var(--mfx-border) !important;
+    opacity: 1 !important;
+}
+
+body.multifx-active .MuiSlider-thumb {
+    box-shadow: 0 0 0 2px rgba(216,180,254,0.20) !important;
+}
+
+body.multifx-active .MuiSwitch-switchBase {
+    color: var(--mfx-muted) !important;
+}
+
+body.multifx-active .MuiSwitch-switchBase.Mui-checked {
+    color: var(--mfx-cyan) !important;
+}
+
+body.multifx-active .MuiSwitch-switchBase.Mui-checked + .MuiSwitch-track {
+    background-color: var(--mfx-cyan) !important;
+    opacity: 0.42 !important;
+}
+
+body.multifx-active .MuiCheckbox-root,
+body.multifx-active .MuiRadio-root {
+    color: var(--mfx-purple-light) !important;
+}
+
+body.multifx-active .MuiCheckbox-root.Mui-checked,
+body.multifx-active .MuiRadio-root.Mui-checked {
+    color: var(--mfx-cyan) !important;
+}
+
+/* -------------------------------------------------------------------------
+   Chips, badges, tooltips, alerts, progress
+   ------------------------------------------------------------------------- */
+
+body.multifx-active .MuiChip-root {
+    color: var(--mfx-text) !important;
+    background: var(--mfx-panel-raised) !important;
+    border-color: var(--mfx-border) !important;
+}
+
+body.multifx-active .MuiChip-colorPrimary {
+    color: var(--mfx-purple-light) !important;
+    background: var(--mfx-purple-surface) !important;
+}
+
+body.multifx-active .MuiTooltip-tooltip {
+    color: var(--mfx-text) !important;
+    background: #241D2B !important;
+    border: 1px solid var(--mfx-border);
+    font-size: 0.78rem !important;
+}
+
+body.multifx-active .MuiCircularProgress-root,
+body.multifx-active .MuiLinearProgress-root {
+    color: var(--mfx-cyan) !important;
+}
+
+body.multifx-active .MuiLinearProgress-bar {
+    background: var(--mfx-cyan) !important;
+}
+
+body.multifx-active .MuiAlert-standardError,
+body.multifx-active .MuiAlert-filledError {
+    color: #FFE7E7 !important;
+    background: #3A171C !important;
+}
+
+body.multifx-active .MuiAlert-standardWarning,
+body.multifx-active .MuiAlert-filledWarning {
+    background: #342A12 !important;
+}
+
+body.multifx-active .MuiAlert-standardSuccess,
+body.multifx-active .MuiAlert-filledSuccess {
+    background: var(--mfx-cyan-surface) !important;
+    color: var(--mfx-cyan-text) !important;
+}
+
+/* -------------------------------------------------------------------------
+   Dividers / tables / expansion panels
+   ------------------------------------------------------------------------- */
+
+body.multifx-active .MuiDivider-root {
+    border-color: var(--mfx-border) !important;
+}
+
+body.multifx-active .MuiTableCell-root {
+    color: var(--mfx-text) !important;
+    border-color: var(--mfx-border) !important;
+}
+
+body.multifx-active .MuiTableHead-root .MuiTableCell-root {
+    color: var(--mfx-purple-light) !important;
+    background: var(--mfx-panel-alt) !important;
+    font-weight: 850 !important;
+}
+
+body.multifx-active .MuiAccordion-root {
+    background: var(--mfx-panel) !important;
+    border: 1px solid var(--mfx-border) !important;
+}
+
+body.multifx-active .MuiAccordionSummary-root.Mui-expanded {
+    color: var(--mfx-purple-light) !important;
+    background: var(--mfx-purple-surface) !important;
+}
+
+/* -------------------------------------------------------------------------
+   Native PiPedal editor compatibility layer.
+   MainPage and several plugin/editor components use plain divs mixed with MUI.
+   These selectors intentionally stay conservative so controls/layout still
+   behave exactly as upstream expects.
+   ------------------------------------------------------------------------- */
+
+body.multifx-active .mainPage,
+body.multifx-active [class*="mainPage"],
+body.multifx-active [class*="pedalboard"],
+body.multifx-active [class*="Pedalboard"] {
+    color: var(--mfx-text);
+}
+
+body.multifx-active [class*="toolbar"],
+body.multifx-active [class*="Toolbar"] {
+    border-color: var(--mfx-border);
+}
+
+/* Links inside native information/help screens. */
+body.multifx-active a {
+    color: var(--mfx-cyan) !important;
+}
+
+body.multifx-active a:visited {
+    color: var(--mfx-purple-light) !important;
+}
+
+/* Text selection remains visible without using the active-preset cyan. */
+body.multifx-active ::selection {
+    background: rgba(167,112,228,0.45);
+    color: var(--mfx-text);
+}
+
+/* -------------------------------------------------------------------------
+   Touchscreen sizing
+   ------------------------------------------------------------------------- */
+
+@media (pointer: coarse) {
+    body.multifx-active .MuiButton-root,
+    body.multifx-active .MuiIconButton-root,
+    body.multifx-active .MuiMenuItem-root,
+    body.multifx-active .MuiListItemButton-root,
+    body.multifx-active .MuiTab-root {
+        min-height: 44px;
+    }
+}
+
+
+/* =========================================================================
+   MultiFX Edit + Settings integration pass
+   ========================================================================= */
+
+/* Keep native full-screen Settings content clear of the permanent MFX button. */
+body.multifx-active.multifx-settings-route .MuiDialog-root .MuiAppBar-root .MuiToolbar-root {
+    min-height: 56px !important;
+    padding-left: 78px !important;
+    padding-right: 14px !important;
+}
+
+body.multifx-active.multifx-settings-route .MuiDialog-root .MuiAppBar-root {
+    min-height: 56px !important;
+}
+
+/* Settings is a full-screen MultiFX route, not a floating card. */
+body.multifx-active.multifx-settings-route .MuiDialog-root:first-of-type .MuiDialog-paperFullScreen {
+    background: var(--mfx-bg) !important;
+}
+
+body.multifx-active.multifx-settings-route .MuiDialog-root .MuiDialogContent-root {
+    padding-left: 18px;
+    padding-right: 18px;
+}
+
+/* Native Settings rows become larger, clearer touchscreen targets. */
+body.multifx-active.multifx-settings-route .MuiButtonBase-root {
+    -webkit-tap-highlight-color: transparent;
+}
+
+body.multifx-active.multifx-settings-route .MuiDialog-paperFullScreen > div {
+    background-color: var(--mfx-bg);
+}
+
+/* Section captions become part of MultiFX's purple hierarchy. */
+body.multifx-active.multifx-settings-route .MuiTypography-caption[color="secondary"],
+body.multifx-active.multifx-settings-route .MuiTypography-colorSecondary {
+    color: var(--mfx-purple-light) !important;
+    font-weight: 850 !important;
+    letter-spacing: 0.055em;
+}
+
+/* Keep dangerous/system actions visually distinct. */
+body.multifx-active.multifx-settings-route button:has(svg[data-testid="PowerSettingsNewIcon"]),
+body.multifx-active.multifx-settings-route button:has(svg[data-testid="PowerOffIcon"]) {
+    color: var(--mfx-danger) !important;
+}
+
+/* Edit screen native content gets a clean dedicated surface. */
+body.multifx-active.multifx-edit-route .multifx-native-editor-host {
+    background:
+        linear-gradient(180deg, rgba(167,112,228,0.035), transparent 80px),
+        var(--mfx-bg) !important;
+}
+
+body.multifx-active.multifx-edit-route .multifx-native-editor-host .MuiPaper-root {
+    border-color: var(--mfx-border) !important;
+}
+
+/* Pedalboard/plugin editor touch controls. */
+body.multifx-active.multifx-edit-route .MuiButton-root,
+body.multifx-active.multifx-edit-route .MuiIconButton-root {
+    -webkit-tap-highlight-color: transparent;
+}
+
+body.multifx-active.multifx-edit-route .MuiFab-root {
+    color: #160D20 !important;
+    background: var(--mfx-purple) !important;
+}
+
+body.multifx-active.multifx-edit-route .MuiFab-root:hover {
+    background: var(--mfx-purple-light) !important;
+}
+
+/* Plugin bypass / enabled switches use active cyan. */
+body.multifx-active.multifx-edit-route .MuiSwitch-switchBase.Mui-checked {
+    color: var(--mfx-cyan) !important;
+}
+
+body.multifx-active.multifx-edit-route .MuiSwitch-switchBase.Mui-checked + .MuiSwitch-track {
+    background: var(--mfx-cyan) !important;
+}
+
+/* Improve native menu density on the 1024x600 touchscreen. */
+body.multifx-active .MuiMenuItem-root,
+body.multifx-active .MuiListItemButton-root {
+    min-height: 46px;
+}
+
+body.multifx-active .MuiDialog-paperFullScreen {
+    border: 0 !important;
+    border-radius: 0 !important;
+}
+
+/* Keep the permanent MFX control recognizable above native screens. */
+body.multifx-active .multifx-global-menu-button {
+    isolation: isolate;
+}
+
+@media (max-height: 650px) {
+    body.multifx-active.multifx-settings-route .MuiDialog-root .MuiAppBar-root .MuiToolbar-root {
+        min-height: 54px !important;
+    }
+
+    body.multifx-active .MuiDialogContent-root {
+        padding-top: 12px;
+        padding-bottom: 12px;
+    }
+
+    body.multifx-active .MuiMenuItem-root,
+    body.multifx-active .MuiListItemButton-root {
+        min-height: 44px;
+    }
+}
+
+
+/* =========================================================================
+   MultiFX custom pedalboard editor
+   ========================================================================= */
+
+body.multifx-active.multifx-edit-route .multifx-chain-strip {
+    scrollbar-width: thin;
+}
+
+body.multifx-active.multifx-edit-route .multifx-plugin-controls {
+    scrollbar-width: thin;
+    overscroll-behavior: contain;
+}
+
+body.multifx-active.multifx-edit-route .multifx-plugin-controls > * {
+    max-width: 100%;
+}
+
+/* Plugin file/model selectors remain PiPedal-native functionally, but inherit
+   the MultiFX dialog and input styling from this theme. This includes NAM
+   model and cabinet IR file properties exposed by their respective plugins. */
+body.multifx-active.multifx-edit-route .MuiDialog-paper .MuiListItemButton-root {
+    min-height: 46px;
+}
+
+@media (max-height: 650px) {
+    body.multifx-active.multifx-edit-route .multifx-chain-strip {
+        flex-basis: 142px !important;
+    }
+}
+
+
+/* =========================================================================
+   Settings nested navigation
+   =========================================================================
+   Do not overlay Settings with the MultiFX shell Back button. PiPedal's
+   SettingsDialog and each child dialog already own their own Back/close state.
+   We restyle those real Back buttons into the standard MultiFX upper-right
+   location so Back always closes exactly one level.
+*/
+
+/* Leave room for MFX on the left and the native Back arrow on the right. */
+body.multifx-active.multifx-settings-route .MuiDialog-root .MuiAppBar-root .MuiToolbar-root {
+    position: relative !important;
+    min-height: 56px !important;
+    padding-left: 78px !important;
+    padding-right: 70px !important;
+}
+
+/*
+ * PiPedal settings dialogs use aria-label="back" for their actual navigation
+ * control. Move that real control to our standard upper-right position.
+ */
+body.multifx-active.multifx-settings-route
+.MuiDialog-root
+.MuiAppBar-root
+button[aria-label="back"] {
+    position: absolute !important;
+    right: 8px !important;
+    left: auto !important;
+    top: 8px !important;
+    width: 48px !important;
+    min-width: 48px !important;
+    height: 40px !important;
+    min-height: 40px !important;
+    margin: 0 !important;
+    padding: 0 !important;
+    border: 2px solid var(--mfx-purple) !important;
+    border-radius: 10px !important;
+    background: var(--mfx-purple-surface) !important;
+    color: var(--mfx-purple-light) !important;
+    box-shadow: 0 4px 14px rgba(0,0,0,0.5) !important;
+    z-index: 10 !important;
+}
+
+/* A few PiPedal dialogs use close instead of back. Treat it as one-level Back
+   while inside the Settings route, without changing the actual handler. */
+body.multifx-active.multifx-settings-route
+.MuiDialog-root
+.MuiAppBar-root
+button[aria-label="close"] {
+    position: absolute !important;
+    right: 8px !important;
+    left: auto !important;
+    top: 8px !important;
+    width: 48px !important;
+    min-width: 48px !important;
+    height: 40px !important;
+    min-height: 40px !important;
+    margin: 0 !important;
+    padding: 0 !important;
+    border: 2px solid var(--mfx-purple) !important;
+    border-radius: 10px !important;
+    background: var(--mfx-purple-surface) !important;
+    color: var(--mfx-purple-light) !important;
+    box-shadow: 0 4px 14px rgba(0,0,0,0.5) !important;
+    z-index: 10 !important;
+}
+
+/* Make the icon read as the same compact navigation affordance everywhere. */
+body.multifx-active.multifx-settings-route
+.MuiDialog-root
+.MuiAppBar-root
+button[aria-label="back"] svg,
+body.multifx-active.multifx-settings-route
+.MuiDialog-root
+.MuiAppBar-root
+button[aria-label="close"] svg {
+    width: 26px !important;
+    height: 26px !important;
+    color: var(--mfx-purple-light) !important;
+}
+
+/* Child dialogs should sit above their parent and receive the tap first. */
+body.multifx-active.multifx-settings-route .MuiDialog-root {
+    pointer-events: auto;
+}
+
+/* =========================================================================
+   Text selection behavior
+   =========================================================================
+   MultiFX is an appliance-style touchscreen UI. Ordinary labels, buttons,
+   preset names and other display text should not behave like selectable
+   webpage text. Selection remains enabled only inside editable controls.
+*/
+
+body.multifx-active,
+body.multifx-active * {
+    -webkit-user-select: none;
+    user-select: none;
+}
+
+/* Keep normal editing/selection behavior in real text-entry controls. */
+body.multifx-active input,
+body.multifx-active textarea,
+body.multifx-active [contenteditable="true"],
+body.multifx-active .MuiInputBase-input {
+    -webkit-user-select: text;
+    user-select: text;
+}

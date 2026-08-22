@@ -1,132 +1,222 @@
+# PiPedal MultiFX
 
-<img src='docs/GithubBanner.png' width="100%" /><br/>
+**A performance-focused touchscreen and foot-controller interface for PiPedal.**
 
-<a href="https://rerdavies.github.io/pipedal/ReleaseNotes"><img src="https://img.shields.io/github/v/release/rerdavies/pipedal?color=%23808080"/></a>
-<a href="https://rerdavies.github.io/pipedal/download"><img src="https://img.shields.io/badge/Download-008060" /></a>
-<a href="https://rerdavies.github.io/pipedal/Documentation"><img src="https://img.shields.io/badge/Docmentation-0060d0"/></a>
-<a href="https://rerdavies.github.io/pipedal/LicensePiPedal.html"><img src="https://img.shields.io/badge/MIT-MIT?label=license&color=%23808080"/></a>
-<a href="https://github.com/rerdavies/pipedal/actions"><img src="https://img.shields.io/github/actions/workflow/status/rerdavies/pipedal/cmake.yml?branch=main"/></a>
-<img src="https://img.shields.io/github/downloads/rerdavies/pipedal/total?color=%23808080&link=https%3A%2F%2Frerdavies.github.io%2Fpipedal%2Fdownload.html"/>
+> **AI development notice**
+>
+> PiPedal MultiFX is coded entirely through collaboration with **ChatGPT by OpenAI**. The project owner defines, tests, and directs the features and behavior, while ChatGPT is used to design, write, review, document, and troubleshoot the project code.
+>
+> This notice is included so users and contributors clearly understand how the project is developed.
 
+PiPedal MultiFX is an unofficial alternative interface for [PiPedal](https://github.com/rerdavies/pipedal), designed for Raspberry Pi pedalboards where fast preset access, touchscreen use, physical footswitch control, and live-performance visibility matter most.
 
-Download:&nbsp;<a href='https://rerdavies.github.io/pipedal/download.html'>v2.0.110</a> 
-Website:&nbsp;[https://rerdavies.github.io/pipedal](https://rerdavies.github.io/pipedal).
-Documentation:&nbsp;[https://rerdavies.github.io/pipedal/Documentation.html](https://rerdavies.github.io/pipedal/Documentation.html).
+> **PiPedal MultiFX does not replace the PiPedal audio engine.**  
+> MultiFX is a presentation and controller layer built around PiPedal. PiPedal remains responsible for audio processing, plugins, presets, snapshots, and the underlying pedalboard model.
 
-#### Announcing PiPedal 2.0 (2.0.110)&mdash;a major update to PiPedal, including exciting new features. See the Pipedal website [documentation](https://rerdavies.github.io/pipedal/) for more information.
+[![Latest Release](https://img.shields.io/github/v/release/MegaNoob75/PiPedal-MultiFX?display_name=tag&label=release)](https://github.com/MegaNoob75/PiPedal-MultiFX/releases/latest)
+[![License](https://img.shields.io/badge/license-see%20LICENSE.md-808080)](LICENSE.md)
 
-&nbsp;
+## Performance View
 
-Use your Raspberry Pi, or Ubuntu amd/x86-64 computer as a guitar effects pedal. Configure and control PiPedal remotedly, with your phone or tablet, or via a web browser.
+![PiPedal MultiFX Performance View](docs/images/performance-view.png)
 
-PiPedal running on a Raspberry Pi 4 or Pi 5 provides stable super-low-latency audio via external USB audio devices, or internal Raspberry Pi audio hats.
+Performance View is the main live screen. It keeps the current bank, active preset, virtual preset page, hardware assignments, long-press functions, and state LEDs visible at a glance.
 
-PiPedal runs on Raspbery Pi OS (Bookworm or Trixie), or Ubuntu 24.x or later (amd64/x86-64 and aarch64). Make sure you follow the [Ubuntu post-install 
-instructions](https://rerdavies.github.io/pipedal/Configuring.html) to make sure your Ubuntu OS is using a  realtime-capable kernel.
+Preset tiles can span multiple virtual pages inside one real PiPedal bank, so a small physical controller can access more presets without changing the underlying PiPedal bank structure.
 
-<img src="docs/gallery/dark-sshot1.png"></img>
+## Features
 
-<img src="docs/gallery/nam_models.png" width="45%"></img> <img src="docs/gallery/hotspot.png" width="45%"></img> <img src="docs/gallery/tuner.png" width="45%"></img><img src="docs/gallery/rig.jpg" width="45%"></img>
+### Live Performance
 
-https://github.com/user-attachments/assets/6ff585ff-69fa-4b54-8009-50ad071e328e
+- Touchscreen-first **Performance View**
+- Real PiPedal banks and presets with MultiFX virtual preset pages
+- Drag-and-drop preset tile placement
+- Empty preset tiles for creating or assigning presets
+- Current bank and active preset dropdowns
+- Active preset LED state:
+  - **Green** — clean base preset
+  - **Flashing yellow** — unsaved base-preset change
+  - **Blue** — native PiPedal snapshot active
+  - **Red** — temporary chain bypass
+- Quick access to the original PiPedal interface
+- Responsive interface designed around **1024×600 and larger displays**
 
-&nbsp;
+### Snapshots
 
-New in PiPedal v2.0:
+- Native PiPedal snapshot support
+- Six snapshot slots per preset
+- Dedicated **Snapshot Mode** for live recall
+- Snapshot Mode keeps snapshot selection separate from base-preset editing
+- Dedicated **Snapshot Editor** with the preset chain locked
+- Create, edit, recall, rename, recolor, and delete snapshots
+- Snapshot changes are persisted without promoting snapshot sound into the base preset
+- Returning to Performance can leave the recalled snapshot active
+- In Snapshot Mode, normal Bank Up / Bank Down short presses act as a return to Performance instead of changing banks
 
-- Support for Neural Amp Modeler (NAM) A2 models.
-- Direct single-step downloads of NAM A2 models to the Pipedal server using web services provided by <a href="https://tone3000.com/">Tone3000.com</a>.
-- Install PiPedal as a Progressive Web App (PWA) on your Windows or Apple desktop or laptop in order to run PiPedal as a native application, without the clutter of browser chrome, address bars, and needless decorations.
-- A new Channel Routing dialog which allows you to pass through Auxilliary audio channels, or unprocessed guitar inputs for later re-amping in a DAW or external hardware. 
-- New NAM A2-based Factory Presets, and a small selection of NAM A2 models pre-installed and ready to use.
+### Controller
 
-PiPedal includes state-of-the-art AI-based guitar amp emulation, using the TooB Neural Amp Modeler technology. And PiPedal 2.0 now includes support for the brand new NAM A2 technology, which provides event more accurate amp simulations than NAM A1, while using even less CPU. Experience the ground-breaking quality of NAM A2 models now, with PiPedal's low-latency audio engine running on your Raspberry Pi or Ubuntu computer.
+- Up to **32 physical footswitch inputs**
+- MIDI CC switch protocol
+- Drag-and-drop visual controller layout
+- Configurable rows and columns
+- Assign hardware inputs independently from on-screen position
+- Short-press and long-press actions
+- Configurable long-press time
+- Preset Slot, Bank Up, Bank Down, Snapshot Mode, Chain Bypass, and Unused actions
+- Controller configuration preserved during normal MultiFX updates
 
-NAM changes everything! Simulations that not only sound like the real thing, but also respond to your playing dynamics in the same way as the real amp. NAM amp simulations are demonstrably and measurably better than amp simulations from competing commercial vendors.
+### Editing and Management
 
-![Model Comparisons](docs/img/model_comparison.png)
+- Bank / Preset Manager
+- Create, rename, delete, load, and reorder banks and presets
+- MultiFX Preset Editor
+- Effect editor using PiPedal plugin controls
+- Preset chain editing
+- Snapshot access directly from the Preset Editor
+- Original PiPedal system/settings screens remain accessible
 
-<p style="margin-left: 64px; margin-right: 64px; font-size: 0.8em;">
-    <strong>Fig 1:</strong> Unscreened ratings from a large-scale blind MUSHRA listening test evaluating
-    NAM A2 amp/effect modeling against other commercial
-    modelers. 105,842 ratings from
-    1,184 participants across 37 tones. Data provided by <a href="https://www.tone3000.com" target="_blank" rel="noreferrer">TONE3000</a> and <a href="https://www.neuralampmodeler.com/">Steve Atkinson</a> under a CC-BY 4.0 license. 
-    <sup><a id="fnref1" href="#fn1">1</a></sup>
-</p>
+### Appearance and Device Settings
 
-PiPedal 2.0 integrates with Tone3000.com's web services, allowing you to directly install new NAM A2 models on the pipedal server without ever leaving the PiPedal user interface. Or download and install commercially-developed NAM models from a rich ecosystem of model providers.
+- Built-in Theme Manager
+- Large built-in theme library
+- Custom theme editing
+- Theme import/export
+- Per-device Performance layout
+- Match the physical pedal layout or use a larger virtual preset grid
+- MultiFX settings backup and restore
+- Reset MultiFX-only settings without altering PiPedal presets or audio configuration
+- Musical/controller state can remain shared while presentation/navigation settings stay local to each browser/device
 
+## Screenshots
 
+### Snapshot Mode
 
-PiPedal can be remotely controlled via a web interface over Ethernet, or Wi-Fi. If you don't have access to a Wi-Fi router, PiPedal can be configured to 
-start a Wi-Fi hotspot automatically, whenever your Raspberry Pi can't connect to your home network.
+![PiPedal MultiFX Snapshot Mode](docs/images/snapshot-mode.png)
 
-Install the [PiPedal Remote Android app](https://play.google.com/store/apps/details?id=com.twoplay.pipedal) to get one-click access to PiPedal via Wi-Fi networks, or Wi-Fi hotspots. If you are using PiPedal away from home, you can configure PiPedal to automatically start a Wi-Fi hotspot whenever Pipedal is unable to detect your home network (Raspberry Pi OS only). The PiPedal Client Android app will allow to connect by simply launching the app, whether you are at home, or using a Wi-Fi auto-hotspot at a gig, when away from home.
+Snapshot Mode replaces the preset tiles with six native PiPedal snapshot slots while keeping the current bank and preset visible.
 
-PiPedal's user interface has been specifically designed to work well on small form-factor touch devices like phones or tablets. Clip a phone or tablet on your microphone stand on stage, and you're ready to play! Or connect via a desktop browser, for a slightly more luxurious experience. The PiPedal user-interface adapts to the screen size and orientation of your device, providing easy control of your guitar effects across a broad variety devices and screen sizes.
+### Snapshot Editor
 
-PiPedal includes a pre-installed selection of LV2 plugins from the ToobAmp collection of plugins; but it works with most LV2 Audio plugins. There are literally hundreds of free high-quality LV2 audio plugins that will work with PiPedal. Just install them on your Raspberry Pi, and they will show up in PiPedal.
+![PiPedal MultiFX Snapshot Editor](docs/images/snapshot-editor.png)
 
-If your USB audio adapter has MIDI connectors, you can use MIDI devices (keyboards, controllers, or midi floor boards) to control PiPedal while performing. A simple interface allows you to select how you would like to bind PiPedal controls to midi messages. 
+Snapshot Editor edits snapshot sound only. The preset chain is locked so a snapshot cannot accidentally become a different pedalboard structure or replace the base preset.
 
+### Bank / Preset Manager
 
-----
-&nbsp;
+![PiPedal MultiFX Bank and Preset Manager](docs/images/bank-preset-manager.png)
 
-#### [System Requirements](https://rerdavies.github.io/pipedal/SystemRequirements.html)
-&nbsp;
+Manage real PiPedal banks and presets from the MultiFX shell.
 
-#### [Installing PiPedal](https://rerdavies.github.io/pipedal/Installing.html)
-#### [Installing PiPedal on Ubuntu](https://rerdavies.github.io/pipedal/Ubuntu.html)
-#### [Headless Operation](https://rerdavies.github.io/pipedal/HeadlessOperation.html)
-#### [Configuring PiPedal After Installation](https://rerdavies.github.io/pipedal/Configuring.html)  
-&nbsp;
-#### [What PiPedal Is](https://rerdavies.github.io/pipedal/WhatPiPedalIs.html)
-#### [Machine Learning in PiPedal (A History)](https://rerdavies.github.io/pipedal/PiPedalHistory.html)
-#### [How to Use PiPedal](https://rerdavies.github.io/pipedal/HowToUsePiPedal.html)
-#### [How to Build Presets With PiPedal](https://rerdavies.github.io/pipedal/BuildingPresets.html)
-#### [An Intro to Snapshots](https://rerdavies.github.io/pipedal/Snapshots.html)  
-#### [Neural Amp Modeler Calibration](https://rerdavies.github.io/pipedal/NamCalibration.html)  
-#### [Choosing a USB Audio Adapter](https://rerdavies.github.io/pipedal/ChoosingAUsbAudioAdapter.html)  
-#### [Optimizing Audio Latency](https://rerdavies.github.io/pipedal/AudioLatency.html)  
-#### [Command-Line Configuration of PiPedal](https://rerdavies.github.io/pipedal/CommandLine.html)
-#### [Changing the Web Server Port](https://rerdavies.github.io/pipedal/ChangingTheWebServerPort.html)
+### Preset Editor
 
-&nbsp;
-#### [Using LV2 Audio Plugins](https://rerdavies.github.io/pipedal/UsingLv2Plugins.html)
-#### [Which LV2 Plugins does PiPedal support?](https://rerdavies.github.io/pipedal/WhichLv2PluginsAreSupported.html)
-#### [LV2 Plugins with MOD User Interfaces](https://rerdavies.github.io/pipedal/ModUiSupport.html)
+![PiPedal MultiFX Preset Editor](docs/images/preset-editor.png)
 
-&nbsp;
+Build and arrange the pedalboard while retaining a touchscreen-friendly MultiFX shell.
 
-#### [Frequently Asked Questions](https://rerdavies.github.io/pipedal/FAQ.html)
+### Effect Editor
 
-&nbsp;
+![PiPedal MultiFX Effect Editor](docs/images/effect-editor.png)
 
-#### [Building PiPedal from Source](https://rerdavies.github.io/pipedal/BuildingPiPedalFromSource.html)
-#### [Build Prerequisites](https://rerdavies.github.io/pipedal/BuildPrerequisites.html)
-#### [The Build Systems](https://rerdavies.github.io/pipedal/TheBuildSystem.html)
-#### [How to Debug PiPedal](https://rerdavies.github.io/pipedal/Debugging.html)
-#### [PiPedal Architecture](https://rerdavies.github.io/pipedal/Architecture.html)
+Edit PiPedal plugin controls directly from the MultiFX interface.
 
- 
-<hr style="margin-top: 32px; margin-left: 32px; width: 50%;" />
-<p id="fn1" style="margin-left: 32px; margin-right: 32px; font-size: 0.8em;">
-    <sup><a href="#fnref1" aria-label="Back to figure note reference">1</a></sup> TONE3000, &amp; Atkinson, S. (2026). <em>A2 MUSHRA Listening
-        Test Raw Data</em> [Data set].
-    Tone3000. <a href="https://www.tone3000.com/guides/nam-a2-the-complete-guide" target="_blank" rel="noreferrer">
-        https://www.tone3000.com/guides/nam-a2-the-complete-guide
-    </a>
-    . Repository:
-    <a href="https://github.com/tone-3000/a2-mushra-data" target="_blank" rel="noreferrer">
-        https://github.com/tone-3000/a2-mushra-data
-    </a>
-    . License: CC BY 4.0. <a href="#fnref1" aria-label="Back to figure note reference">↩</a>
-</p>
+### Settings
 
+![PiPedal MultiFX Settings](docs/images/settings-hub.png)
 
+Settings are split into Controller, Theme, MultiFX-UI, and PiPedal / System areas.
 
+### Controller Settings
 
- 
+![PiPedal MultiFX Controller Settings](docs/images/controller-settings.png)
 
+Arrange the on-screen controller to match the physical enclosure and configure hardware, short-press, and long-press actions.
 
+### Theme Manager
+
+![PiPedal MultiFX Theme Manager](docs/images/theme-manager.png)
+
+Preview built-in themes, customize colors, save custom themes, and import/export theme data.
+
+### MultiFX-UI Settings
+
+![PiPedal MultiFX UI Settings](docs/images/multifx-ui-settings.png)
+
+Back up MultiFX settings, choose a per-device Performance layout, review shared/local state behavior, or reset only MultiFX configuration.
+
+## Documentation
+
+- [Installation and Updates](docs/INSTALLATION.md)
+- [Snapshots and Snapshot Mode](docs/SNAPSHOTS.md)
+- [Controller Setup](docs/CONTROLLER_SETUP.md)
+- [Configuring the Controller Layout](docs/LAYOUT_CONFIGURATION.md)
+- [MultiFX-UI Settings and Backup / Restore](docs/MULTIFX_UI.md)
+- [Themes](docs/THEMES.md)
+
+## Recommended Hardware
+
+PiPedal MultiFX is primarily aimed at Raspberry Pi-based floor units.
+
+Recommended setup:
+
+- Raspberry Pi 5
+- Raspberry Pi OS
+- PiPedal
+- 7-inch or larger touchscreen
+- 1024×600 or higher display resolution
+- USB audio interface or compatible Raspberry Pi audio hardware
+- Optional USB MIDI foot controller
+
+A physical controller is not required; MultiFX can be used entirely from the touchscreen.
+
+The original PiPedal project supports additional platforms and hardware. See the [official PiPedal project](https://github.com/rerdavies/pipedal) for PiPedal's full system requirements and audio-engine documentation.
+
+## Installation
+
+For the easiest setup, download the latest Raspberry Pi package from:
+
+**[PiPedal MultiFX Releases](https://github.com/MegaNoob75/PiPedal-MultiFX/releases/latest)**
+
+Then follow the [Installation Guide](docs/INSTALLATION.md).
+
+The MultiFX installer adds the alternate frontend and controller services to an existing PiPedal installation. It preserves supported MultiFX configuration during updates and maintains a backup of the frontend that was present before MultiFX was first installed so the uninstaller can restore it.
+
+## Basic Use
+
+After installation:
+
+1. Open PiPedal MultiFX in the kiosk or browser.
+2. Use **Performance View** for normal live operation.
+3. Tap or trigger a preset tile to load a preset.
+4. Hold the configured Snapshot Mode switch, or enter Snapshot Mode through the configured action, to access the six native snapshot slots.
+5. Use **MFX → Settings** for controller, theme, per-device UI, and PiPedal/system configuration.
+6. Use **MFX → Banks / Presets** to manage banks and presets.
+7. Use the preset editor when you need to change the base pedalboard.
+8. Switch to the original PiPedal interface whenever you need native PiPedal screens that MultiFX does not replace.
+
+See the linked documentation above for detailed setup and behavior.
+
+## About PiPedal
+
+PiPedal MultiFX is built on top of the excellent open-source [PiPedal](https://github.com/rerdavies/pipedal) project by Robin Davies.
+
+PiPedal provides the low-latency audio engine, LV2 hosting, preset system, native snapshots, NAM support, device configuration, and the application model used by MultiFX.
+
+MultiFX intentionally uses PiPedal's native model and operations wherever possible instead of duplicating PiPedal functionality.
+
+This project is **not an official PiPedal project**.
+
+## Development
+
+Development takes place on the `dev` branch. Stable tested versions are merged to `main`.
+
+Tagged checkpoints use names such as:
+
+```text
+multifx-v1.007
+```
+
+Release downloads are available from the GitHub [Releases](https://github.com/MegaNoob75/PiPedal-MultiFX/releases) page.
+
+## License
+
+See [LICENSE.md](LICENSE.md) for the licenses that apply to this repository and the upstream PiPedal code on which it is based.

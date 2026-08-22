@@ -1,0 +1,125 @@
+name: Build MultiFX Raspberry Pi Package
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Release version (example: 1.01)'
+        required: true
+        default: '1.01'
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  build-package:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out selected branch
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: vite/package-lock.json
+
+      - name: Install frontend dependencies
+        working-directory: vite
+        run: npm ci
+
+      - name: Build frontend
+        working-directory: vite
+        run: npm run build
+
+      - name: Assemble Raspberry Pi release package
+        shell: bash
+        env:
+          RELEASE_VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+
+          VERSION="${RELEASE_VERSION#v}"
+          VERSION="${VERSION#multifx-v}"
+
+          if [[ ! "${VERSION}" =~ ^[0-9]+\.[0-9]+([.][0-9]+)?$ ]]; then
+            echo "ERROR: Invalid version '${RELEASE_VERSION}'. Use a value such as 1.01 or 1.1.0."
+            exit 1
+          fi
+
+          PACKAGE_NAME="PiPedal-MultiFX-v${VERSION}-RaspberryPi"
+          STAGE="release/${PACKAGE_NAME}"
+
+          rm -rf release
+          mkdir -p "${STAGE}/react"
+          mkdir -p "${STAGE}/multifx"
+          mkdir -p "${STAGE}/systemd/system"
+
+          cp -a vite/dist/. "${STAGE}/react/"
+
+          cp install-pipedal-kiosk.sh "${STAGE}/"
+          cp install-multifx.sh "${STAGE}/"
+          cp uninstall-multifx.sh "${STAGE}/"
+          chmod +x "${STAGE}/"*.sh
+
+          cp multifx/controller-config.json "${STAGE}/multifx/"
+          cp multifx/pipedal_encoder_bridge.py "${STAGE}/multifx/"
+          cp multifx/MULTIFX_32_SWITCH_PROTOCOL.txt "${STAGE}/multifx/"
+
+          cp multifx/systemd/system/pipedal-encoder.service "${STAGE}/systemd/system/"
+          cp multifx/systemd/system/pipedal-ydotoold.service "${STAGE}/systemd/system/"
+
+          cat > "${STAGE}/README.txt" <<EOF
+          PiPedal MultiFX v${VERSION} - Raspberry Pi Package
+          ============================================
+
+          PiPedal MultiFX is an unofficial alternative interface for PiPedal.
+
+          This package can:
+            - install/update PiPedal and configure the Chromium/labwc kiosk
+            - install/update only the MultiFX UI and controller services
+            - uninstall MultiFX and restore the previous PiPedal frontend
+
+          Main setup menu:
+              sudo ./install-pipedal-kiosk.sh
+
+          MultiFX only:
+              sudo ./install-multifx.sh
+
+          Remove MultiFX only:
+              sudo ./uninstall-multifx.sh
+
+          The MultiFX installer expects PiPedal to already be installed.
+          EOF
+
+          bash -n "${STAGE}/install-pipedal-kiosk.sh"
+          bash -n "${STAGE}/install-multifx.sh"
+          bash -n "${STAGE}/uninstall-multifx.sh"
+
+          test -f "${STAGE}/react/index.html"
+          test -d "${STAGE}/react/assets"
+          test -f "${STAGE}/multifx/controller-config.json"
+          test -f "${STAGE}/multifx/pipedal_encoder_bridge.py"
+          test -f "${STAGE}/systemd/system/pipedal-encoder.service"
+          test -f "${STAGE}/systemd/system/pipedal-ydotoold.service"
+
+          (
+            cd release
+            zip -qr "${PACKAGE_NAME}.zip" "${PACKAGE_NAME}"
+          )
+
+          echo "PACKAGE_NAME=${PACKAGE_NAME}" >> "${GITHUB_ENV}"
+
+          echo "Package contents:"
+          unzip -l "release/${PACKAGE_NAME}.zip"
+
+      - name: Upload Raspberry Pi package
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.PACKAGE_NAME }}
+          path: release/${{ env.PACKAGE_NAME }}.zip
+          if-no-files-found: error
+          retention-days: 30

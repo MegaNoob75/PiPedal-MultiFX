@@ -1,0 +1,160 @@
+/*
+ * MultiFX effect-control presentation layer.
+ *
+ * This stylesheet is scoped to the MultiFX effect-settings page. It does not
+ * alter Original PiPedal. PiPedal remains responsible for all actual control
+ * logic, ranges, values, touch handling and plugin-specific behavior.
+ */
+
+body.multifx-active .mfx-effect-control-surface {
+    background:
+        radial-gradient(
+            circle at 50% 0%,
+            rgba(167, 112, 228, 0.055),
+            transparent 44%
+        ),
+        var(--mfx-bg);
+}
+
+
+/* Labels and values ------------------------------------------------------- */
+
+body.multifx-active
+.mfx-effect-control-surface
+.MuiTypography-caption {
+    color: var(--mfx-muted) !important;
+    font-weight: 800 !important;
+    letter-spacing: 0.035em;
+}
+
+body.multifx-active
+.mfx-effect-control-surface
+.MuiInput-root {
+    color: var(--mfx-cyan-text) !important;
+}
+
+body.multifx-active
+.mfx-effect-control-surface
+.MuiInput-root::before {
+    border-bottom-color: var(--mfx-border) !important;
+}
+
+body.multifx-active
+.mfx-effect-control-surface
+.MuiInput-root:hover::before {
+    border-bottom-color: var(--mfx-purple) !important;
+}
+
+body.multifx-active
+.mfx-effect-control-surface
+.MuiInput-root::after {
+    border-bottom-color: var(--mfx-cyan) !important;
+}
+
+/* Selects ---------------------------------------------------------------- */
+
+body.multifx-active
+.mfx-effect-control-surface
+.MuiSelect-select {
+    color: var(--mfx-text) !important;
+    background: var(--mfx-panel-alt) !important;
+    border: 1px solid var(--mfx-border);
+    border-radius: 8px;
+    box-sizing: border-box;
+    padding-left: 9px !important;
+    padding-right: 28px !important;
+    font-weight: 750;
+}
+
+body.multifx-active
+.mfx-effect-control-surface
+.MuiSelect-select:focus {
+    background: var(--mfx-panel-raised) !important;
+    border-color: var(--mfx-purple);
+    box-shadow: 0 0 0 1px rgba(167, 112, 228, 0.25);
+}
+
+body.multifx-active
+.mfx-effect-control-surface
+.MuiSelect-icon {
+    color: var(--mfx-purple-light) !important;
+}
+
+/* Switches --------------------------------------------------------------- */
+
+body.multifx-active
+.mfx-effect-control-surface
+.MuiSwitch-root {
+    filter: drop-shadow(0 2px 4px rgba(0, 0, 0, 0.45));
+}
+
+body.multifx-active
+.mfx-effect-control-surface
+.MuiSwitch-switchBase {
+    color: var(--mfx-muted) !important;
+}
+
+body.multifx-active
+.mfx-effect-control-surface
+.MuiSwitch-switchBase.Mui-checked {
+    color: var(--mfx-cyan) !important;
+}
+
+body.multifx-active
+.mfx-effect-control-surface
+.MuiSwitch-switchBase.Mui-checked + .MuiSwitch-track {
+    background-color: var(--mfx-cyan) !important;
+    opacity: 0.42 !important;
+}
+
+/* Buttons ---------------------------------------------------------------- */
+
+body.multifx-active
+.mfx-effect-control-surface
+.MuiButton-contained {
+    color: #160D20 !important;
+    background: var(--mfx-purple) !important;
+    border: 1px solid rgba(216, 180, 254, 0.32);
+    border-radius: 9px !important;
+    box-shadow: 0 4px 10px rgba(0, 0, 0, 0.34) !important;
+    font-weight: 850 !important;
+}
+
+body.multifx-active
+.mfx-effect-control-surface
+.MuiButton-contained:active {
+    background: var(--mfx-purple-light) !important;
+    transform: translateY(1px);
+}
+
+/* Generic PiPedal dials --------------------------------------------------
+   PiPedal's dial SVG carries touch-action:none inline. This selector is
+   intentionally limited to the effect-control surface so the rest of MultiFX
+   and Original PiPedal are untouched.
+*/
+
+body.multifx-active
+.mfx-effect-control-surface
+svg[style*="touch-action"] {
+    fill: var(--mfx-cyan) !important;
+    color: var(--mfx-cyan) !important;
+    opacity: 0.94 !important;
+    filter:
+        drop-shadow(0 0 1px rgba(236, 254, 255, 0.65))
+        drop-shadow(0 3px 4px rgba(0, 0, 0, 0.58));
+}
+
+/* Give generic controls a subtle appliance-style visual grouping without
+   changing PiPedal's layout mechanics. */
+body.multifx-active
+.mfx-effect-control-surface
+.MuiTypography-caption + div {
+    border-color: var(--mfx-border);
+}
+
+/* Keep PiPedal's normal control sizing/layout for this visual-theme pass. */
+body.multifx-active
+.mfx-effect-control-frame::-webkit-scrollbar {
+    width: 9px;
+    height: 9px;
+}

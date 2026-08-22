@@ -1,50 +1,89 @@
----
-page_icon: img/snapshots.png
-icon_width: 160px
-icon_float: right
----
-## An Intro to Snapshots
+# Snapshots and Snapshot Mode
 
+[← Back to main README](../README.md)
 
+PiPedal MultiFX uses **PiPedal's native snapshot system**. MultiFX provides a performance-focused view and editor around that system rather than maintaining a second snapshot model.
 
-You can create up to six snapshots for any given preset. A snapshot differs from a preset in that 
+![Snapshot Mode](images/snapshot-mode.png)
 
-{% include pageIcon.html %}  
+## Snapshot Mode
 
-- Switching between snapshots does not reload the plugins you are using. Snapshots contain only control values.
-- Because effects are not reloaded, you won't get discontinuities in the output of effects with long tails (like reverb effects, for example).
-- Loading a snapshot is much faster than loading a preset, because new plugins don't have to be created.
-- You can configure PiPedal to switch between snapshots in response to MIDI messages from a MIDI foot controller or other device.`
+Snapshot Mode replaces the normal preset tiles with the six snapshot slots belonging to the currently loaded PiPedal preset.
 
-Snapshots are particularly useful if you have a USB or MIDI foot controller. You can configure PiPedal to switch between snapshots when you step on buttons on your foot controller. To configure MIDI bindings for snapshots, select <b><i>Settings</i></b> from the main menu, and tap on <b><i>System MIDI bindings</i></b>.
+A snapshot can be recalled from the touchscreen or from a configured preset footswitch while Snapshot Mode is open.
 
-But snapshots are equally useful when you are using PiPedal's <b><i>Performance View</i></b>. To access the <b><i>Performance View</i></b> click on the <b><i>Performance View</i></b> menu item in the main PiPedal menu.
-  
+The top title changes to:
 
-<img src="img/PerformanceView-ss.png" width="80%" />
+```text
+SNAPSHOTS
+```
 
-&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;PiPedal's Performance View
+so it is clear that the controller is currently operating the six snapshot slots.
 
-Note how PiPedal has been configured to use <i>banks</i> as containers for songs in a set list. Each song in the setlist gets its own preset; and then snapshots are used to change controls for the preset being used in each song. As an example, the only difference between <i>Chorus</i> and <i>Chorus + Phaser</i> snapshots is whether the Phaser plugin is bypassed or not. You are of course, free to arrange your own banks and presets any way you want. But if you have a complex repertoire of songs that you play regularly, this is a good way to arrange your preset: set lists go into banks; songs go into presets; and then you use snapshots to switch between settings used in the same song.
+## Returning to Performance
 
-  
+The touchscreen Back button returns to Performance View.
 
-#### Creating Snapshots in the PiPedal User Interface.
+While Snapshot Mode is open, a normal short press of **Bank Up** or **Bank Down** also returns to Performance instead of changing the bank.
 
-You can create, modify, and select snapshots in the main PiPedal preset editor. 
+Returning to Performance does **not** automatically cancel the recalled snapshot. The snapshot can remain active and continue sounding.
 
-Click on the <b><i>Snapshot</i></b> icon button in the middle row of controls in the main page of pipedal. It's the button that looks like a camera. 
+## Active Preset LED
 
-  
+Performance View uses the active preset LED to distinguish important states:
 
-#### Interactions between Presets and Snapshots.
+```text
+Green            clean base preset
+Flashing yellow  unsaved base-preset change
+Blue             native PiPedal snapshot selected
+Red              temporary chain bypass
+```
 
-As a general rule, it's best to get the structure (which plugins are loaded, and how they are connected together) settled before you start creating snapshots. If you change the structure of a preset, it may affect snapshots that belong to that preset. 
+## Returning to the Base Preset
 
-Each snapshot has its own set of preset control settings which are independent of the control settings in each snapshot. But all share the same plugin structure (which plugins are loaded, and how they are connected together). 
+When a snapshot is active, selecting the already-active preset returns to the saved base preset.
 
-If you make structural changes to a preset that add a new plugin, there will not be control settings for the new plugins in any of the snapshots (they will default to the values of the controls in the main preset, or whichever snapshot was last loaded, which may lead to unexpected results when switching between snapshots). You can actually re-order plugins within a preset, or remove plugins without affecting the control settings in a snapshot. But if you add a new plugin, there will be no saved values for the controls of the new plugin in each of the snapshots. If you do add a new plugin, it would be a good idea to go through each of the snapshots, and resave them to make sure that control settings for each of the snapshots are what you expect them to be. 
- 
+MultiFX performs a real PiPedal preset load for this operation. Clearing snapshot selection alone is not treated as equivalent to restoring the base sound.
 
---------
-[<< How to Build Presets With PiPedal](BuildingPresets.md) | [Up](Documentation.md) | [Neural Amp Modeler Calibration >>](NamCalibration.md)  
+## Snapshot Editor
+
+![Snapshot Editor](images/snapshot-editor.png)
+
+The Snapshot Editor allows effect values and bypass states to be edited while the preset chain remains structurally locked.
+
+The editor intentionally does not expose plugin-chain add/remove/reorder operations.
+
+## Snapshot Save Safety
+
+A snapshot must never become the base preset.
+
+MultiFX follows this rule when persisting snapshot data:
+
+1. capture the edited snapshot sound
+2. reload the saved base preset
+3. attach the captured snapshot data to that clean base
+4. save the preset while base controls are live
+5. recall the saved snapshot
+
+This is necessary because PiPedal stores snapshot data inside the preset. Saving the preset is required to make newly created or edited snapshot data survive switching away and back, but the save must occur while true base controls are live.
+
+## Snapshot Operations
+
+Snapshot-related screens support operations such as:
+
+- recall
+- create
+- edit/update
+- rename
+- color
+- delete
+
+Snapshot changes are persisted using PiPedal's own model operations.
+
+## Snapshot vs Preset Editing
+
+Use **Preset Editor** when you want to change the base sound or pedalboard structure.
+
+Use **Snapshot Editor** when you want to store alternate effect states within the same preset topology.
+
+A snapshot is performance state, not a replacement preset.

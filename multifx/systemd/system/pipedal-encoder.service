@@ -1,0 +1,15 @@
+[Unit]
+Description=PiPedal MultiFX MIDI Controller Bridge
+Requires=pipedal-ydotoold.service
+After=pipedal-ydotoold.service sound.target
+
+[Service]
+Type=simple
+User=root
+Environment=YDOTOOL_SOCKET=/tmp/.ydotool_socket
+ExecStart=/usr/bin/python3 /usr/local/lib/pipedal-multifx/pipedal_encoder_bridge.py
+Restart=always
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target
