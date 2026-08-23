@@ -133,6 +133,7 @@ function MarqueeText({
                 color,
                 fontSize,
                 fontWeight,
+                lineHeight: 1.05,
                 marginTop: `${marginTop}px`,
                 textAlign: centered ? "center" : "left"
             }}
@@ -143,6 +144,234 @@ function MarqueeText({
                     display: "inline-block",
                     minWidth: "max-content",
                     willChange: overflowDistance > 0 ? "transform" : "auto"
+                }}
+            >
+                {text}
+            </span>
+        </span>
+    );
+}
+
+// Freeform Performance typography uses shared role sizes. Text length never
+// changes the font size; long text marquees at the same role size. Controls
+// only step down when their own height is genuinely too small for that role.
+const MFX_PRIMARY_TEXT_SIZE =
+    "clamp(18px, min(28px, 50cqh), 28px)";
+const MFX_SWITCH_LABEL_TEXT_SIZE =
+    "clamp(10px, min(14px, 23cqh), 14px)";
+const MFX_LABEL_TEXT_SIZE =
+    "clamp(9px, min(12px, 20cqh), 12px)";
+const MFX_SECONDARY_TEXT_SIZE =
+    "clamp(8px, min(11px, 18cqh), 11px)";
+const MFX_PLUS_TEXT_SIZE =
+    "clamp(24px, min(34px, 60cqh), 34px)";
+const MFX_SYSTEM_LABEL_TEXT_SIZE =
+    "clamp(8px, min(10px, 16cqh), 10px)";
+const MFX_SYSTEM_VALUE_TEXT_SIZE =
+    "clamp(9px, min(12px, 20cqh), 12px)";
+
+type ResponsiveMarqueeTextProps = {
+    text: string;
+    color: string;
+    fontSize: string;
+    fontWeight?: React.CSSProperties["fontWeight"];
+    lineHeight?: number;
+    align?: "left" | "center" | "right";
+    textTransform?: React.CSSProperties["textTransform"];
+    letterSpacing?: React.CSSProperties["letterSpacing"];
+    opacity?: number;
+    marquee?: boolean;
+    marqueeDelaySeconds?: number;
+    marqueePixelsPerSecond?: number;
+    marqueeEndPauseSeconds?: number;
+};
+
+function ResponsiveMarqueeText({
+    text,
+    color,
+    fontSize,
+    fontWeight = 900,
+    lineHeight = 1,
+    align = "left",
+    textTransform,
+    letterSpacing,
+    opacity = 1,
+    marquee = true,
+    marqueeDelaySeconds = 2.5,
+    marqueePixelsPerSecond = 45,
+    marqueeEndPauseSeconds = 1
+}: ResponsiveMarqueeTextProps) {
+    const viewportRef = useRef<HTMLSpanElement>(null);
+    const textRef = useRef<HTMLSpanElement>(null);
+    const [overflowDistance, setOverflowDistance] = useState(0);
+
+    useLayoutEffect(() => {
+        const viewport = viewportRef.current;
+        const textElement = textRef.current;
+        if (!viewport || !textElement) return;
+
+        let frame = 0;
+
+        const measure = () => {
+            frame = 0;
+            textElement.style.transform = "translateX(0)";
+            setOverflowDistance(
+                marquee
+                    ? Math.max(
+                        0,
+                        textElement.scrollWidth - viewport.clientWidth
+                    )
+                    : 0
+            );
+        };
+
+        const scheduleMeasure = () => {
+            if (frame !== 0) {
+                window.cancelAnimationFrame(frame);
+            }
+            frame = window.requestAnimationFrame(measure);
+        };
+
+        const observer = new ResizeObserver(scheduleMeasure);
+        observer.observe(viewport);
+        observer.observe(textElement);
+        scheduleMeasure();
+
+        void document.fonts?.ready
+            .then(scheduleMeasure)
+            .catch(() => undefined);
+
+        return () => {
+            observer.disconnect();
+            if (frame !== 0) {
+                window.cancelAnimationFrame(frame);
+            }
+        };
+    }, [
+        text,
+        fontSize,
+        fontWeight,
+        lineHeight,
+        textTransform,
+        letterSpacing,
+        marquee
+    ]);
+
+    useEffect(() => {
+        const textElement = textRef.current;
+        if (
+            !textElement
+            || !marquee
+            || overflowDistance <= 0
+            || marqueePixelsPerSecond <= 0
+        ) {
+            return;
+        }
+
+        const scrollSeconds =
+            overflowDistance / marqueePixelsPerSecond;
+        const startPause = Math.max(
+            0,
+            marqueeDelaySeconds
+        );
+        const endPause = Math.max(
+            0,
+            marqueeEndPauseSeconds
+        );
+        const totalSeconds = Math.max(
+            0.1,
+            startPause + scrollSeconds + endPause
+        );
+        const scrollStartOffset =
+            startPause / totalSeconds;
+        const scrollEndOffset =
+            (startPause + scrollSeconds) / totalSeconds;
+
+        const animation = textElement.animate(
+            [
+                {
+                    transform: "translateX(0)",
+                    offset: 0
+                },
+                {
+                    transform: "translateX(0)",
+                    offset: Math.min(
+                        1,
+                        scrollStartOffset
+                    )
+                },
+                {
+                    transform:
+                        `translateX(-${overflowDistance}px)`,
+                    offset: Math.min(
+                        1,
+                        scrollEndOffset
+                    )
+                },
+                {
+                    transform:
+                        `translateX(-${overflowDistance}px)`,
+                    offset: 1
+                }
+            ],
+            {
+                duration: totalSeconds * 1000,
+                iterations: Infinity,
+                easing: "linear"
+            }
+        );
+
+        return () => animation.cancel();
+    }, [
+        overflowDistance,
+        marquee,
+        marqueeDelaySeconds,
+        marqueePixelsPerSecond,
+        marqueeEndPauseSeconds
+    ]);
+
+    const justifyContent =
+        overflowDistance > 0
+            ? "flex-start"
+            : align === "center"
+                ? "center"
+                : align === "right"
+                    ? "flex-end"
+                    : "flex-start";
+
+    return (
+        <span
+            ref={viewportRef}
+            style={{
+                display: "flex",
+                width: "100%",
+                height: "100%",
+                minWidth: 0,
+                minHeight: 0,
+                overflow: "hidden",
+                alignItems: "center",
+                justifyContent,
+                color,
+                opacity
+            }}
+        >
+            <span
+                ref={textRef}
+                style={{
+                    display: "inline-block",
+                    flex: "0 0 auto",
+                    minWidth: "max-content",
+                    whiteSpace: "nowrap",
+                    color,
+                    fontSize,
+                    fontWeight,
+                    lineHeight,
+                    textTransform,
+                    letterSpacing,
+                    willChange:
+                        overflowDistance > 0
+                            ? "transform"
+                            : "auto"
                 }}
             >
                 {text}
@@ -1813,8 +2042,10 @@ export default function FootControllerView({
         const isEncoderSelected = isPresetAction && presetSlotIndex === selectedPresetSlot;
         const isActive = isPresetAction && preset?.instanceId === presets.selectedInstanceId;
         const isDisabled = switchConfig.action.type === "none";
-        const longPressLabel = isPresetAction && !preset ? undefined : getLongPressLabel(switchConfig.longPressAction);
-
+        const longPressLabel = isPresetAction && !preset
+            ? undefined
+            : getLongPressLabel(switchConfig.longPressAction);
+        const adaptiveTile = Boolean(freeformRect);
 
         // Use exactly the same visual palette as a preset tile.
         // A populated, unselected preset uses the normal visual state; only
@@ -1865,7 +2096,8 @@ export default function FootControllerView({
                     outline: isEncoderSelected ? `4px solid ${colors.bankSwitchBorder}` : "none",
                     outlineOffset: isEncoderSelected ? "-6px" : "0",
                     borderRadius: `${sizing.switchBorderRadius}px`,
-                    padding: sizing.switchPadding,
+                    padding: adaptiveTile ? 2 : sizing.switchPadding,
+                    containerType: adaptiveTile ? "size" : undefined,
                     display: "flex",
                     flexDirection: "column",
                     justifyContent: isPresetAction && !preset ? "center" : "space-between",
@@ -1893,44 +2125,123 @@ export default function FootControllerView({
             >
                 {isPresetAction && preset && (
                     <span aria-hidden="true" style={{
-                        position: "absolute", top: 6, right: 7, width: 16, height: 16,
-                        borderRadius: "50%", border: `2px solid ${isActive ? chainBypassed ? "#FCA5A5" : snapshotPerformanceActive ? "#93C5FD" : showPresetChanged ? "#FDE68A" : "#86EFAC" : "#555"}`,
+                        position: "absolute",
+                        top: adaptiveTile ? "clamp(1px, 3cqh, 6px)" : 6,
+                        right: adaptiveTile ? "clamp(1px, 3cqw, 7px)" : 7,
+                        width: adaptiveTile ? "clamp(5px, min(11cqw, 20cqh), 16px)" : 16,
+                        height: adaptiveTile ? "clamp(5px, min(11cqw, 20cqh), 16px)" : 16,
+                        borderRadius: "50%",
+                        border: `${adaptiveTile ? "clamp(1px, 1.2cqw, 2px)" : "2px"} solid ${isActive ? chainBypassed ? "#FCA5A5" : snapshotPerformanceActive ? "#93C5FD" : showPresetChanged ? "#FDE68A" : "#86EFAC" : "#555"}`,
                         background: isActive ? chainBypassed ? "#F87171" : snapshotPerformanceActive ? "#3B82F6" : showPresetChanged ? "#FBBF24" : "#22C55E" : "#242424",
                         boxShadow: isActive ? "0 0 9px currentColor" : "none",
                         boxSizing: "border-box"
                     }} />
                 )}
-                {!(isPresetAction && !preset) && (
-                    <span style={{ fontSize: sizing.switchLabelFontSize, fontWeight: "bold", color: labelTextColor, textTransform: "uppercase" }}>
-                        {switchConfig.label}
-                    </span>
-                )}
-                {isPresetAction && !preset ? (
-                    <span style={{ color: primaryTextColor, fontSize: "clamp(1.7rem, 4vw, 2.4rem)", fontWeight: 900, lineHeight: 1 }}>+</span>
+
+                {/* Freeform typography is geometry-driven. Text length never
+                    changes font size; horizontal overflow uses marquee instead. */}
+                {adaptiveTile ? (
+                    isPresetAction && !preset ? (
+                        <ResponsiveMarqueeText
+                            text="+"
+                            color={primaryTextColor}
+                            fontSize={MFX_PLUS_TEXT_SIZE}
+                            fontWeight={900}
+                            align="center"
+                            marquee={false}
+                        />
+                    ) : (
+                        <div style={{
+                            width: "100%",
+                            height: "100%",
+                            minWidth: 0,
+                            minHeight: 0,
+                            display: "grid",
+                            gridTemplateRows: longPressLabel
+                                ? "minmax(0,.78fr) minmax(0,1.55fr) minmax(0,.67fr)"
+                                : "minmax(0,.82fr) minmax(0,1.78fr)",
+                            gap: 1
+                        }}>
+                            <div style={{
+                                minWidth: 0,
+                                minHeight: 0,
+                                paddingRight: isPresetAction && preset
+                                    ? "clamp(8px, min(17cqw, 28cqh), 26px)"
+                                    : 0
+                            }}>
+                                <ResponsiveMarqueeText
+                                    text={switchConfig.label.toUpperCase()}
+                                    color={labelTextColor}
+                                    fontSize={MFX_SWITCH_LABEL_TEXT_SIZE}
+                                    fontWeight={800}
+                                    textTransform="uppercase"
+                                    marqueeDelaySeconds={sizing.marqueeDelaySeconds}
+                                    marqueePixelsPerSecond={sizing.marqueePixelsPerSecond}
+                                    marqueeEndPauseSeconds={sizing.marqueeEndPauseSeconds}
+                                />
+                            </div>
+                            <div style={{ minWidth: 0, minHeight: 0 }}>
+                                <ResponsiveMarqueeText
+                                    text={getSwitchText(switchConfig, preset)}
+                                    color={primaryTextColor}
+                                    fontSize={MFX_PRIMARY_TEXT_SIZE}
+                                    fontWeight={900}
+                                    marqueeDelaySeconds={sizing.marqueeDelaySeconds}
+                                    marqueePixelsPerSecond={sizing.marqueePixelsPerSecond}
+                                    marqueeEndPauseSeconds={sizing.marqueeEndPauseSeconds}
+                                />
+                            </div>
+                            {longPressLabel && (
+                                <div style={{ minWidth: 0, minHeight: 0 }}>
+                                    <ResponsiveMarqueeText
+                                        text={`HOLD: ${longPressLabel}`.toUpperCase()}
+                                        color={labelTextColor}
+                                        fontSize={MFX_SECONDARY_TEXT_SIZE}
+                                        fontWeight={800}
+                                        textTransform="uppercase"
+                                        opacity={0.82}
+                                        marqueeDelaySeconds={sizing.marqueeDelaySeconds}
+                                        marqueePixelsPerSecond={sizing.marqueePixelsPerSecond}
+                                        marqueeEndPauseSeconds={sizing.marqueeEndPauseSeconds}
+                                    />
+                                </div>
+                            )}
+                        </div>
+                    )
                 ) : (
-                    <MarqueeText
-                        text={getSwitchText(switchConfig, preset)}
-                        color={primaryTextColor}
-                        fontSize={sizing.switchValueFontSize}
-                        fontWeight="bold"
-                        marginTop={sizing.switchValueMarginTop}
-                        delaySeconds={sizing.marqueeDelaySeconds}
-                        pixelsPerSecond={sizing.marqueePixelsPerSecond}
-                        endPauseSeconds={sizing.marqueeEndPauseSeconds}
-                    />
-                )}
-                {longPressLabel && (
-                    <span style={{
-                        width: "100%", marginTop: 5, color: labelTextColor,
-                        fontSize: "clamp(.48rem, 1.05vw, .62rem)", fontWeight: 800,
-                        whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis",
-                        textTransform: "uppercase", opacity: .82
-                    }}>HOLD: {longPressLabel}</span>
+                    <>
+                        {!(isPresetAction && !preset) && (
+                            <span style={{ fontSize: sizing.switchLabelFontSize, fontWeight: "bold", color: labelTextColor, textTransform: "uppercase" }}>
+                                {switchConfig.label}
+                            </span>
+                        )}
+                        {isPresetAction && !preset ? (
+                            <span style={{ color: primaryTextColor, fontSize: "clamp(1.7rem, 4vw, 2.4rem)", fontWeight: 900, lineHeight: 1 }}>+</span>
+                        ) : (
+                            <MarqueeText
+                                text={getSwitchText(switchConfig, preset)}
+                                color={primaryTextColor}
+                                fontSize={sizing.switchValueFontSize}
+                                fontWeight="bold"
+                                marginTop={sizing.switchValueMarginTop}
+                                delaySeconds={sizing.marqueeDelaySeconds}
+                                pixelsPerSecond={sizing.marqueePixelsPerSecond}
+                                endPauseSeconds={sizing.marqueeEndPauseSeconds}
+                            />
+                        )}
+                        {longPressLabel && (
+                            <span style={{
+                                width: "100%", marginTop: 5, color: labelTextColor,
+                                fontSize: "clamp(.48rem, 1.05vw, .62rem)", fontWeight: 800,
+                                whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis",
+                                textTransform: "uppercase", opacity: .82
+                            }}>HOLD: {longPressLabel}</span>
+                        )}
+                    </>
                 )}
             </button>
         );
     };
-
     const openSnapshotEditor = (index: number) => {
         setSnapshotOptionsOpen(false);
         setSnapshotRenameOpen(false);
@@ -2015,19 +2326,96 @@ export default function FootControllerView({
         );
     };
 
-    const bankHeaderContent = (
+    const bankHeaderContent = useFreeformPerformanceLayout ? (
+        <div style={{
+            position: "relative",
+            width: "100%",
+            height: "100%",
+            minWidth: 0,
+            minHeight: 0,
+            display: "grid",
+            gridTemplateRows: "minmax(0,.42fr) minmax(0,1fr)",
+            gap: 1
+        }}>
+            <div style={{ minWidth: 0, minHeight: 0 }}>
+                <ResponsiveMarqueeText
+                    text="CURRENT BANK"
+                    color={colors.bankTitleText}
+                    fontSize={MFX_LABEL_TEXT_SIZE}
+                    fontWeight={800}
+                    textTransform="uppercase"
+                    letterSpacing="0.08em"
+                    align="center"
+                    marqueeDelaySeconds={sizing.marqueeDelaySeconds}
+                    marqueePixelsPerSecond={sizing.marqueePixelsPerSecond}
+                    marqueeEndPauseSeconds={sizing.marqueeEndPauseSeconds}
+                />
+            </div>
+            <div style={{ position: "relative", minWidth: 0, minHeight: 0 }}>
+                <button
+                    type="button"
+                    onClick={() =>
+                        bankMenuOpen
+                            ? setBankMenuOpen(false)
+                            : openBankMenu()
+                    }
+                    style={{
+                        width: "100%",
+                        height: "100%",
+                        minWidth: 0,
+                        minHeight: 0,
+                        padding: "0 2px",
+                        background: "transparent",
+                        border: "none",
+                        color: colors.bankNameText,
+                        font: "inherit",
+                        cursor: "pointer",
+                        overflow: "hidden"
+                    }}
+                >
+                    <ResponsiveMarqueeText
+                        text={`${banks.getSelectedEntryName() || "No Bank"} \u25BE`}
+                        color={colors.bankNameText}
+                        fontSize={MFX_PRIMARY_TEXT_SIZE}
+                        fontWeight={900}
+                        align="center"
+                        marqueeDelaySeconds={sizing.marqueeDelaySeconds}
+                        marqueePixelsPerSecond={sizing.marqueePixelsPerSecond}
+                        marqueeEndPauseSeconds={sizing.marqueeEndPauseSeconds}
+                    />
+                </button>
+                {bankMenuOpen && (
+                    <div style={dropdownPanelStyle}>
+                        {banks.entries.map((bank, index) => (
+                            <button
+                                key={bank.instanceId}
+                                ref={(element) => {
+                                    menuItemRefs.current[index] = element;
+                                }}
+                                type="button"
+                                onMouseEnter={() => setMenuIndex(index)}
+                                onClick={() => selectBank(bank.instanceId)}
+                                style={dropdownItemStyle(
+                                    bank.instanceId === banks.selectedBank,
+                                    index === menuIndex
+                                )}
+                            >
+                                {bank.name}
+                            </button>
+                        ))}
+                    </div>
+                )}
+            </div>
+        </div>
+    ) : (
         <>
             <div style={{
-                fontSize: useFreeformPerformanceLayout
-                    ? "clamp(.45rem, min(6cqw, 12cqh), 1rem)"
-                    : sizing.bankTitleFontSize,
+                fontSize: sizing.bankTitleFontSize,
                 lineHeight: 1.05,
                 color: colors.bankTitleText,
                 fontWeight: "bold",
                 textTransform: "uppercase",
-                letterSpacing: useFreeformPerformanceLayout
-                    ? "clamp(.2px, .45cqw, 2px)"
-                    : 2,
+                letterSpacing: 2,
                 whiteSpace: "nowrap",
                 overflow: "hidden",
                 textOverflow: "ellipsis"
@@ -2036,7 +2424,7 @@ export default function FootControllerView({
             </div>
             <div style={{
                 position: "relative",
-                margin: useFreeformPerformanceLayout ? "1px 0 0" : "4px 0",
+                margin: "4px 0",
                 width: "100%",
                 minWidth: 0
             }}>
@@ -2050,16 +2438,12 @@ export default function FootControllerView({
                     style={{
                         width: "100%",
                         minWidth: 0,
-                        padding: useFreeformPerformanceLayout
-                            ? "1px clamp(3px, 2cqw, 10px)"
-                            : "2px 34px",
+                        padding: "2px 34px",
                         background: "transparent",
                         border: "none",
                         color: colors.bankNameText,
                         font: "inherit",
-                        fontSize: useFreeformPerformanceLayout
-                            ? "clamp(.5rem, min(8cqw, 18cqh), 1.35rem)"
-                            : sizing.bankNameFontSize,
+                        fontSize: sizing.bankNameFontSize,
                         lineHeight: 1.05,
                         fontWeight: 900,
                         cursor: "pointer",
@@ -2068,7 +2452,7 @@ export default function FootControllerView({
                         textOverflow: "ellipsis"
                     }}
                 >
-                    {banks.getSelectedEntryName() || "No Bank"} ▾
+                    {`${banks.getSelectedEntryName() || "No Bank"} \u25BE`}
                 </button>
                 {bankMenuOpen && (
                     <div style={dropdownPanelStyle}>
@@ -2095,18 +2479,95 @@ export default function FootControllerView({
         </>
     );
 
-    const activePresetHeaderContent = (
+    const activePresetHeaderContent = useFreeformPerformanceLayout ? (
+        <div style={{
+            position: "relative",
+            width: "100%",
+            height: "100%",
+            minWidth: 0,
+            minHeight: 0,
+            display: "grid",
+            gridTemplateRows: "minmax(0,.42fr) minmax(0,1fr)",
+            gap: 1
+        }}>
+            <div style={{ minWidth: 0, minHeight: 0 }}>
+                <ResponsiveMarqueeText
+                    text="ACTIVE PRESET"
+                    color={colors.activePresetLabelText}
+                    fontSize={MFX_LABEL_TEXT_SIZE}
+                    fontWeight={800}
+                    textTransform="uppercase"
+                    letterSpacing="0.06em"
+                    align="center"
+                    marqueeDelaySeconds={sizing.marqueeDelaySeconds}
+                    marqueePixelsPerSecond={sizing.marqueePixelsPerSecond}
+                    marqueeEndPauseSeconds={sizing.marqueeEndPauseSeconds}
+                />
+            </div>
+            <div style={{ position: "relative", minWidth: 0, minHeight: 0 }}>
+                <button
+                    type="button"
+                    onClick={() =>
+                        presetMenuOpen
+                            ? setPresetMenuOpen(false)
+                            : openPresetMenu()
+                    }
+                    style={{
+                        width: "100%",
+                        height: "100%",
+                        minWidth: 0,
+                        minHeight: 0,
+                        padding: "0 2px",
+                        background: "transparent",
+                        border: "none",
+                        color: colors.activePresetNameText,
+                        font: "inherit",
+                        cursor: "pointer",
+                        overflow: "hidden"
+                    }}
+                >
+                    <ResponsiveMarqueeText
+                        text={`${currentPreset?.name || "No Preset"} \u25BE`}
+                        color={colors.activePresetNameText}
+                        fontSize={MFX_PRIMARY_TEXT_SIZE}
+                        fontWeight={900}
+                        align="center"
+                        marqueeDelaySeconds={sizing.marqueeDelaySeconds}
+                        marqueePixelsPerSecond={sizing.marqueePixelsPerSecond}
+                        marqueeEndPauseSeconds={sizing.marqueeEndPauseSeconds}
+                    />
+                </button>
+                {presetMenuOpen && (
+                    <div style={dropdownPanelStyle}>
+                        {presets.presets.map((preset, index) => (
+                            <button
+                                key={preset.instanceId}
+                                ref={(element) => {
+                                    menuItemRefs.current[index] = element;
+                                }}
+                                type="button"
+                                onMouseEnter={() => setMenuIndex(index)}
+                                onClick={() => selectPreset(preset)}
+                                style={dropdownItemStyle(
+                                    preset.instanceId === presets.selectedInstanceId,
+                                    index === menuIndex
+                                )}
+                            >
+                                {preset.name}
+                            </button>
+                        ))}
+                    </div>
+                )}
+            </div>
+        </div>
+    ) : (
         <div style={{
             position: "relative",
             display: "flex",
             alignItems: "center",
             justifyContent: "center",
-            gap: useFreeformPerformanceLayout
-                ? "clamp(1px, 1cqw, 5px)"
-                : 0,
-            fontSize: useFreeformPerformanceLayout
-                ? "clamp(.45rem, min(5.5cqw, 15cqh), 1rem)"
-                : sizing.activePresetLabelFontSize,
+            gap: 0,
+            fontSize: sizing.activePresetLabelFontSize,
             lineHeight: 1.05,
             color: colors.activePresetLabelText,
             whiteSpace: "nowrap",
@@ -2130,27 +2591,23 @@ export default function FootControllerView({
                         : openPresetMenu()
                 }
                 style={{
-                    padding: useFreeformPerformanceLayout
-                        ? "1px clamp(2px, 1.5cqw, 8px)"
-                        : "2px 8px",
+                    padding: "2px 8px",
                     background: "transparent",
                     border: "none",
                     color: colors.activePresetNameText,
                     font: "inherit",
                     fontWeight: "bold",
-                    fontSize: useFreeformPerformanceLayout
-                        ? "clamp(.5rem, min(7cqw, 20cqh), 1.25rem)"
-                        : sizing.activePresetNameFontSize,
+                    fontSize: sizing.activePresetNameFontSize,
                     lineHeight: 1.05,
                     flex: "1 1 auto",
                     minWidth: 0,
-                    maxWidth: useFreeformPerformanceLayout ? "none" : "75%",
+                    maxWidth: "75%",
                     overflow: "hidden",
                     textOverflow: "ellipsis",
                     whiteSpace: "nowrap"
                 }}
             >
-                {currentPreset?.name || "No Preset"} ▾
+                {`${currentPreset?.name || "No Preset"} \u25BE`}
             </button>
             {presetMenuOpen && (
                 <div style={dropdownPanelStyle}>
@@ -2175,7 +2632,6 @@ export default function FootControllerView({
             )}
         </div>
     );
-
     const formatTemperature = (value: number): string =>
         value <= -40000
             ? "N/A"
@@ -2388,63 +2844,154 @@ export default function FootControllerView({
 
     const statusElementContent = (
         element: ControllerLayoutElement
-    ): React.ReactNode => (
-        <div style={{
-            position: "relative",
-            zIndex: 1,
-            width: "100%",
-            minWidth: 0,
-            padding:
-                element.style === "minimal"
+    ): React.ReactNode => {
+        const contentPadding =
+            element.style === "minimal"
+                ? 1
+                : element.style === "compact"
                     ? 2
-                    : element.style === "compact"
-                        ? 5
-                        : 8,
-            boxSizing: "border-box",
-            overflow: "hidden"
-        }}>
-            {element.showLabel && (
-                <div style={{
-                    color: colors.switchLabelText,
-                    fontSize:
-                        element.style === "minimal"
-                            ? "clamp(.48rem,1vw,.68rem)"
-                            : "clamp(.52rem,1.15vw,.76rem)",
-                    fontWeight: 800,
-                    textTransform: "uppercase",
-                    whiteSpace: "nowrap",
-                    overflow: "hidden",
-                    textOverflow: "ellipsis"
-                }}>
-                    {CONTROLLER_LAYOUT_ELEMENT_LABELS[
-                        element.id
-                    ]}
-                </div>
-            )}
-            <div style={{
-                marginTop: element.showLabel ? 2 : 0,
-                color:
-                    element.id === "audioStatus"
-                    && jackStatus
-                    && !jackStatus.active
-                        ? "#ef4444"
-                        : element.id === "xruns"
-                        && jackStatus
-                        && jackStatus.msSinceLastUnderrun < 15000
-                            ? "#ef4444"
-                            : colors.switchValueText,
-                fontSize:
-                    element.style === "minimal"
-                        ? "clamp(.62rem,1.4vw,.95rem)"
-                        : "clamp(.72rem,1.8vw,1.20rem)",
-                fontWeight: 900,
-                lineHeight: 1.05
-            }}>
-                {elementValue(element.id)}
-            </div>
-        </div>
-    );
+                    : 4;
+        const valueColor =
+            element.id === "audioStatus"
+            && jackStatus
+            && !jackStatus.active
+                ? "#ef4444"
+                : element.id === "xruns"
+                && jackStatus
+                && jackStatus.msSinceLastUnderrun < 15000
+                    ? "#ef4444"
+                    : colors.switchValueText;
 
+        if (element.id === "systemStatus") {
+            const rows = [
+                ["CPU", jackStatus ? `${jackStatus.cpuUsage.toFixed(1)}%` : "N/A"],
+                ["XRUNS", jackStatus ? String(jackStatus.underruns) : "N/A"],
+                ["TEMP", jackStatus ? formatTemperature(jackStatus.temperaturemC) : "N/A"],
+                ["AUDIO", audioStatusText()]
+            ];
+
+            return (
+                <div style={{
+                    position: "relative",
+                    zIndex: 1,
+                    width: "100%",
+                    height: "100%",
+                    minWidth: 0,
+                    minHeight: 0,
+                    boxSizing: "border-box",
+                    padding: contentPadding,
+                    display: "grid",
+                    gridTemplateRows: element.showLabel
+                        ? "minmax(0,.55fr) minmax(0,2.45fr)"
+                        : "minmax(0,1fr)",
+                    gap: 1,
+                    overflow: "hidden"
+                }}>
+                    {element.showLabel && (
+                        <div style={{ minWidth: 0, minHeight: 0 }}>
+                            <ResponsiveMarqueeText
+                                text={CONTROLLER_LAYOUT_ELEMENT_LABELS[element.id].toUpperCase()}
+                                color={colors.switchLabelText}
+                                fontSize={MFX_LABEL_TEXT_SIZE}
+                                fontWeight={800}
+                                textTransform="uppercase"
+                                align="center"
+                                marqueeDelaySeconds={sizing.marqueeDelaySeconds}
+                                marqueePixelsPerSecond={sizing.marqueePixelsPerSecond}
+                                marqueeEndPauseSeconds={sizing.marqueeEndPauseSeconds}
+                            />
+                        </div>
+                    )}
+                    <div style={{
+                        minWidth: 0,
+                        minHeight: 0,
+                        display: "grid",
+                        gridTemplateColumns: "minmax(0,.8fr) minmax(0,1.2fr)",
+                        gridTemplateRows: "repeat(4,minmax(0,1fr))",
+                        columnGap: 3,
+                        rowGap: 1
+                    }}>
+                        {rows.flatMap(([label, value]) => [
+                            <ResponsiveMarqueeText
+                                key={`${label}-label`}
+                                text={label}
+                                color={colors.switchLabelText}
+                                fontSize={MFX_SYSTEM_LABEL_TEXT_SIZE}
+                                fontWeight={800}
+                                align="right"
+                                marqueeDelaySeconds={sizing.marqueeDelaySeconds}
+                                marqueePixelsPerSecond={sizing.marqueePixelsPerSecond}
+                                marqueeEndPauseSeconds={sizing.marqueeEndPauseSeconds}
+                            />,
+                            <ResponsiveMarqueeText
+                                key={`${label}-value`}
+                                text={value}
+                                color={colors.switchValueText}
+                                fontSize={MFX_SYSTEM_VALUE_TEXT_SIZE}
+                                fontWeight={900}
+                                marqueeDelaySeconds={sizing.marqueeDelaySeconds}
+                                marqueePixelsPerSecond={sizing.marqueePixelsPerSecond}
+                                marqueeEndPauseSeconds={sizing.marqueeEndPauseSeconds}
+                            />
+                        ])}
+                    </div>
+                </div>
+            );
+        }
+
+        const rawValue = elementValue(element.id);
+        const valueText =
+            typeof rawValue === "string" || typeof rawValue === "number"
+                ? String(rawValue)
+                : "";
+
+        return (
+            <div style={{
+                position: "relative",
+                zIndex: 1,
+                width: "100%",
+                height: "100%",
+                minWidth: 0,
+                minHeight: 0,
+                padding: contentPadding,
+                boxSizing: "border-box",
+                display: "grid",
+                gridTemplateRows: element.showLabel
+                    ? "minmax(0,.72fr) minmax(0,1.28fr)"
+                    : "minmax(0,1fr)",
+                gap: 1,
+                overflow: "hidden"
+            }}>
+                {element.showLabel && (
+                    <div style={{ minWidth: 0, minHeight: 0 }}>
+                        <ResponsiveMarqueeText
+                            text={CONTROLLER_LAYOUT_ELEMENT_LABELS[element.id].toUpperCase()}
+                            color={colors.switchLabelText}
+                            fontSize={MFX_LABEL_TEXT_SIZE}
+                            fontWeight={800}
+                            textTransform="uppercase"
+                            align="center"
+                            marqueeDelaySeconds={sizing.marqueeDelaySeconds}
+                            marqueePixelsPerSecond={sizing.marqueePixelsPerSecond}
+                            marqueeEndPauseSeconds={sizing.marqueeEndPauseSeconds}
+                        />
+                    </div>
+                )}
+                <div style={{ minWidth: 0, minHeight: 0 }}>
+                    <ResponsiveMarqueeText
+                        text={valueText}
+                        color={valueColor}
+                        fontSize={MFX_PRIMARY_TEXT_SIZE}
+                        fontWeight={900}
+                        align="center"
+                        marqueeDelaySeconds={sizing.marqueeDelaySeconds}
+                        marqueePixelsPerSecond={sizing.marqueePixelsPerSecond}
+                        marqueeEndPauseSeconds={sizing.marqueeEndPauseSeconds}
+                    />
+                </div>
+            </div>
+        );
+    };
 
     return (
         <div style={{
@@ -2488,7 +3035,9 @@ export default function FootControllerView({
                                 content = (
                                     <div style={{
                                         width: "100%",
+                                        height: "100%",
                                         minWidth: 0,
+                                        minHeight: 0,
                                         position: "relative",
                                         zIndex: 1
                                     }}>
@@ -2500,7 +3049,10 @@ export default function FootControllerView({
                                     <div style={{
                                         position: "relative",
                                         zIndex: 1,
-                                        width: "100%"
+                                        width: "100%",
+                                        height: "100%",
+                                        minWidth: 0,
+                                        minHeight: 0
                                     }}>
                                         {activePresetHeaderContent}
                                     </div>

@@ -4081,6 +4081,157 @@ function PerformanceLayoutEditor(props: {
     );
 }
 
+const LAYOUT_PREVIEW_SWITCH_LABEL_TEXT_SIZE =
+    "clamp(9px, min(14px, 23cqh), 14px)";
+const LAYOUT_PREVIEW_LABEL_TEXT_SIZE =
+    "clamp(8px, min(12px, 20cqh), 12px)";
+const LAYOUT_PREVIEW_VALUE_TEXT_SIZE =
+    "clamp(9px, min(16px, 32cqh), 16px)";
+
+function LayoutPreviewMarqueeText(props: {
+    text: string;
+    color: string;
+    fontSize: string;
+    fontWeight?: React.CSSProperties["fontWeight"];
+    align?: "left" | "center";
+}) {
+    const viewportRef = useRef<HTMLDivElement>(null);
+    const textRef = useRef<HTMLSpanElement>(null);
+    const [overflowDistance, setOverflowDistance] = useState(0);
+
+    useEffect(() => {
+        const viewport = viewportRef.current;
+        const textElement = textRef.current;
+        if (!viewport || !textElement) return;
+
+        let frame = 0;
+
+        const measure = () => {
+            frame = 0;
+            textElement.style.transform = "translateX(0)";
+            setOverflowDistance(
+                Math.max(
+                    0,
+                    textElement.scrollWidth - viewport.clientWidth
+                )
+            );
+        };
+
+        const scheduleMeasure = () => {
+            if (frame !== 0) {
+                window.cancelAnimationFrame(frame);
+            }
+            frame = window.requestAnimationFrame(measure);
+        };
+
+        const observer = new ResizeObserver(scheduleMeasure);
+        observer.observe(viewport);
+        observer.observe(textElement);
+        scheduleMeasure();
+
+        return () => {
+            observer.disconnect();
+            if (frame !== 0) {
+                window.cancelAnimationFrame(frame);
+            }
+        };
+    }, [
+        props.text,
+        props.fontSize,
+        props.fontWeight
+    ]);
+
+    useEffect(() => {
+        const textElement = textRef.current;
+        if (!textElement || overflowDistance <= 0) {
+            return;
+        }
+
+        const pixelsPerSecond = 35;
+        const startPauseSeconds = 1.5;
+        const endPauseSeconds = 0.75;
+        const scrollSeconds =
+            overflowDistance / pixelsPerSecond;
+        const totalSeconds =
+            startPauseSeconds
+            + scrollSeconds
+            + endPauseSeconds;
+
+        const animation = textElement.animate(
+            [
+                {
+                    transform: "translateX(0)",
+                    offset: 0
+                },
+                {
+                    transform: "translateX(0)",
+                    offset:
+                        startPauseSeconds / totalSeconds
+                },
+                {
+                    transform:
+                        `translateX(-${overflowDistance}px)`,
+                    offset:
+                        (startPauseSeconds + scrollSeconds)
+                        / totalSeconds
+                },
+                {
+                    transform:
+                        `translateX(-${overflowDistance}px)`,
+                    offset: 1
+                }
+            ],
+            {
+                duration: totalSeconds * 1000,
+                iterations: Infinity,
+                easing: "linear"
+            }
+        );
+
+        return () => animation.cancel();
+    }, [overflowDistance]);
+
+    return (
+        <div
+            ref={viewportRef}
+            style={{
+                width: "100%",
+                height: "100%",
+                minWidth: 0,
+                minHeight: 0,
+                overflow: "hidden",
+                display: "flex",
+                alignItems: "center",
+                justifyContent:
+                    overflowDistance > 0
+                        ? "flex-start"
+                        : props.align === "center"
+                            ? "center"
+                            : "flex-start"
+            }}
+        >
+            <span
+                ref={textRef}
+                style={{
+                    display: "inline-block",
+                    minWidth: "max-content",
+                    whiteSpace: "nowrap",
+                    color: props.color,
+                    fontSize: props.fontSize,
+                    fontWeight: props.fontWeight ?? 900,
+                    lineHeight: 1,
+                    willChange:
+                        overflowDistance > 0
+                            ? "transform"
+                            : "auto"
+                }}
+            >
+                {props.text}
+            </span>
+        </div>
+    );
+}
+
 function LayoutPreviewItem(props: {
     id: string;
     label: string;
@@ -4239,6 +4390,7 @@ function LayoutPreviewItem(props: {
                 width: `${props.rect.width * 100}%`,
                 height: `${props.rect.height * 100}%`,
                 boxSizing: "border-box",
+                containerType: "size",
                 color: MFX_COLORS.text,
                 opacity: props.ghost
                     ? 0.76
@@ -4294,63 +4446,59 @@ function LayoutPreviewItem(props: {
                     position: "relative",
                     zIndex: 1,
                     width: "100%",
+                    height: "100%",
                     minWidth: 0,
+                    minHeight: 0,
                     boxSizing: "border-box",
                     padding:
-                        visualStyle === "minimal"
+                        props.kind === "switch"
                             ? 2
-                            : visualStyle === "compact"
-                                ? 5
-                                : 8,
+                            : visualStyle === "minimal"
+                                ? 1
+                                : visualStyle === "compact"
+                                    ? 2
+                                    : 4,
+                    display: "grid",
+                    gridTemplateRows: props.sublabel
+                        ? "minmax(0,1fr) minmax(0,1fr)"
+                        : "minmax(0,1fr)",
+                    gap: 1,
                     textAlign:
                         props.kind === "element"
                             ? "center"
                             : "left",
-                    pointerEvents: "none"
+                    pointerEvents: "none",
+                    overflow: "hidden"
                 }}
             >
-                <div
-                    style={{
-                        color:
-                            props.kind === "element"
-                                ? MFX_COLORS.muted
-                                : MFX_COLORS.cyan,
-                        fontSize:
-                            visualStyle === "minimal"
-                                ? "0.62rem"
-                                : "0.70rem",
-                        fontWeight: 900,
-                        whiteSpace: "nowrap",
-                        overflow: "hidden",
-                        textOverflow: "ellipsis",
-                        maxWidth: "100%"
-                    }}
-                >
-                    {props.label}
-                </div>
+                {/* Preview typography uses control geometry only. Long text
+                    scrolls instead of shrinking to a different size. */}
+                <LayoutPreviewMarqueeText
+                    text={props.label}
+                    color={
+                        props.kind === "element"
+                            ? MFX_COLORS.muted
+                            : MFX_COLORS.cyan
+                    }
+                    fontSize={
+                        props.kind === "switch"
+                            ? LAYOUT_PREVIEW_SWITCH_LABEL_TEXT_SIZE
+                            : LAYOUT_PREVIEW_LABEL_TEXT_SIZE
+                    }
+                    fontWeight={900}
+                    align={props.kind === "element" ? "center" : "left"}
+                />
 
                 {props.sublabel && (
-                    <div
-                        style={{
-                            marginTop: 3,
-                            fontSize:
-                                visualStyle === "minimal"
-                                    ? "0.72rem"
-                                    : "0.66rem",
-                            fontWeight: 900,
-                            color: MFX_COLORS.text,
-                            whiteSpace: "nowrap",
-                            overflow: "hidden",
-                            textOverflow: "ellipsis",
-                            maxWidth: "100%"
-                        }}
-                    >
-                        {props.sublabel}
-                    </div>
+                    <LayoutPreviewMarqueeText
+                        text={props.sublabel}
+                        color={MFX_COLORS.text}
+                        fontSize={LAYOUT_PREVIEW_VALUE_TEXT_SIZE}
+                        fontWeight={900}
+                        align={props.kind === "element" ? "center" : "left"}
+                    />
                 )}
-            </div>
-
-            {!props.ghost && props.onBeginDrag && (
+            </div>            {!props.ghost && props.onBeginDrag && (
                 <div
                     aria-label="Resize"
                     onPointerDown={(event) => {
