@@ -7,6 +7,36 @@
  * Mode / Chain Bypass are transient runtime state and reset with the bridge.
  */
 
+export type MultiFXControllerInputCapability = "digital" | "analog";
+
+export type MultiFXControllerInput = {
+    id: string;
+    type: "gpio" | "mux" | "externalAdc" | "other";
+    instance: number;
+    channel: number;
+    capabilities: MultiFXControllerInputCapability[];
+    label: string;
+    available: boolean;
+    reserved: boolean;
+    assignedTo: string | null;
+    reason: string | null;
+};
+
+export type MultiFXControllerHardware = {
+    connected: boolean;
+    protocolVersion: number | null;
+    boardName: string | null;
+    inputs: MultiFXControllerInput[];
+};
+
+export type MultiFXControllerLearn = {
+    status: "idle" | "waiting" | "learned" | "timeout" | "cancelled" | "conflict" | "error";
+    token: number | null;
+    capability: MultiFXControllerInputCapability | null;
+    input: MultiFXControllerInput | null;
+    message: string;
+};
+
 export type MultiFXRuntimeState = {
     version: number;
     revision: number;
@@ -21,6 +51,8 @@ export type MultiFXRuntimeState = {
 
     controllerConfig?: unknown | null;
     presetAssignments?: unknown;
+    controllerHardware: MultiFXControllerHardware;
+    controllerLearn: MultiFXControllerLearn;
 };
 
 export type MultiFXPresetAssignmentUpdate = {
@@ -45,6 +77,11 @@ export type MultiFXRuntimeStatePatch = Partial<Pick<
     resetPresetAssignments?: boolean;
     deletePresetAssignmentsBank?: number;
     deletePresetAssignmentsPreset?: { bankId: number; presetId: number };
+    controllerLearnStart?: {
+        capability: MultiFXControllerInputCapability;
+        hardwareSwitch: number;
+    };
+    controllerLearnCancel?: { token: number };
 };
 
 export const MULTIFX_RUNTIME_POLL_MS = 250;
@@ -62,6 +99,120 @@ function numberOrNull(value: unknown): number | null {
     return typeof value === "number" && Number.isFinite(value)
         ? value
         : null;
+}
+
+function normalizeControllerInput(
+    value: unknown
+): MultiFXControllerInput | null {
+    if (!value || typeof value !== "object") return null;
+    const source = value as Record<string, unknown>;
+    const type = source.type === "gpio"
+        || source.type === "mux"
+        || source.type === "externalAdc"
+        ? source.type
+        : "other";
+    const instance = typeof source.instance === "number"
+        && Number.isInteger(source.instance)
+        && source.instance >= 0
+        ? source.instance
+        : null;
+    const channel = typeof source.channel === "number"
+        && Number.isInteger(source.channel)
+        && source.channel >= 0
+        ? source.channel
+        : null;
+    if (instance === null || channel === null) return null;
+
+    const capabilities: MultiFXControllerInputCapability[] = [];
+    if (Array.isArray(source.capabilities)) {
+        if (source.capabilities.includes("digital")) {
+            capabilities.push("digital");
+        }
+        if (source.capabilities.includes("analog")) {
+            capabilities.push("analog");
+        }
+    }
+    if (capabilities.length === 0) return null;
+
+    return {
+        id: typeof source.id === "string" && source.id.trim()
+            ? source.id
+            : `${type}:${instance}:${channel}`,
+        type,
+        instance,
+        channel,
+        capabilities,
+        label: typeof source.label === "string" && source.label.trim()
+            ? source.label
+            : `${type} ${instance}:${channel}`,
+        available: Boolean(source.available),
+        reserved: Boolean(source.reserved),
+        assignedTo: typeof source.assignedTo === "string"
+            && source.assignedTo.trim()
+            ? source.assignedTo
+            : null,
+        reason: typeof source.reason === "string" && source.reason.trim()
+            ? source.reason
+            : null
+    };
+}
+
+function normalizeControllerHardware(
+    value: unknown
+): MultiFXControllerHardware {
+    const source = value && typeof value === "object"
+        ? value as Record<string, unknown>
+        : {};
+    const inputs = Array.isArray(source.inputs)
+        ? source.inputs
+            .map(normalizeControllerInput)
+            .filter((input): input is MultiFXControllerInput => input !== null)
+        : [];
+    return {
+        connected: Boolean(source.connected),
+        protocolVersion: typeof source.protocolVersion === "number"
+            && Number.isInteger(source.protocolVersion)
+            ? source.protocolVersion
+            : null,
+        boardName: typeof source.boardName === "string" && source.boardName.trim()
+            ? source.boardName
+            : null,
+        inputs
+    };
+}
+
+function normalizeControllerLearn(value: unknown): MultiFXControllerLearn {
+    const source = value && typeof value === "object"
+        ? value as Record<string, unknown>
+        : {};
+    const validStatuses = new Set([
+        "idle",
+        "waiting",
+        "learned",
+        "timeout",
+        "cancelled",
+        "conflict",
+        "error"
+    ]);
+    const status = typeof source.status === "string"
+        && validStatuses.has(source.status)
+        ? source.status as MultiFXControllerLearn["status"]
+        : "idle";
+    const capability = source.capability === "digital"
+        || source.capability === "analog"
+        ? source.capability
+        : null;
+
+    return {
+        status,
+        token: typeof source.token === "number"
+            && Number.isInteger(source.token)
+            ? source.token
+            : null,
+        capability,
+        input: normalizeControllerInput(source.input),
+        message: typeof source.message === "string" ? source.message : ""
+    };
 }
 
 function normalizeRuntimeState(value: unknown): MultiFXRuntimeState {
@@ -102,7 +253,11 @@ function normalizeRuntimeState(value: unknown): MultiFXRuntimeState {
         presetAssignments: Object.prototype.hasOwnProperty.call(
             source,
             "presetAssignments"
-        ) ? source.presetAssignments : undefined
+        ) ? source.presetAssignments : undefined,
+        controllerHardware: normalizeControllerHardware(
+            source.controllerHardware
+        ),
+        controllerLearn: normalizeControllerLearn(source.controllerLearn)
     };
 }
 
