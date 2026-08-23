@@ -3,7 +3,7 @@
 
 Responsibilities are deliberately narrow:
   * translate the MultiFX USB-MIDI controller into ydotool key events;
-  * send the current GPIO map to the ESP32 over the private SysEx protocol;
+  * send complete portable hardware configurations over private MIDI SysEx;
   * discover controller hardware capabilities and coordinate transient Learn;
   * expose one small HTTP state service on port 8877.
 
@@ -15,8 +15,9 @@ Only user configuration is durable:
 
 Those values are stored atomically in /var/lib/pipedal-multifx/state.json.
 Snapshot Mode and Chain Bypass are transient live-performance state and always
-start neutral when this service restarts. There is intentionally no migration
-of old tile/page/config formats in this version.
+start neutral when this service restarts. Schema 2 contains one narrow
+migration from the immediately preceding v0.2.0 controller schema. Obsolete
+tile/page formats are still never migrated.
 
 Encoder transport
 -----------------
@@ -72,8 +73,8 @@ RUNTIME_STATE_PORT = 8877
 RUNTIME_STATE_PATH = "/multifx-state"
 PERSISTENT_STATE_FILE = "/var/lib/pipedal-multifx/state.json"
 FACTORY_CONTROLLER_CONFIG_FILE = "/etc/pipedal/controller-config.json"
-STATE_SCHEMA_VERSION = 1
-RUNTIME_VERSION = 3
+STATE_SCHEMA_VERSION = 2
+RUNTIME_VERSION = 4
 
 MFX_SYSEX_PREFIX = (0x7D, 0x4D, 0x46, 0x58)
 CONTROLLER_PROTOCOL_VERSION = 2
@@ -83,16 +84,56 @@ CMD_LEARN_START = 0x04
 CMD_LEARN_CANCEL = 0x05
 CMD_LEARN_RESULT = 0x06
 
+# Protocol v3 adds firmware catalog discovery and an atomic multi-message
+# hardware transaction without changing the known-good v1/v2 envelopes.
+HARDWARE_PROTOCOL_VERSION = 3
+CMD_PROFILE_REQUEST = 0x10
+CMD_PROFILE_REPORT = 0x11
+CMD_PROFILE_INPUT = 0x12
+CMD_PROFILE_END = 0x13
+CMD_CONFIG_BEGIN = 0x20
+CMD_CONFIG_MODULE = 0x21
+CMD_CONFIG_SWITCH = 0x22
+CMD_CONFIG_ANALOG = 0x23
+CMD_CONFIG_ENCODER = 0x24
+CMD_CONFIG_COMMIT = 0x25
+CMD_CONFIG_RESULT = 0x26
+
 CAPABILITY_DIGITAL = 0x01
 CAPABILITY_ANALOG = 0x02
 SOURCE_GPIO = 0x00
 SOURCE_MUX = 0x01
 SOURCE_EXTERNAL_ADC = 0x02
+SOURCE_GPIO_EXPANDER = 0x03
 SOURCE_DESCRIPTOR_SIZE = 7
 
 INPUT_AVAILABLE = 0x01
 INPUT_RESERVED = 0x02
 INPUT_ASSIGNED = 0x04
+INPUT_CAUTION = 0x08
+INPUT_RECOMMENDED = 0x10
+
+CAPABILITY_OUTPUT = 0x04
+
+DRIVER_HC4051 = 0x01
+DRIVER_HC4067 = 0x02
+DRIVER_MCP23017 = 0x03
+DRIVER_ADS1015 = 0x04
+DRIVER_ADS1115 = 0x05
+DRIVER_IDS = {
+    "hc4051": DRIVER_HC4051,
+    "hc4067": DRIVER_HC4067,
+    "mcp23017": DRIVER_MCP23017,
+    "ads1015": DRIVER_ADS1015,
+    "ads1115": DRIVER_ADS1115,
+}
+DRIVER_CATALOG = {
+    DRIVER_HC4051: ("hc4051", "74HC4051"),
+    DRIVER_HC4067: ("hc4067", "CD74HC4067"),
+    DRIVER_MCP23017: ("mcp23017", "MCP23017"),
+    DRIVER_ADS1015: ("ads1015", "ADS1015"),
+    DRIVER_ADS1115: ("ads1115", "ADS1115"),
+}
 
 USAGE_NONE = 0x00
 USAGE_SWITCH = 0x01
@@ -127,8 +168,16 @@ state = {
     "controllerHardware": {
         "connected": False,
         "protocolVersion": None,
+        "boardId": None,
         "boardName": None,
+        "drivers": [],
+        "limits": {"modules": 0, "analogControls": 0, "encoders": 0},
         "inputs": [],
+        "apply": {
+            "status": "idle",
+            "token": None,
+            "message": "",
+        },
     },
     "controllerLearn": {
         "status": "idle",
@@ -142,9 +191,12 @@ state = {
 midi_output_lock = threading.Lock()
 midi_output_port = None
 last_pushed_pin_signature = None
+last_pushed_hardware_signature = None
 next_controller_learn_token = 0
+next_hardware_config_token = 0
 physical_switch_lock = threading.Lock()
 pressed_physical_switches = set()
+profile_report_pending = None
 
 
 def _deepcopy(value):
@@ -160,18 +212,32 @@ def _capability_names(flags):
     return result
 
 
+def _module_id_for_instance(instance):
+    """Resolve a transaction-local firmware module index to its durable ID."""
+    with state_lock:
+        controller = state.get("controllerConfig") or {}
+        hardware = controller.get("hardware") or {}
+        modules = hardware.get("modules") or []
+        if 1 <= instance <= len(modules):
+            module_id = modules[instance - 1].get("id")
+            if isinstance(module_id, str) and module_id:
+                return module_id
+    return None
+
+
 def _source_identity(source_type, instance, channel):
+    """Return UI type, stable ID, label and optional durable module ID."""
     if source_type == SOURCE_GPIO:
-        return "gpio", f"gpio:{instance}:{channel}", f"GPIO {channel}"
+        return "gpio", f"gpio:{channel}", f"GPIO {channel}", None
+    module_id = _module_id_for_instance(instance)
+    durable_id = module_id or f"module{instance}"
     if source_type == SOURCE_MUX:
-        return "mux", f"mux:{instance}:{channel}", f"MUX{instance}.CH{channel}"
+        return "mux", f"module:{durable_id}:{channel}", f"{durable_id} · CH {channel}", module_id
     if source_type == SOURCE_EXTERNAL_ADC:
-        return (
-            "externalAdc",
-            f"externalAdc:{instance}:{channel}",
-            f"External ADC {instance}.CH{channel}",
-        )
-    return "other", f"other:{source_type}:{instance}:{channel}", f"Input {source_type}:{instance}:{channel}"
+        return "externalAdc", f"module:{durable_id}:{channel}", f"{durable_id} · CH {channel}", module_id
+    if source_type == SOURCE_GPIO_EXPANDER:
+        return "gpioExpander", f"module:{durable_id}:{channel}", f"{durable_id} · CH {channel}", module_id
+    return "other", f"other:{source_type}:{instance}:{channel}", f"Input {source_type}:{instance}:{channel}", module_id
 
 
 def _usage_description(usage, usage_index):
@@ -191,33 +257,48 @@ def _usage_description(usage, usage_index):
     return None, None
 
 
-def controller_input_descriptor(raw):
+def controller_input_descriptor(raw, reason_code=0):
+    """Decode a compact firmware descriptor into browser-friendly metadata."""
     if len(raw) != SOURCE_DESCRIPTOR_SIZE:
         return None
     source_type, instance, channel, capability_flags, state_flags, usage, usage_index = raw
     capabilities = _capability_names(capability_flags)
     if not capabilities:
         return None
-    input_type, stable_id, label = _source_identity(source_type, instance, channel)
+    input_type, stable_id, label, module_id = _source_identity(
+        source_type, instance, channel
+    )
     assigned_to, usage_reason = _usage_description(usage, usage_index)
     reserved = bool(state_flags & INPUT_RESERVED)
     assigned = bool(state_flags & INPUT_ASSIGNED)
+    caution = bool(state_flags & INPUT_CAUTION)
+    recommended = bool(state_flags & INPUT_RECOMMENDED)
     available = bool(state_flags & INPUT_AVAILABLE) and not reserved and not assigned
     reason = usage_reason
     if reason is None and reserved:
         reason = "Reserved by the controller profile"
     elif reason is None and assigned:
         reason = "Already assigned"
+    elif reason is None and caution:
+        reason = {
+            1: "Boot-strapping pin; attached hardware must not force an unsafe boot level",
+            2: "Connected to an onboard device on some board variants",
+            3: "Normally used for serial logging",
+        }.get(reason_code, "Usable with care on this board")
 
     return {
         "id": stable_id,
         "type": input_type,
         "instance": instance,
         "channel": channel,
+        "moduleId": module_id,
         "capabilities": capabilities,
+        "outputCapable": bool(capability_flags & CAPABILITY_OUTPUT),
         "label": label,
         "available": available,
         "reserved": reserved,
+        "caution": caution,
+        "recommended": recommended,
         "assignedTo": assigned_to,
         "reason": reason,
     }
@@ -270,12 +351,227 @@ def _normalize_assignments(value):
     return {"version": 1, "banks": normalized_banks}
 
 
+DEFAULT_CONTROLLER_HARDWARE = {
+    "version": 1,
+    "boardProfile": "auto",
+    "templateId": "esp32s3-reference",
+    "modules": [],
+    "analogControls": [
+        {
+            "id": f"pot{index + 1}",
+            "label": f"POT {index + 1}",
+            "style": "pot",
+            "input": {"type": "gpio", "pin": pin},
+            "midiCc": 10 + index,
+            "calibrationMin": 0,
+            "calibrationMax": 4095,
+            "inverted": False,
+            "filterShift": 4,
+        }
+        for index, pin in enumerate((8, 12, 13, 11))
+    ],
+    "encoders": [{
+        "id": "encoder1",
+        "label": "MAIN ENCODER",
+        "aInput": {"type": "gpio", "pin": 18},
+        "bInput": {"type": "gpio", "pin": 17},
+        "buttonInput": {"type": "gpio", "pin": 21},
+        "turnCc": 30,
+        "buttonCc": 31,
+        "stepsPerDetent": 4,
+        "reversed": False,
+    }],
+}
+
+
+def _migrate_controller_config(value):
+    """Migrate only the immediately preceding schema-1 GPIO representation."""
+    if not isinstance(value, dict) or value.get("schemaVersion") != 1:
+        return value
+    switches = value.get("switches")
+    if not isinstance(switches, list):
+        return value
+    migrated = _deepcopy(value)
+    migrated["schemaVersion"] = 2
+    migrated["hardware"] = _deepcopy(DEFAULT_CONTROLLER_HARDWARE)
+    for item in migrated["switches"]:
+        if not isinstance(item, dict):
+            continue
+        pin = item.pop("gpioPin", None)
+        item["input"] = None if pin is None else {"type": "gpio", "pin": pin}
+    return migrated
+
+
+def _validate_hardware_config(value, switch_inputs):
+    """Validate topology and resource ownership before firmware transmission."""
+    if not isinstance(value, dict) or value.get("version") != 1:
+        raise ValueError("controllerConfig.hardware must use version 1")
+    if not isinstance(value.get("boardProfile"), str) or not value["boardProfile"].strip():
+        raise ValueError("controller hardware boardProfile is invalid")
+    if value.get("templateId") not in {"esp32s3-reference", "custom"}:
+        raise ValueError("controller hardware templateId is invalid")
+    modules = value.get("modules")
+    analog_controls = value.get("analogControls")
+    encoders = value.get("encoders")
+    if not isinstance(modules, list) or len(modules) > 4:
+        raise ValueError("controller hardware modules are invalid")
+    if not isinstance(analog_controls, list) or len(analog_controls) > 16:
+        raise ValueError("controller analog controls are invalid")
+    if not isinstance(encoders, list) or len(encoders) > 4:
+        raise ValueError("controller encoders are invalid")
+
+    module_by_id = {}
+    gpio_owners = {}
+    i2c_pins = None
+    i2c_addresses = set()
+
+    def claim_gpio(pin, owner, shared_i2c=False):
+        if not isinstance(pin, int) or isinstance(pin, bool) or not 0 <= pin <= 126:
+            raise ValueError(f"{owner} has an invalid GPIO")
+        previous = gpio_owners.get(pin)
+        if previous is not None and not shared_i2c:
+            raise ValueError(f"GPIO {pin} is used by both {previous} and {owner}")
+        gpio_owners.setdefault(pin, owner)
+
+    for module in modules:
+        if not isinstance(module, dict):
+            raise ValueError("controller module must be an object")
+        module_id = module.get("id")
+        label = module.get("label")
+        driver = module.get("driver")
+        if not isinstance(module_id, str) or not module_id or module_id in module_by_id:
+            raise ValueError("controller module IDs must be unique")
+        if not isinstance(label, str) or not label.strip() or driver not in DRIVER_IDS:
+            raise ValueError(f"controller module {module_id} is invalid")
+        module_by_id[module_id] = module
+        if driver in {"hc4051", "hc4067"}:
+            select_count = 3 if driver == "hc4051" else 4
+            select_pins = module.get("selectPins")
+            if not isinstance(select_pins, list) or len(select_pins) != select_count:
+                raise ValueError(f"{label} select pins are invalid")
+            claim_gpio(module.get("signalPin"), f"{label} signal")
+            for index, pin in enumerate(select_pins):
+                claim_gpio(pin, f"{label} S{index}")
+            enable_pin = module.get("enablePin")
+            if enable_pin is not None:
+                claim_gpio(enable_pin, f"{label} enable")
+        else:
+            sda = module.get("sdaPin")
+            scl = module.get("sclPin")
+            if sda == scl:
+                raise ValueError(f"{label} I2C pins are invalid")
+            if i2c_pins is None:
+                claim_gpio(sda, "I2C SDA")
+                claim_gpio(scl, "I2C SCL")
+                i2c_pins = (sda, scl)
+            elif i2c_pins != (sda, scl):
+                raise ValueError("all I2C modules must share SDA and SCL")
+            address = module.get("address")
+            address_range = range(0x20, 0x28) if driver == "mcp23017" else range(0x48, 0x4C)
+            if address not in address_range or address in i2c_addresses:
+                raise ValueError(f"{label} I2C address is invalid or duplicated")
+            i2c_addresses.add(address)
+
+    claimed_sources = set()
+
+    def validate_source(source, capability, owner, optional=False):
+        if source is None and optional:
+            return None
+        if not isinstance(source, dict):
+            raise ValueError(f"{owner} input is invalid")
+        if source.get("type") == "gpio":
+            pin = source.get("pin")
+            claim_gpio(pin, owner)
+            key = f"gpio:{pin}"
+        elif source.get("type") == "module":
+            module = module_by_id.get(source.get("moduleId"))
+            channel = source.get("channel")
+            if module is None or not isinstance(channel, int) or isinstance(channel, bool):
+                raise ValueError(f"{owner} module input is invalid")
+            driver = module["driver"]
+            channel_count = 8 if driver == "hc4051" else 16 if driver in {"hc4067", "mcp23017"} else 4
+            supported = (
+                driver in {"hc4051", "hc4067"}
+                or capability == "digital" and driver == "mcp23017"
+                or capability == "analog" and driver in {"ads1015", "ads1115"}
+            )
+            if not 0 <= channel < channel_count or not supported:
+                raise ValueError(f"{owner} uses an incompatible module channel")
+            key = f"module:{module['id']}:{channel}"
+        else:
+            raise ValueError(f"{owner} input type is invalid")
+        if key in claimed_sources:
+            raise ValueError(f"physical input {key} is assigned more than once")
+        claimed_sources.add(key)
+        return source
+
+    for index, source in enumerate(switch_inputs):
+        if source is not None:
+            validate_source(source, "digital", f"SW{index + 1}")
+
+    control_ids = set()
+    midi_ccs = set()
+    for control in analog_controls:
+        if not isinstance(control, dict):
+            raise ValueError("analog control must be an object")
+        control_id = control.get("id")
+        label = control.get("label")
+        if not isinstance(control_id, str) or not control_id or control_id in control_ids:
+            raise ValueError("analog control IDs must be unique")
+        if not isinstance(label, str) or not label.strip() or control.get("style") not in {"pot", "slider", "expression"}:
+            raise ValueError(f"analog control {control_id} is invalid")
+        cc = control.get("midiCc")
+        minimum = control.get("calibrationMin")
+        maximum = control.get("calibrationMax")
+        filter_shift = control.get("filterShift")
+        if not isinstance(cc, int) or isinstance(cc, bool) or not 0 <= cc <= 119 or cc in midi_ccs:
+            raise ValueError(f"{label} MIDI CC is invalid or duplicated")
+        if not isinstance(minimum, int) or not isinstance(maximum, int) or not 0 <= minimum < maximum <= 4095:
+            raise ValueError(f"{label} calibration is invalid")
+        if not isinstance(filter_shift, int) or isinstance(filter_shift, bool) or not 0 <= filter_shift <= 7:
+            raise ValueError(f"{label} filter is invalid")
+        if not isinstance(control.get("inverted"), bool):
+            raise ValueError(f"{label} direction is invalid")
+        source = control.get("input")
+        if source is not None:
+            validate_source(source, "analog", label)
+        control_ids.add(control_id)
+        midi_ccs.add(cc)
+
+    for encoder in encoders:
+        if not isinstance(encoder, dict):
+            raise ValueError("encoder must be an object")
+        encoder_id = encoder.get("id")
+        label = encoder.get("label")
+        if not isinstance(encoder_id, str) or not encoder_id or encoder_id in control_ids:
+            raise ValueError("encoder IDs must be unique")
+        if not isinstance(label, str) or not label.strip():
+            raise ValueError(f"encoder {encoder_id} is invalid")
+        validate_source(encoder.get("aInput"), "digital", f"{label} A")
+        validate_source(encoder.get("bInput"), "digital", f"{label} B")
+        validate_source(encoder.get("buttonInput"), "digital", f"{label} button", True)
+        for field in ("turnCc", "buttonCc"):
+            cc = encoder.get(field)
+            if not isinstance(cc, int) or isinstance(cc, bool) or not 0 <= cc <= 119 or cc in midi_ccs:
+                raise ValueError(f"{label} MIDI CC is invalid or duplicated")
+            midi_ccs.add(cc)
+        steps = encoder.get("stepsPerDetent")
+        if not isinstance(steps, int) or isinstance(steps, bool) or not 1 <= steps <= 4:
+            raise ValueError(f"{label} transitions per detent is invalid")
+        if not isinstance(encoder.get("reversed"), bool):
+            raise ValueError(f"{label} direction is invalid")
+        control_ids.add(encoder_id)
+
+    return _deepcopy(value)
+
+
 def _validate_controller_config(value):
-    """Reject obsolete controller formats; detailed UI validation stays in TS."""
+    """Validate current config, accepting only the explicit v0.2 migration."""
     if value is None:
         return None
+    value = _migrate_controller_config(value)
     if not isinstance(value, dict) or value.get("schemaVersion") != STATE_SCHEMA_VERSION:
-        raise ValueError("controllerConfig must use schemaVersion 1")
+        raise ValueError("controllerConfig must use schemaVersion 2")
     switches = value.get("switches")
     if not isinstance(switches, list) or len(switches) > MAX_FOOTSWITCHES:
         raise ValueError("controllerConfig.switches is invalid")
@@ -283,11 +579,14 @@ def _validate_controller_config(value):
         if not isinstance(item, dict):
             raise ValueError("controller switch must be an object")
         hardware = item.get("hardwareSwitch")
-        gpio_pin = item.get("gpioPin")
+        source = item.get("input")
         if not isinstance(hardware, int) or isinstance(hardware, bool) or not 1 <= hardware <= MAX_FOOTSWITCHES:
             raise ValueError("controller switch hardwareSwitch is invalid")
-        if gpio_pin is not None and (not isinstance(gpio_pin, int) or isinstance(gpio_pin, bool) or not 0 <= gpio_pin <= 126):
-            raise ValueError("controller switch gpioPin is invalid")
+        if source is not None and not isinstance(source, dict):
+            raise ValueError("controller switch input is invalid")
+    _validate_hardware_config(value.get("hardware"), [
+        item.get("input") for item in switches
+    ])
     return _deepcopy(value)
 
 
@@ -323,6 +622,7 @@ def _save_persistent_locked():
 
 
 def load_persistent_state():
+    """Restore state and rewrite the one supported previous schema atomically."""
     if not os.path.exists(PERSISTENT_STATE_FILE):
         with state_lock:
             state["controllerConfig"] = _load_factory_controller_config()
@@ -332,17 +632,20 @@ def load_persistent_state():
     try:
         with open(PERSISTENT_STATE_FILE, "r", encoding="utf-8") as file:
             saved = json.load(file)
-        if not isinstance(saved, dict) or saved.get("schemaVersion") != STATE_SCHEMA_VERSION:
+        if not isinstance(saved, dict) or saved.get("schemaVersion") not in {1, STATE_SCHEMA_VERSION}:
             raise ValueError("unsupported MultiFX state schema")
+        migrated_state = saved.get("schemaVersion") == 1
         controller = _validate_controller_config(saved.get("controllerConfig"))
         assignments = _normalize_assignments(saved.get("presetAssignments", {"version": 1, "banks": {}}))
         with state_lock:
             state["controllerConfig"] = controller
             state["presetAssignments"] = assignments
+            if migrated_state:
+                _save_persistent_locked()
         print(f"Restored MultiFX state from {PERSISTENT_STATE_FILE}.", flush=True)
     except Exception as error:
-        # Deliberately do not migrate an old format. Preserve the file for manual
-        # inspection and start with clean current-schema defaults.
+        # Preserve unknown formats for inspection. Only schema 1 immediately
+        # preceding this release has a defined migration above.
         print(f"Ignoring incompatible MultiFX state: {error}", file=sys.stderr, flush=True)
         with state_lock:
             state["controllerConfig"] = _load_factory_controller_config()
@@ -525,7 +828,11 @@ def update_state(patch):
         result = _deepcopy(state)
 
     if controller_changed and result.get("controllerConfig") is not None:
-        push_controller_pin_config(result["controllerConfig"])
+        if (result["controllerHardware"].get("protocolVersion") or 0) >= HARDWARE_PROTOCOL_VERSION:
+            push_controller_hardware_config(result["controllerConfig"])
+        else:
+            # Old firmware continues to receive the compatible direct-GPIO map.
+            push_controller_pin_config(result["controllerConfig"])
     if release_switches_for_learn:
         release_pressed_physical_switches()
     if controller_command is not None:
@@ -555,13 +862,14 @@ def update_state(patch):
 
 
 def controller_pin_pairs(controller_config):
+    """Build the legacy direct-GPIO map for v1-only controller firmware."""
     pins = {switch: 127 for switch in range(1, MAX_FOOTSWITCHES + 1)}
-    if not isinstance(controller_config, dict) or controller_config.get("schemaVersion") != 1:
+    if not isinstance(controller_config, dict):
         return [(switch, pins[switch]) for switch in pins]
     for item in controller_config.get("switches", []):
         hardware = item["hardwareSwitch"]
-        gpio_pin = item["gpioPin"]
-        pins[hardware] = 127 if gpio_pin is None else gpio_pin
+        source = item.get("input")
+        pins[hardware] = source["pin"] if isinstance(source, dict) and source.get("type") == "gpio" else 127
     return [(switch, pins[switch]) for switch in range(1, MAX_FOOTSWITCHES + 1)]
 
 
@@ -584,13 +892,168 @@ def push_controller_pin_config(controller_config, force=False):
         try:
             midi_output_port.send(message)
             last_pushed_pin_signature = signature
-            print("ESP32 GPIO map -> " + ", ".join(
+            print("Legacy GPIO map -> " + ", ".join(
                 f"SW{sw}={'OFF' if pin == 127 else f'GPIO{pin}'}" for sw, pin in signature
             ), flush=True)
             return True
         except Exception as error:
-            print(f"GPIO map send warning: {error}", file=sys.stderr, flush=True)
+            print(f"Legacy GPIO map send warning: {error}", file=sys.stderr, flush=True)
             return False
+
+
+def _split_14bit(value):
+    """Encode a 0..16383 integer as two MIDI-safe seven-bit bytes."""
+    return [value & 0x7F, (value >> 7) & 0x7F]
+
+
+def _wire_source(source, module_indexes, module_by_id):
+    """Encode a durable JSON source as TYPE, INSTANCE, CHANNEL bytes."""
+    if source is None:
+        return [127, 0, 0]
+    if source["type"] == "gpio":
+        return [SOURCE_GPIO, 0, source["pin"]]
+    module_id = source["moduleId"]
+    module = module_by_id[module_id]
+    driver = module["driver"]
+    source_type = (
+        SOURCE_MUX if driver in {"hc4051", "hc4067"}
+        else SOURCE_GPIO_EXPANDER if driver == "mcp23017"
+        else SOURCE_EXTERNAL_ADC
+    )
+    return [source_type, module_indexes[module_id], source["channel"]]
+
+
+def make_hardware_config_messages(controller_config, token):
+    """Serialize one validated controller config into a v3 transaction."""
+    hardware = controller_config["hardware"]
+    modules = hardware["modules"]
+    module_indexes = {
+        module["id"]: index + 1 for index, module in enumerate(modules)
+    }
+    module_by_id = {module["id"]: module for module in modules}
+    active_analogs = [
+        control for control in hardware["analogControls"]
+        if control.get("input") is not None
+    ]
+    encoders = hardware["encoders"]
+    messages = [list(MFX_SYSEX_PREFIX) + [
+        HARDWARE_PROTOCOL_VERSION,
+        CMD_CONFIG_BEGIN,
+        token,
+        len(modules),
+        MAX_FOOTSWITCHES,
+        len(active_analogs),
+        len(encoders),
+    ]]
+
+    for index, module in enumerate(modules, 1):
+        pins = [127] * 6
+        address = 0
+        if module["driver"] in {"hc4051", "hc4067"}:
+            pins[0] = module["signalPin"]
+            for select_index, pin in enumerate(module["selectPins"]):
+                pins[1 + select_index] = pin
+            pins[5] = 127 if module.get("enablePin") is None else module["enablePin"]
+        else:
+            address = module["address"]
+            pins[0] = module["sdaPin"]
+            pins[1] = module["sclPin"]
+        messages.append(list(MFX_SYSEX_PREFIX) + [
+            HARDWARE_PROTOCOL_VERSION,
+            CMD_CONFIG_MODULE,
+            token,
+            index,
+            DRIVER_IDS[module["driver"]],
+            address,
+            *pins,
+        ])
+
+    switch_by_number = {
+        item["hardwareSwitch"]: item for item in controller_config["switches"]
+    }
+    for switch_number in range(1, MAX_FOOTSWITCHES + 1):
+        item = switch_by_number.get(switch_number)
+        source = None if item is None else item.get("input")
+        messages.append(list(MFX_SYSEX_PREFIX) + [
+            HARDWARE_PROTOCOL_VERSION,
+            CMD_CONFIG_SWITCH,
+            token,
+            switch_number,
+            *_wire_source(source, module_indexes, module_by_id),
+            0x03,  # Active-low input with an internal pull-up when supported.
+        ])
+
+    for index, control in enumerate(active_analogs, 1):
+        flags = 0x01 if control["inverted"] else 0
+        messages.append(list(MFX_SYSEX_PREFIX) + [
+            HARDWARE_PROTOCOL_VERSION,
+            CMD_CONFIG_ANALOG,
+            token,
+            index,
+            *_wire_source(control["input"], module_indexes, module_by_id),
+            control["midiCc"],
+            control["filterShift"],
+            *_split_14bit(control["calibrationMin"]),
+            *_split_14bit(control["calibrationMax"]),
+            flags,
+        ])
+
+    for index, encoder in enumerate(encoders, 1):
+        flags = 0x01 if encoder["reversed"] else 0
+        messages.append(list(MFX_SYSEX_PREFIX) + [
+            HARDWARE_PROTOCOL_VERSION,
+            CMD_CONFIG_ENCODER,
+            token,
+            index,
+            *_wire_source(encoder["aInput"], module_indexes, module_by_id),
+            *_wire_source(encoder["bInput"], module_indexes, module_by_id),
+            *_wire_source(encoder.get("buttonInput"), module_indexes, module_by_id),
+            encoder["turnCc"],
+            encoder["buttonCc"],
+            encoder["stepsPerDetent"],
+            flags,
+        ])
+
+    messages.append(list(MFX_SYSEX_PREFIX) + [
+        HARDWARE_PROTOCOL_VERSION,
+        CMD_CONFIG_COMMIT,
+        token,
+    ])
+    return messages
+
+
+def push_controller_hardware_config(controller_config, force=False):
+    """Send, track, and await one all-or-nothing firmware configuration."""
+    global next_hardware_config_token, last_pushed_hardware_signature
+    signature = json.dumps(controller_config, sort_keys=True, separators=(",", ":"))
+    if not force and signature == last_pushed_hardware_signature:
+        return True
+    next_hardware_config_token = (next_hardware_config_token % 126) + 1
+    token = next_hardware_config_token
+    messages = make_hardware_config_messages(controller_config, token)
+    with state_lock:
+        state["controllerHardware"]["apply"] = {
+            "status": "applying",
+            "token": token,
+            "message": "Sending and validating controller hardware…",
+        }
+        state["revision"] += 1
+    for message in messages:
+        if not send_controller_sysex(message, "hardware configuration"):
+            with state_lock:
+                state["controllerHardware"]["apply"] = {
+                    "status": "error",
+                    "token": token,
+                    "message": "Could not send the complete hardware configuration.",
+                }
+                state["revision"] += 1
+            return False
+    last_pushed_hardware_signature = signature
+    print(
+        f"Controller hardware -> {len(messages)} transaction records (token {token}).",
+        flush=True,
+    )
+    return True
 
 
 def send_controller_sysex(data, description):
@@ -611,6 +1074,7 @@ def send_controller_sysex(data, description):
 
 
 def request_controller_capabilities():
+    """Request the compatible v2 capability report used by Learn."""
     return send_controller_sysex(
         list(MFX_SYSEX_PREFIX) + [
             CONTROLLER_PROTOCOL_VERSION,
@@ -620,13 +1084,35 @@ def request_controller_capabilities():
     )
 
 
+def request_controller_profile():
+    """Request the chunked v3 board profile and compiled driver catalog."""
+    return send_controller_sysex(
+        list(MFX_SYSEX_PREFIX) + [
+            HARDWARE_PROTOCOL_VERSION,
+            CMD_PROFILE_REQUEST,
+        ],
+        "hardware profile request",
+    )
+
+
 def set_controller_connected(connected):
+    """Reset transient discovery/apply state on MIDI connect or disconnect."""
+    global profile_report_pending
+    profile_report_pending = None
     with state_lock:
         state["controllerHardware"] = {
             "connected": bool(connected),
             "protocolVersion": None,
+            "boardId": None,
             "boardName": None,
+            "drivers": [],
+            "limits": {"modules": 0, "analogControls": 0, "encoders": 0},
             "inputs": [],
+            "apply": {
+                "status": "idle",
+                "token": None,
+                "message": "",
+            },
         }
         current_learn = state["controllerLearn"]
         if connected:
@@ -677,12 +1163,15 @@ def _handle_capability_report(data):
             inputs.append(descriptor)
 
     with state_lock:
-        state["controllerHardware"] = {
-            "connected": True,
-            "protocolVersion": CONTROLLER_PROTOCOL_VERSION,
-            "boardName": board_name,
-            "inputs": inputs,
-        }
+        hardware = state["controllerHardware"]
+        hardware["connected"] = True
+        hardware["protocolVersion"] = max(
+            hardware.get("protocolVersion") or 0,
+            CONTROLLER_PROTOCOL_VERSION,
+        )
+        hardware["boardName"] = board_name
+        if hardware["protocolVersion"] < HARDWARE_PROTOCOL_VERSION:
+            hardware["inputs"] = inputs
         state["revision"] += 1
     print(
         f"Controller capabilities <- {board_name}: {len(inputs)} inputs.",
@@ -738,9 +1227,139 @@ def _handle_learn_result(data):
     return True
 
 
+def _handle_profile_report(data):
+    """Begin a chunked v3 board-profile report from the controller."""
+    global profile_report_pending
+    if len(data) < 11:
+        return False
+    name_length = data[6]
+    name_start = 7
+    settings_start = name_start + name_length
+    if len(data) != settings_start + 4:
+        return False
+    try:
+        board_name = bytes(data[name_start:settings_start]).decode("ascii").strip()
+    except UnicodeDecodeError:
+        return False
+    if not board_name:
+        board_name = "MultiFX Controller"
+    driver_mask = data[settings_start + 3]
+    drivers = [
+        {"id": driver_id, "label": label}
+        for numeric_id, (driver_id, label) in DRIVER_CATALOG.items()
+        if driver_mask & (1 << (numeric_id - 1))
+    ]
+    board_id = "".join(
+        character.lower() if character.isalnum() else "-"
+        for character in board_name
+    ).strip("-")
+    while "--" in board_id:
+        board_id = board_id.replace("--", "-")
+    profile_report_pending = {
+        "boardId": board_id or "multifx-controller",
+        "boardName": board_name,
+        "drivers": drivers,
+        "limits": {
+            "modules": data[settings_start],
+            "analogControls": data[settings_start + 1],
+            "encoders": data[settings_start + 2],
+        },
+        "inputs": [],
+    }
+    return True
+
+
+def _handle_profile_input(data):
+    """Append one source descriptor to the in-progress v3 profile report."""
+    global profile_report_pending
+    if profile_report_pending is None or len(data) != 6 + SOURCE_DESCRIPTOR_SIZE + 1:
+        return False
+    descriptor = controller_input_descriptor(data[6:13], data[13])
+    if descriptor is not None:
+        profile_report_pending["inputs"].append(descriptor)
+    return True
+
+
+def _handle_profile_end(data):
+    """Publish a complete profile, then apply the saved config on first discovery."""
+    global profile_report_pending
+    if len(data) != 6 or profile_report_pending is None:
+        return False
+    completed = profile_report_pending
+    profile_report_pending = None
+    with state_lock:
+        hardware = state["controllerHardware"]
+        first_v3_report = (hardware.get("protocolVersion") or 0) < HARDWARE_PROTOCOL_VERSION
+        hardware.update({
+            "connected": True,
+            "protocolVersion": HARDWARE_PROTOCOL_VERSION,
+            "boardId": completed["boardId"],
+            "boardName": completed["boardName"],
+            "drivers": completed["drivers"],
+            "limits": completed["limits"],
+            "inputs": completed["inputs"],
+        })
+        controller = _deepcopy(state.get("controllerConfig"))
+        state["revision"] += 1
+    print(
+        f"Controller profile <- {completed['boardName']}: "
+        f"{len(completed['inputs'])} inputs, {len(completed['drivers'])} drivers.",
+        flush=True,
+    )
+    if first_v3_report and controller is not None:
+        push_controller_hardware_config(controller, force=True)
+    return True
+
+
+def _handle_config_result(data):
+    """Publish the firmware's atomic apply acknowledgement or validation error."""
+    if len(data) != 9:
+        return False
+    token, status_code, detail = data[6:9]
+    messages = {
+        0: "Controller hardware applied and stored as last-known-good.",
+        1: "The hardware transaction was incomplete.",
+        2: "A configured source is not compatible with this board or driver.",
+        3: "Two controller functions attempt to own the same GPIO or channel.",
+        4: "A module definition or bus address is invalid.",
+        5: "The controller could not store the validated configuration.",
+    }
+    with state_lock:
+        apply_state = state["controllerHardware"]["apply"]
+        if apply_state.get("token") != token:
+            return True
+        applied = status_code == 0
+        message = messages.get(
+            status_code,
+            f"Controller rejected the hardware configuration (error {status_code}, detail {detail}).",
+        )
+        state["controllerHardware"]["apply"] = {
+            "status": "applied" if applied else "error",
+            "token": token,
+            "message": message,
+        }
+        state["revision"] += 1
+    print(f"Controller hardware <- {message}", flush=True)
+    if applied:
+        request_controller_profile()
+    return True
+
+
 def handle_controller_sysex(raw_data):
+    """Route private controller SysEx while ignoring unrelated MIDI devices."""
     data = list(raw_data)
     if len(data) < 6 or tuple(data[:4]) != MFX_SYSEX_PREFIX:
+        return False
+    if data[4] == HARDWARE_PROTOCOL_VERSION:
+        command = data[5]
+        if command == CMD_PROFILE_REPORT:
+            return _handle_profile_report(data)
+        if command == CMD_PROFILE_INPUT:
+            return _handle_profile_input(data)
+        if command == CMD_PROFILE_END:
+            return _handle_profile_end(data)
+        if command == CMD_CONFIG_RESULT:
+            return _handle_config_result(data)
         return False
     if data[4] != CONTROLLER_PROTOCOL_VERSION:
         return False
@@ -769,7 +1388,7 @@ def _origin_allowed(handler):
 
 
 class RuntimeHandler(BaseHTTPRequestHandler):
-    server_version = "PiPedalMultiFXRuntime/3.0"
+    server_version = "PiPedalMultiFXRuntime/4.0"
 
     def log_message(self, _format, *_args):
         return
@@ -918,11 +1537,32 @@ def handle_encoder_value(value):
     send_key(key_sequence * abs(delta))
 
 
-def handle_control_change(control, value):
+def controller_encoder_role(control):
+    """Map a configured encoder CC to the bridge's navigation role."""
+    with state_lock:
+        controller = state.get("controllerConfig") or {}
+        hardware = controller.get("hardware") or {}
+        encoders = hardware.get("encoders") or []
+        for encoder in encoders:
+            if encoder.get("turnCc") == control:
+                return "turn"
+            if encoder.get("buttonCc") == control:
+                return "button"
+    # Preserve v0.2 behavior while no controller configuration is available.
     if control == ENCODER_CC:
+        return "turn"
+    if control == PUSH_CC:
+        return "button"
+    return None
+
+
+def handle_control_change(control, value):
+    """Translate configured navigation controls and logical switches to keys."""
+    encoder_role = controller_encoder_role(control)
+    if encoder_role == "turn":
         handle_encoder_value(value)
         return
-    if control == PUSH_CC:
+    if encoder_role == "button":
         send_key([f"28:{1 if value >= 64 else 0}"])
         return
     if FIRST_SWITCH_CC <= control <= LAST_SWITCH_CC:
@@ -939,7 +1579,7 @@ def handle_control_change(control, value):
 
 
 def main():
-    global midi_output_port, last_pushed_pin_signature
+    global midi_output_port, last_pushed_pin_signature, last_pushed_hardware_signature
     print("PiPedal MultiFX hardware bridge starting...", flush=True)
     start_runtime_server()
 
@@ -951,11 +1591,13 @@ def main():
                 with midi_output_lock:
                     midi_output_port = output_port
                     last_pushed_pin_signature = None
+                    last_pushed_hardware_signature = None
                 set_controller_connected(True)
                 current = get_state()
                 if current.get("controllerConfig") is not None:
                     push_controller_pin_config(current["controllerConfig"], force=True)
                 request_controller_capabilities()
+                request_controller_profile()
                 print("MultiFX hardware bridge running.", flush=True)
                 for message in input_port:
                     if message.type == "control_change":

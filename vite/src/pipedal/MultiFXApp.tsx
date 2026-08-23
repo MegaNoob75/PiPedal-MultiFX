@@ -57,6 +57,7 @@ export default function MultiFXApp({ onExitToOriginal }: MultiFXAppProps) {
     const [editSubpage, setEditSubpage] = useState<"chain" | "settings">("chain");
     const [editEffectTitle, setEditEffectTitle] = useState<string>();
     const [editBackRequest, setEditBackRequest] = useState(0);
+    const [controllerBackRequest, setControllerBackRequest] = useState(0);
     const [newPresetDraft, setNewPresetDraft] = useState<NewPresetDraft | null>(null);
     const [savePresetDialogOpen, setSavePresetDialogOpen] = useState(false);
     const [newPresetName, setNewPresetName] = useState("");
@@ -237,6 +238,10 @@ export default function MultiFXApp({ onExitToOriginal }: MultiFXAppProps) {
             setEditBackRequest((value) => value + 1);
             return;
         }
+        if (view === "controller") {
+            setControllerBackRequest((value) => value + 1);
+            return;
+        }
         if (view === "edit" && newPresetDraft) {
             void cancelNewPresetDraft();
             return;
@@ -350,7 +355,12 @@ export default function MultiFXApp({ onExitToOriginal }: MultiFXAppProps) {
                         onSystem={() => goTo("systemSettings")}
                     />
                 )}
-                {view === "controller" && <MultiFXControllerSettings />}
+                {view === "controller" && (
+                    <MultiFXControllerSettings
+                        backRequest={controllerBackRequest}
+                        onClose={finishBackNavigation}
+                    />
+                )}
                 {view === "theme" && <MultiFXThemeManager />}
                 {view === "multiFXUI" && <MultiFXUISettings />}
                 {view === "systemSettings" && <MultiFXSettingsView onClose={goBack} />}

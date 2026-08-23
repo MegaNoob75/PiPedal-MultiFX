@@ -11,22 +11,45 @@ export type MultiFXControllerInputCapability = "digital" | "analog";
 
 export type MultiFXControllerInput = {
     id: string;
-    type: "gpio" | "mux" | "externalAdc" | "other";
+    type: "gpio" | "mux" | "gpioExpander" | "externalAdc" | "other";
     instance: number;
     channel: number;
+    moduleId: string | null;
     capabilities: MultiFXControllerInputCapability[];
+    outputCapable: boolean;
     label: string;
     available: boolean;
     reserved: boolean;
+    caution: boolean;
+    recommended: boolean;
     assignedTo: string | null;
     reason: string | null;
+};
+
+export type MultiFXControllerDriver = {
+    id: string;
+    label: string;
+};
+
+export type MultiFXControllerApplyStatus = {
+    status: "idle" | "applying" | "applied" | "error";
+    token: number | null;
+    message: string;
 };
 
 export type MultiFXControllerHardware = {
     connected: boolean;
     protocolVersion: number | null;
+    boardId: string | null;
     boardName: string | null;
+    drivers: MultiFXControllerDriver[];
+    limits: {
+        modules: number;
+        analogControls: number;
+        encoders: number;
+    };
     inputs: MultiFXControllerInput[];
+    apply: MultiFXControllerApplyStatus;
 };
 
 export type MultiFXControllerLearn = {
@@ -108,6 +131,7 @@ function normalizeControllerInput(
     const source = value as Record<string, unknown>;
     const type = source.type === "gpio"
         || source.type === "mux"
+        || source.type === "gpioExpander"
         || source.type === "externalAdc"
         ? source.type
         : "other";
@@ -141,12 +165,18 @@ function normalizeControllerInput(
         type,
         instance,
         channel,
+        moduleId: typeof source.moduleId === "string" && source.moduleId.trim()
+            ? source.moduleId
+            : null,
         capabilities,
+        outputCapable: Boolean(source.outputCapable),
         label: typeof source.label === "string" && source.label.trim()
             ? source.label
             : `${type} ${instance}:${channel}`,
         available: Boolean(source.available),
         reserved: Boolean(source.reserved),
+        caution: Boolean(source.caution),
+        recommended: Boolean(source.recommended),
         assignedTo: typeof source.assignedTo === "string"
             && source.assignedTo.trim()
             ? source.assignedTo
@@ -168,16 +198,55 @@ function normalizeControllerHardware(
             .map(normalizeControllerInput)
             .filter((input): input is MultiFXControllerInput => input !== null)
         : [];
+    const rawDrivers = Array.isArray(source.drivers) ? source.drivers : [];
+    const drivers = rawDrivers.flatMap((value): MultiFXControllerDriver[] => {
+        if (!value || typeof value !== "object") return [];
+        const item = value as Record<string, unknown>;
+        if (typeof item.id !== "string" || !item.id.trim()) return [];
+        return [{
+            id: item.id,
+            label: typeof item.label === "string" && item.label.trim()
+                ? item.label
+                : item.id
+        }];
+    });
+    const rawLimits = source.limits && typeof source.limits === "object"
+        ? source.limits as Record<string, unknown>
+        : {};
+    const rawApply = source.apply && typeof source.apply === "object"
+        ? source.apply as Record<string, unknown>
+        : {};
+    const applyStatuses = new Set(["idle", "applying", "applied", "error"]);
     return {
         connected: Boolean(source.connected),
         protocolVersion: typeof source.protocolVersion === "number"
             && Number.isInteger(source.protocolVersion)
             ? source.protocolVersion
             : null,
+        boardId: typeof source.boardId === "string" && source.boardId.trim()
+            ? source.boardId
+            : null,
         boardName: typeof source.boardName === "string" && source.boardName.trim()
             ? source.boardName
             : null,
-        inputs
+        drivers,
+        limits: {
+            modules: Math.max(0, Math.trunc(Number(rawLimits.modules) || 0)),
+            analogControls: Math.max(0, Math.trunc(Number(rawLimits.analogControls) || 0)),
+            encoders: Math.max(0, Math.trunc(Number(rawLimits.encoders) || 0))
+        },
+        inputs,
+        apply: {
+            status: typeof rawApply.status === "string"
+                && applyStatuses.has(rawApply.status)
+                ? rawApply.status as MultiFXControllerApplyStatus["status"]
+                : "idle",
+            token: typeof rawApply.token === "number"
+                && Number.isInteger(rawApply.token)
+                ? rawApply.token
+                : null,
+            message: typeof rawApply.message === "string" ? rawApply.message : ""
+        }
     };
 }
 
@@ -407,7 +476,8 @@ export async function updateMultiFXRuntimeState(
 }
 
 /* Controller configuration sync is centralized here too. */
-const CONTROLLER_STORAGE_KEY = "pipedal-multifx-controller-config-v2";
+const CONTROLLER_STORAGE_KEY = "pipedal-multifx-controller-config-v3";
+const PREVIOUS_CONTROLLER_STORAGE_KEY = "pipedal-multifx-controller-config-v2";
 const CONTROLLER_CHANGED_EVENT = "multifx-controller-config-changed";
 let applyingRemoteController = false;
 let controllerSyncStarted = false;
@@ -443,6 +513,7 @@ function applyRemoteControllerConfig(value: unknown | null) {
                 CONTROLLER_STORAGE_KEY,
                 JSON.stringify(value, null, 2)
             );
+            window.localStorage.removeItem(PREVIOUS_CONTROLLER_STORAGE_KEY);
         }
         window.dispatchEvent(new Event(CONTROLLER_CHANGED_EVENT));
     } finally {

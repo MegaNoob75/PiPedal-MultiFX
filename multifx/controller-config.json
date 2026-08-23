@@ -1,5 +1,5 @@
 {
-  "schemaVersion": 1,
+  "schemaVersion": 2,
   "columns": 4,
   "rows": 2,
   "gap": 10,
@@ -55,7 +55,7 @@
       "id": "sw1",
       "label": "SW 1",
       "hardwareSwitch": 1,
-      "gpioPin": 6,
+      "input": { "type": "gpio", "pin": 6 },
       "action": {
         "type": "preset",
         "presetIndex": 0
@@ -71,7 +71,7 @@
       "id": "sw2",
       "label": "SW 2",
       "hardwareSwitch": 2,
-      "gpioPin": 7,
+      "input": { "type": "gpio", "pin": 7 },
       "action": {
         "type": "preset",
         "presetIndex": 1
@@ -87,7 +87,7 @@
       "id": "sw3",
       "label": "SW 3",
       "hardwareSwitch": 3,
-      "gpioPin": 15,
+      "input": { "type": "gpio", "pin": 15 },
       "action": {
         "type": "preset",
         "presetIndex": 2
@@ -103,7 +103,7 @@
       "id": "sw4",
       "label": "SW 4",
       "hardwareSwitch": 4,
-      "gpioPin": 16,
+      "input": { "type": "gpio", "pin": 16 },
       "action": {
         "type": "preset",
         "presetIndex": 3
@@ -119,7 +119,7 @@
       "id": "sw5",
       "label": "SW 5",
       "hardwareSwitch": 5,
-      "gpioPin": 1,
+      "input": { "type": "gpio", "pin": 1 },
       "action": {
         "type": "chainBypass"
       },
@@ -134,7 +134,7 @@
       "id": "sw6",
       "label": "SW 6",
       "hardwareSwitch": 6,
-      "gpioPin": 2,
+      "input": { "type": "gpio", "pin": 2 },
       "action": {
         "type": "snapshotMode"
       },
@@ -149,7 +149,7 @@
       "id": "sw7",
       "label": "SW 7",
       "hardwareSwitch": 7,
-      "gpioPin": 4,
+      "input": { "type": "gpio", "pin": 4 },
       "action": {
         "type": "bankUp"
       },
@@ -164,7 +164,7 @@
       "id": "sw8",
       "label": "SW 8",
       "hardwareSwitch": 8,
-      "gpioPin": 5,
+      "input": { "type": "gpio", "pin": 5 },
       "action": {
         "type": "bankDown"
       },
@@ -176,6 +176,71 @@
       "column": 4
     }
   ],
+  "hardware": {
+    "version": 1,
+    "boardProfile": "auto",
+    "templateId": "esp32s3-reference",
+    "modules": [],
+    "analogControls": [
+      {
+        "id": "pot1",
+        "label": "POT 1",
+        "style": "pot",
+        "input": { "type": "gpio", "pin": 8 },
+        "midiCc": 10,
+        "calibrationMin": 0,
+        "calibrationMax": 4095,
+        "inverted": false,
+        "filterShift": 4
+      },
+      {
+        "id": "pot2",
+        "label": "POT 2",
+        "style": "pot",
+        "input": { "type": "gpio", "pin": 12 },
+        "midiCc": 11,
+        "calibrationMin": 0,
+        "calibrationMax": 4095,
+        "inverted": false,
+        "filterShift": 4
+      },
+      {
+        "id": "pot3",
+        "label": "POT 3",
+        "style": "pot",
+        "input": { "type": "gpio", "pin": 13 },
+        "midiCc": 12,
+        "calibrationMin": 0,
+        "calibrationMax": 4095,
+        "inverted": false,
+        "filterShift": 4
+      },
+      {
+        "id": "pot4",
+        "label": "POT 4",
+        "style": "pot",
+        "input": { "type": "gpio", "pin": 11 },
+        "midiCc": 13,
+        "calibrationMin": 0,
+        "calibrationMax": 4095,
+        "inverted": false,
+        "filterShift": 4
+      }
+    ],
+    "encoders": [
+      {
+        "id": "encoder1",
+        "label": "MAIN ENCODER",
+        "aInput": { "type": "gpio", "pin": 18 },
+        "bInput": { "type": "gpio", "pin": 17 },
+        "buttonInput": { "type": "gpio", "pin": 21 },
+        "turnCc": 30,
+        "buttonCc": 31,
+        "stepsPerDetent": 4,
+        "reversed": false
+      }
+    ]
+  },
   "performanceLayout": {
     "mode": "grid",
     "switches": {},

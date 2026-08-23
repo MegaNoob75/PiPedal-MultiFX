@@ -1,11 +1,21 @@
 /*
  * PiPedal-MultiFX controller configuration.
  *
- * This file intentionally supports ONE schema only. During development it is
- * safer to reject an incompatible config than to silently migrate old fields
- * into a different meaning. If validation fails, MultiFX uses the factory
- * configuration from this file/controller-config.json.
+ * Schema 2 separates board-neutral input sources from logical switch actions
+ * and adds the nested physical-hardware configuration. The parser contains one
+ * deliberately narrow migration from the immediately preceding schema 1 so a
+ * v0.2.0 user's layout and assignments survive this hardware upgrade. Older
+ * page/tile formats remain unsupported.
  */
+
+import {
+    ControllerHardwareConfig,
+    ControllerInputSource,
+    controllerInputSourceId,
+    defaultControllerHardwareConfig,
+    isControllerInputSource,
+    validateControllerHardwareConfig
+} from "./ControllerHardwareConfig";
 
 export type ControllerSwitchAction =
     | { type: "preset"; presetIndex: number }
@@ -19,7 +29,7 @@ export interface ControllerSwitchConfig {
     id: string;
     label: string;
     hardwareSwitch: number;
-    gpioPin: number | null;
+    input: ControllerInputSource | null;
     action: ControllerSwitchAction;
     longPressAction: ControllerSwitchAction;
     row: number;
@@ -175,7 +185,7 @@ export interface ControllerSizing {
 }
 
 export interface ControllerLayoutConfig {
-    schemaVersion: 1;
+    schemaVersion: 2;
     columns: number;
     rows: number;
     gap: number;
@@ -185,6 +195,7 @@ export interface ControllerLayoutConfig {
     sizing: ControllerSizing;
     colors: ControllerColors;
     switches: ControllerSwitchConfig[];
+    hardware: ControllerHardwareConfig;
     performanceLayout: ControllerPerformanceLayout;
     layoutDefaults: ControllerLayoutDefaults;
 }
@@ -208,7 +219,8 @@ export const MIN_FREEFORM_HEADER_HEIGHT = 0.09;
 export const CONTROLLER_CONFIG_CHANGED_EVENT =
     "multifx-controller-config-changed";
 
-const CONTROLLER_STORAGE_KEY = "pipedal-multifx-controller-config-v2";
+const CONTROLLER_STORAGE_KEY = "pipedal-multifx-controller-config-v3";
+const PREVIOUS_CONTROLLER_STORAGE_KEY = "pipedal-multifx-controller-config-v2";
 
 // Used only when no capability-aware controller is connected. Connected
 // controllers report their own usable inputs through the runtime bridge.
@@ -285,7 +297,7 @@ function makeDefaultElements(): Record<
 }
 
 export const defaultControllerConfig: ControllerLayoutConfig = {
-    schemaVersion: 1,
+    schemaVersion: 2,
     columns: 4,
     rows: 2,
     gap: 10,
@@ -337,15 +349,16 @@ export const defaultControllerConfig: ControllerLayoutConfig = {
         configErrorText: "#fecaca"
     },
     switches: [
-        { id: "sw1", label: "SW 1", hardwareSwitch: 1, gpioPin: 6,  action: { type: "preset", presetIndex: 0 }, longPressAction: { type: "none", text: "Unused" }, row: 1, column: 1 },
-        { id: "sw2", label: "SW 2", hardwareSwitch: 2, gpioPin: 7,  action: { type: "preset", presetIndex: 1 }, longPressAction: { type: "none", text: "Unused" }, row: 1, column: 2 },
-        { id: "sw3", label: "SW 3", hardwareSwitch: 3, gpioPin: 15, action: { type: "preset", presetIndex: 2 }, longPressAction: { type: "none", text: "Unused" }, row: 1, column: 3 },
-        { id: "sw4", label: "SW 4", hardwareSwitch: 4, gpioPin: 16, action: { type: "preset", presetIndex: 3 }, longPressAction: { type: "none", text: "Unused" }, row: 1, column: 4 },
-        { id: "sw5", label: "SW 5", hardwareSwitch: 5, gpioPin: 1,  action: { type: "chainBypass" }, longPressAction: { type: "none", text: "Unused" }, row: 2, column: 1 },
-        { id: "sw6", label: "SW 6", hardwareSwitch: 6, gpioPin: 2,  action: { type: "snapshotMode" }, longPressAction: { type: "none", text: "Unused" }, row: 2, column: 2 },
-        { id: "sw7", label: "SW 7", hardwareSwitch: 7, gpioPin: 4,  action: { type: "bankUp" }, longPressAction: { type: "none", text: "Unused" }, row: 2, column: 3 },
-        { id: "sw8", label: "SW 8", hardwareSwitch: 8, gpioPin: 5,  action: { type: "bankDown" }, longPressAction: { type: "none", text: "Unused" }, row: 2, column: 4 }
+        { id: "sw1", label: "SW 1", hardwareSwitch: 1, input: { type: "gpio", pin: 6 },  action: { type: "preset", presetIndex: 0 }, longPressAction: { type: "none", text: "Unused" }, row: 1, column: 1 },
+        { id: "sw2", label: "SW 2", hardwareSwitch: 2, input: { type: "gpio", pin: 7 },  action: { type: "preset", presetIndex: 1 }, longPressAction: { type: "none", text: "Unused" }, row: 1, column: 2 },
+        { id: "sw3", label: "SW 3", hardwareSwitch: 3, input: { type: "gpio", pin: 15 }, action: { type: "preset", presetIndex: 2 }, longPressAction: { type: "none", text: "Unused" }, row: 1, column: 3 },
+        { id: "sw4", label: "SW 4", hardwareSwitch: 4, input: { type: "gpio", pin: 16 }, action: { type: "preset", presetIndex: 3 }, longPressAction: { type: "none", text: "Unused" }, row: 1, column: 4 },
+        { id: "sw5", label: "SW 5", hardwareSwitch: 5, input: { type: "gpio", pin: 1 },  action: { type: "chainBypass" }, longPressAction: { type: "none", text: "Unused" }, row: 2, column: 1 },
+        { id: "sw6", label: "SW 6", hardwareSwitch: 6, input: { type: "gpio", pin: 2 },  action: { type: "snapshotMode" }, longPressAction: { type: "none", text: "Unused" }, row: 2, column: 2 },
+        { id: "sw7", label: "SW 7", hardwareSwitch: 7, input: { type: "gpio", pin: 4 },  action: { type: "bankUp" }, longPressAction: { type: "none", text: "Unused" }, row: 2, column: 3 },
+        { id: "sw8", label: "SW 8", hardwareSwitch: 8, input: { type: "gpio", pin: 5 },  action: { type: "bankDown" }, longPressAction: { type: "none", text: "Unused" }, row: 2, column: 4 }
     ],
+    hardware: defaultControllerHardwareConfig,
     performanceLayout: {
         mode: "grid",
         switches: {},
@@ -417,7 +430,7 @@ function validElement(value: unknown, id: ControllerLayoutElementId): value is C
 
 function validateConfig(value: unknown): string | undefined {
     if (!isRecord(value)) return "Controller config must be an object.";
-    if (value.schemaVersion !== 1) return "Unsupported controller config schema. Reset to the current factory configuration.";
+    if (value.schemaVersion !== 2) return "Unsupported controller config schema. Reset to the current factory configuration.";
 
     const integerIn = (input: unknown, min: number, max: number) =>
         typeof input === "number" && Number.isInteger(input) && input >= min && input <= max;
@@ -464,7 +477,7 @@ function validateConfig(value: unknown): string | undefined {
 
     const ids = new Set<string>();
     const hardware = new Set<number>();
-    const pins = new Set<number>();
+    const inputs = new Set<string>();
     const gridCells = new Set<string>();
     const presetIndexes = new Set<number>();
 
@@ -475,14 +488,13 @@ function validateConfig(value: unknown): string | undefined {
         ids.add(raw.id);
         if (!integerIn(raw.hardwareSwitch, 1, MAX_FOOTSWITCHES) || hardware.has(raw.hardwareSwitch as number)) return "Physical switch numbers must be unique.";
         hardware.add(raw.hardwareSwitch as number);
-        if (raw.gpioPin !== null) {
-            // Pin safety belongs to the connected controller firmware. Keeping
-            // the persisted schema board-neutral allows a configuration from a
-            // different supported controller to load before that hardware is
-            // connected.
-            if (!integerIn(raw.gpioPin, 0, 126)) return "Invalid footswitch GPIO.";
-            if (pins.has(raw.gpioPin as number)) return "GPIO pins must be unique.";
-            pins.add(raw.gpioPin as number);
+        if (raw.input !== null) {
+            // Board safety belongs to the connected firmware. The browser only
+            // validates the portable source address and duplicate ownership.
+            if (!isControllerInputSource(raw.input)) return "Invalid footswitch input source.";
+            const inputId = controllerInputSourceId(raw.input)!;
+            if (inputs.has(inputId)) return "Physical input sources must be unique.";
+            inputs.add(inputId);
         }
         if (!validAction(raw.action) || !validAction(raw.longPressAction)) return "Invalid switch action.";
         if (isRecord(raw.action) && raw.action.type === "preset") {
@@ -500,6 +512,16 @@ function validateConfig(value: unknown): string | undefined {
     if (sortedPresetIndexes.some((value, index) => value !== index)) {
         return "Preset switch indexes must be contiguous starting at zero.";
     }
+
+    const hardwareError = validateControllerHardwareConfig(
+        value.hardware,
+        value.switches.map((item) =>
+            isRecord(item) && (item.input === null || isControllerInputSource(item.input))
+                ? item.input
+                : null
+        )
+    );
+    if (hardwareError) return hardwareError;
 
     const layout = value.performanceLayout;
     if (!isRecord(layout)) return "Missing Performance layout.";
@@ -588,7 +610,8 @@ export function ensureControllerPerformanceLayout(
 }
 
 function parseControllerConfig(value: unknown): LoadedControllerConfig {
-    const error = validateConfig(value);
+    const currentValue = migratePreviousControllerConfig(value);
+    const error = validateConfig(currentValue);
     if (error) {
         return {
             config: cloneConfig(defaultControllerConfig),
@@ -598,9 +621,35 @@ function parseControllerConfig(value: unknown): LoadedControllerConfig {
 
     return {
         config: ensureControllerPerformanceLayout(
-            cloneConfig(value as unknown as ControllerLayoutConfig)
+            cloneConfig(currentValue as unknown as ControllerLayoutConfig)
         )
     };
+}
+
+/**
+ * Convert exactly the v0.2.0 schema into schema 2. No page, tile, or other
+ * obsolete representation is recognized here.
+ */
+function migratePreviousControllerConfig(value: unknown): unknown {
+    if (!isRecord(value) || value.schemaVersion !== 1 || !Array.isArray(value.switches)) {
+        return value;
+    }
+    const migrated = structuredClone(value) as Record<string, unknown>;
+    migrated.schemaVersion = 2;
+    migrated.hardware = structuredClone(defaultControllerHardwareConfig);
+    migrated.switches = value.switches.map((raw) => {
+        if (!isRecord(raw)) return raw;
+        const item = { ...raw };
+        const gpioPin = item.gpioPin;
+        delete item.gpioPin;
+        item.input = gpioPin === null
+            ? null
+            : typeof gpioPin === "number" && Number.isInteger(gpioPin)
+                ? { type: "gpio", pin: gpioPin }
+                : null;
+        return item;
+    });
+    return migrated;
 }
 
 export async function loadControllerConfig(): Promise<LoadedControllerConfig> {
@@ -612,6 +661,24 @@ export async function loadControllerConfig(): Promise<LoadedControllerConfig> {
             window.localStorage.removeItem(CONTROLLER_STORAGE_KEY);
         } catch {
             window.localStorage.removeItem(CONTROLLER_STORAGE_KEY);
+        }
+    }
+
+    // Import the immediately preceding release once, then store it under the
+    // new key so subsequent loads only use the current schema.
+    const previous = window.localStorage.getItem(PREVIOUS_CONTROLLER_STORAGE_KEY);
+    if (previous) {
+        try {
+            const parsed = parseControllerConfig(JSON.parse(previous) as unknown);
+            if (!parsed.error) {
+                window.localStorage.setItem(
+                    CONTROLLER_STORAGE_KEY,
+                    JSON.stringify(parsed.config, null, 2)
+                );
+                return parsed;
+            }
+        } catch {
+            // A malformed prior value is ignored; factory config remains safe.
         }
     }
 
@@ -638,12 +705,14 @@ export function saveControllerConfig(
         CONTROLLER_STORAGE_KEY,
         JSON.stringify(parsed.config, null, 2)
     );
+    window.localStorage.removeItem(PREVIOUS_CONTROLLER_STORAGE_KEY);
     window.dispatchEvent(new Event(CONTROLLER_CONFIG_CHANGED_EVENT));
     return parsed;
 }
 
 export function clearSavedControllerConfig(): void {
     window.localStorage.removeItem(CONTROLLER_STORAGE_KEY);
+    window.localStorage.removeItem(PREVIOUS_CONTROLLER_STORAGE_KEY);
     window.dispatchEvent(new Event(CONTROLLER_CONFIG_CHANGED_EVENT));
 }
 

@@ -2,6 +2,7 @@ PiPedal MultiFX — Controller Protocol
 =====================================
 
 Current capability/Learn protocol version: 2
+Current hardware-configuration protocol version: 3
 Maximum logical footswitches: 12
 
 All byte layouts below omit the on-wire F0/F7 SysEx delimiters.
@@ -53,8 +54,9 @@ Capability and Learn messages use a seven-byte, board-neutral descriptor:
 
 TYPE
     00 direct GPIO
-    01 multiplexer channel (reserved for future support)
-    02 external ADC channel (reserved for future support)
+    01 74HC4051/CD74HC4067 multiplexer channel
+    02 ADS1015/ADS1115 external ADC channel
+    03 MCP23017 digital-expander channel
 
 INSTANCE and CHANNEL form a stable source address. For direct GPIO,
 INSTANCE is 0 and CHANNEL is the GPIO number. A future MUX1.CH6 source can be
@@ -130,3 +132,57 @@ conflict all restore normal controller scanning.
 Learn never writes Preferences or the shared persistent state. A successful
 result only fills the Controller Settings draft. The existing version-1 GPIO
 map is changed and persisted only after the user presses SAVE.
+
+Portable hardware envelope v3
+-----------------------------
+Version 3 is additive. It does not replace the known-good version-1 GPIO map
+or version-2 capability/Learn envelope:
+
+    7D 4D 46 58 03 COMMAND ...
+
+All multi-record operations carry a TOKEN in the range 1..126. Values larger
+than seven bits (for example analog calibration endpoints) are encoded as two
+7-bit bytes, least-significant group first.
+
+Firmware catalog (bridge -> controller)
+
+    10                                      PROFILE_REQUEST
+
+Firmware catalog (controller -> bridge)
+
+    11 NAME_LEN NAME... MAX_MODULES MAX_ANALOG MAX_ENCODERS DRIVER_MASK
+    12 TYPE INSTANCE CHANNEL CAPS STATE USAGE USAGE_INDEX REASON
+    13                                      PROFILE_END
+
+PROFILE_INPUT uses the version-2 descriptor fields plus REASON. Additional
+CAPS bits describe output capability. Additional STATE bits identify caution
+and recommended-template pins. DRIVER_MASK advertises the drivers compiled
+into this particular firmware binary. Bits 0..4 identify 74HC4051,
+CD74HC4067, MCP23017, ADS1015, and ADS1115 respectively.
+
+Atomic configuration (bridge -> controller)
+
+    20 TOKEN MODULES SWITCHES ANALOGS ENCODERS          CONFIG_BEGIN
+    21 TOKEN INDEX DRIVER ADDRESS P0 P1 P2 P3 P4 P5     CONFIG_MODULE
+    22 TOKEN SW TYPE INSTANCE CHANNEL FLAGS             CONFIG_SWITCH
+    23 TOKEN INDEX TYPE INSTANCE CHANNEL CC FILTER
+             MIN_LO MIN_HI MAX_LO MAX_HI FLAGS           CONFIG_ANALOG
+    24 TOKEN INDEX A_TYPE A_INSTANCE A_CHANNEL
+             B_TYPE B_INSTANCE B_CHANNEL
+             BTN_TYPE BTN_INSTANCE BTN_CHANNEL
+             TURN_CC BUTTON_CC STEPS FLAGS               CONFIG_ENCODER
+    25 TOKEN                                             CONFIG_COMMIT
+
+PIN value 127 and source TYPE value 127 mean unused. Module indexes are
+transaction-local (1..MAX_MODULES); the durable JSON configuration uses stable
+text module IDs instead.
+
+Configuration result (controller -> bridge)
+
+    26 TOKEN STATUS DETAIL
+
+STATUS is 00 for applied or a non-zero validation/storage error. The firmware
+validates record counts, source capabilities, module addresses and GPIO
+ownership before swapping the temporary configuration into service. A failed
+transaction leaves both the running and last-known-good stored configuration
+unchanged.

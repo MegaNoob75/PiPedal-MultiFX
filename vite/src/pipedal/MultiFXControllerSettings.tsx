@@ -12,7 +12,6 @@ import {
     ControllerSwitchConfig,
     defaultControllerConfig,
     ensureControllerPerformanceLayout,
-    FALLBACK_FOOTSWITCH_GPIO_PINS,
     loadControllerConfig,
     MAX_CONTROLLER_COLUMNS,
     MAX_CONTROLLER_ROWS,
@@ -25,6 +24,12 @@ import {
     MIN_LONG_PRESS_MS,
     saveControllerConfig
 } from "./ControllerConfig";
+import {
+    ControllerHardwareConfig,
+    ControllerInputSource,
+    controllerInputSourceId
+} from "./ControllerHardwareConfig";
+import MultiFXControllerHardwareSettings from "./MultiFXControllerHardwareSettings";
 import {
     getLatestMultiFXRuntimeState,
     MultiFXControllerHardware,
@@ -1304,7 +1309,15 @@ function BufferedIntegerInput(props: {
 }
 
 
-export default function MultiFXControllerSettings() {
+interface MultiFXControllerSettingsProps {
+    backRequest?: number;
+    onClose?: () => void;
+}
+
+export default function MultiFXControllerSettings({
+    backRequest = 0,
+    onClose
+}: MultiFXControllerSettingsProps) {
     const [config, setConfig] = useState<ControllerLayoutConfig>(
         () => ensureControllerPerformanceLayout(
             cloneConfig(defaultControllerConfig)
@@ -1313,14 +1326,34 @@ export default function MultiFXControllerSettings() {
     const [selectedId, setSelectedId] = useState("");
     const [message, setMessage] = useState("");
     const [layoutEditorOpen, setLayoutEditorOpen] = useState(false);
+    const [hardwareEditorOpen, setHardwareEditorOpen] = useState(false);
+    const handledBackRequest = useRef(backRequest);
+
+    // Give nested Controller pages first chance to handle the shell's Back
+    // button. Only Back from the main Controller page returns to Settings.
+    useEffect(() => {
+        if (backRequest === handledBackRequest.current) return;
+        handledBackRequest.current = backRequest;
+        if (layoutEditorOpen) {
+            setLayoutEditorOpen(false);
+        } else if (hardwareEditorOpen) {
+            setHardwareEditorOpen(false);
+        } else {
+            onClose?.();
+        }
+    }, [backRequest, hardwareEditorOpen, layoutEditorOpen, onClose]);
     const latestRuntime = getLatestMultiFXRuntimeState();
     const [controllerHardware, setControllerHardware] =
         useState<MultiFXControllerHardware>(() =>
             latestRuntime?.controllerHardware ?? {
                 connected: false,
                 protocolVersion: null,
+                boardId: null,
                 boardName: null,
-                inputs: []
+                drivers: [],
+                limits: { modules: 0, analogControls: 0, encoders: 0 },
+                inputs: [],
+                apply: { status: "idle", token: null, message: "" }
             }
         );
     const [controllerLearn, setControllerLearn] =
@@ -1336,7 +1369,7 @@ export default function MultiFXControllerSettings() {
     const [learnSession, setLearnSession] =
         useState<SwitchLearnSession | null>(null);
     const learnSessionRef = useRef<SwitchLearnSession | null>(null);
-    const [learnFeedback, setLearnFeedback] = useState("");
+    const [, setLearnFeedback] = useState("");
 
     useEffect(() => {
         let cancelled = false;
@@ -1377,37 +1410,13 @@ export default function MultiFXControllerSettings() {
 
     const selected = config.switches.find((item) => item.id === selectedId);
 
-    const usedPins = useMemo(
-        () => new Set(
-            config.switches
-                .filter((item) => item.id !== selectedId)
-                .map((item) => item.gpioPin)
-                .filter((value): value is number => value !== null)
-        ),
-        [config.switches, selectedId]
-    );
-
     const reportedDigitalInputs = useMemo(
         () => controllerHardware.inputs.filter((input) =>
-            input.type === "gpio"
-            && input.capabilities.includes("digital")
+            input.capabilities.includes("digital")
             && !input.reserved
         ),
         [controllerHardware.inputs]
     );
-
-    const gpioPinOptions = useMemo(() => {
-        const reportedPins = reportedDigitalInputs
-            .map((input) => input.channel);
-        const pins = controllerHardware.protocolVersion === 2
-            && reportedDigitalInputs.length > 0
-            ? reportedPins
-            : [...FALLBACK_FOOTSWITCH_GPIO_PINS];
-        if (selected?.gpioPin !== null && selected?.gpioPin !== undefined) {
-            pins.push(selected.gpioPin);
-        }
-        return [...new Set(pins)].sort((left, right) => left - right);
-    }, [controllerHardware.protocolVersion, reportedDigitalInputs, selected]);
 
     const cancelLearn = useCallback(async (
         session: SwitchLearnSession | null = learnSession,
@@ -1432,40 +1441,6 @@ export default function MultiFXControllerSettings() {
         }
     }, [learnSession]);
 
-    const startLearn = async () => {
-        if (!selected) return;
-        if (learnSession) {
-            await cancelLearn(learnSession, "");
-        }
-        setLearnFeedback("Starting switch Learn…");
-        try {
-            const runtime = await updateMultiFXRuntimeState({
-                controllerLearnStart: {
-                    capability: "digital",
-                    hardwareSwitch: selected.hardwareSwitch
-                }
-            });
-            const token = runtime.controllerLearn.token;
-            if (runtime.controllerLearn.status !== "waiting" || token === null) {
-                setLearnFeedback(
-                    runtime.controllerLearn.message
-                    || "The controller could not start Learn."
-                );
-                return;
-            }
-            const session = { token, switchId: selected.id };
-            learnSessionRef.current = session;
-            setLearnSession(session);
-            setLearnFeedback("Waiting for switch press…");
-        } catch (error) {
-            setLearnFeedback(
-                error instanceof Error
-                    ? error.message
-                    : "The controller could not start Learn."
-            );
-        }
-    };
-
     useEffect(() => {
         if (!learnSession) {
             return;
@@ -1488,30 +1463,41 @@ export default function MultiFXControllerSettings() {
 
         if (controllerLearn.status === "learned") {
             const input = controllerLearn.input;
-            if (input?.type !== "gpio") {
+            let learnedSource: ControllerInputSource | null = null;
+            if (input?.type === "gpio") {
+                learnedSource = { type: "gpio", pin: input.channel };
+            } else if (input?.moduleId) {
+                learnedSource = {
+                    type: "module",
+                    moduleId: input.moduleId,
+                    channel: input.channel
+                };
+            }
+            if (!learnedSource) {
                 setLearnFeedback(
-                    `Learned ${input?.label ?? "an input"}, but Phase 1 switches require direct GPIO.`
+                    `Learned ${input?.label ?? "an input"}, but its source address was not recognized.`
                 );
             } else {
+                const learnedId = controllerInputSourceId(learnedSource);
                 const conflict = config.switches.find((item) =>
                     item.id !== learnSession.switchId
-                    && item.gpioPin === input.channel
+                    && controllerInputSourceId(item.input) === learnedId
                 );
                 if (conflict) {
                     setLearnFeedback(
-                        `${input.label} is already assigned to ${conflict.label}. No change was made.`
+                        `${input?.label ?? "That input"} is already assigned to ${conflict.label}. No change was made.`
                     );
                 } else {
                     setConfig((current) => ensureControllerPerformanceLayout({
                         ...current,
                         switches: current.switches.map((item) =>
                             item.id === learnSession.switchId
-                                ? { ...item, gpioPin: input.channel }
+                                ? { ...item, input: learnedSource }
                                 : item
                         )
                     }));
                     setLearnFeedback(
-                        `${input.label} learned. Press SAVE to persist it.`
+                        `${input?.label ?? "Input"} learned. Press SAVE to persist it.`
                     );
                 }
             }
@@ -1520,7 +1506,7 @@ export default function MultiFXControllerSettings() {
                 controllerLearn.message
                 || (controllerLearn.status === "conflict"
                     ? "That input is already assigned. No change was made."
-                    : "Learn ended without changing the GPIO.")
+                    : "Learn ended without changing the physical input.")
             );
         }
 
@@ -1725,8 +1711,8 @@ export default function MultiFXControllerSettings() {
             label: `SW ${hardwareSwitch}`,
             hardwareSwitch,
             // A new switch starts as a virtual/on-screen control. The user can
-            // optionally bind it to an ESP32 GPIO later.
-            gpioPin: null,
+            // optionally bind any compatible board or module input later.
+            input: null,
             action: { type: "none", text: "Unused" },
             longPressAction: { type: "none", text: "Unused" },
             row,
@@ -1849,16 +1835,21 @@ export default function MultiFXControllerSettings() {
         if (learnSession) {
             await cancelLearn(learnSession, "");
         }
-        if (controllerHardware.protocolVersion === 2) {
+        if ((controllerHardware.protocolVersion ?? 0) >= 2) {
             const safePins = new Set(
-                reportedDigitalInputs.map((input) => input.channel)
+                reportedDigitalInputs
+                    .filter((input) => input.type === "gpio")
+                    .map((input) => input.channel)
             );
             const unsupported = config.switches.find((item) =>
-                item.gpioPin !== null && !safePins.has(item.gpioPin)
+                item.input?.type === "gpio" && !safePins.has(item.input.pin)
             );
             if (unsupported) {
+                const pin = unsupported.input?.type === "gpio"
+                    ? unsupported.input.pin
+                    : "?";
                 setMessage(
-                    `${unsupported.label} uses GPIO ${unsupported.gpioPin}, which ${controllerHardware.boardName ?? "the connected controller"} did not report as a safe digital input.`
+                    `${unsupported.label} uses GPIO ${pin}, which ${controllerHardware.boardName ?? "the connected controller"} did not report as a compatible digital input.`
                 );
                 return;
             }
@@ -1875,8 +1866,32 @@ export default function MultiFXControllerSettings() {
 
         setConfig(cloneConfig(result.config));
         setMessage(
-            "Saved. Switch actions, optional GPIO wiring and layout are shared with the MultiFX runtime."
+            "Saved. Switch actions, physical inputs, hardware, and layout are shared with the MultiFX runtime."
         );
+    };
+
+    /**
+     * Merge the Hardware page's private draft into the still-mounted logical
+     * controller draft and persist the complete configuration atomically.
+     */
+    const saveHardware = async (
+        hardware: ControllerHardwareConfig,
+        switchInputs: readonly (ControllerInputSource | null)[]
+    ): Promise<string | undefined> => {
+        if (learnSession) await cancelLearn(learnSession, "");
+        const switches = config.switches.map((item, index) => ({
+            ...item,
+            input: switchInputs[index] ?? null
+        }));
+        const combined = normalizeControllerPresetSlots({
+            ...config,
+            switches,
+            hardware
+        });
+        const result = saveControllerConfig(combined);
+        if (result.error) return result.error;
+        setConfig(cloneConfig(result.config));
+        return "Saved changes.";
     };
 
     const restore = async () => {
@@ -1892,17 +1907,33 @@ export default function MultiFXControllerSettings() {
         setMessage("Restored controller-config.json / built-in defaults.");
     };
 
+    if (hardwareEditorOpen) {
+        return (
+            <MultiFXControllerHardwareSettings
+                controllerDraft={config}
+                reportedHardware={controllerHardware}
+                onCancel={() => setHardwareEditorOpen(false)}
+                onSave={saveHardware}
+            />
+        );
+    }
+
     return (
         <div style={screenStyle}>
             <div style={headerStyle}>
                 <div>
                     <div style={titleStyle}>CONTROLLER SETTINGS</div>
                     <div style={subtitleStyle}>
-                        Define on-screen controls and optional GPIO wiring here. Arrange them only inside the separate Layout editor.
+                        Define what each switch does and arrange the on-screen controller. Physical wiring is configured in Hardware Setup.
                     </div>
                 </div>
-                <div style={counterStyle}>
-                    {config.switches.length} / {MAX_FOOTSWITCHES}
+                <div style={{ display: "flex", alignItems: "center", gap: 9 }}>
+                    <div style={counterStyle}>
+                        {config.switches.length} / {MAX_FOOTSWITCHES}
+                    </div>
+                    <button type="button" onClick={() => setHardwareEditorOpen(true)} style={layoutButtonStyle}>
+                        HARDWARE SETUP
+                    </button>
                 </div>
             </div>
 
@@ -1914,9 +1945,8 @@ export default function MultiFXControllerSettings() {
                         <div>
                             <div style={sectionTitleStyle}>SWITCHES</div>
                             <div style={helpStyle}>
-                                Select a logical switch to define its actions. GPIO is optional;
-                                leave it Not connected for a mouse/touch-only control.
-                                Screen position is edited separately.
+                                Select a logical switch to define its short-press and long-press actions.
+                                Screen position is edited separately in Layout.
                             </div>
                         </div>
 
@@ -1951,15 +1981,10 @@ export default function MultiFXControllerSettings() {
                                     <span style={switchActionStyle}>
                                         {actionLabel(item.action)}
                                     </span>
-                                    <span style={switchGpioStyle}>
-                                        {config.performanceLayout.mode === "freeform"
-                                            && config.performanceLayout.unplacedSwitchIds.includes(item.id)
-                                                ? "UNPLACED • "
-                                                : ""}
-                                        {item.gpioPin === null
-                                            ? "GPIO: not connected"
-                                            : `GPIO ${item.gpioPin}`}
-                                    </span>
+                                    {config.performanceLayout.mode === "freeform"
+                                        && config.performanceLayout.unplacedSwitchIds.includes(item.id) && (
+                                            <span style={switchGpioStyle}>UNPLACED</span>
+                                        )}
                                 </button>
                             );
                         })}
@@ -2007,101 +2032,6 @@ export default function MultiFXControllerSettings() {
                                     style={inputStyle}
                                 />
                             </label>
-
-                            <label style={fieldLabelStyle}>
-                                GPIO pin
-                                <div style={gpioLearnRowStyle}>
-                                    <select
-                                        value={
-                                            selected.gpioPin === null
-                                                ? ""
-                                                : String(selected.gpioPin)
-                                        }
-                                        onChange={(event) => {
-                                            if (learnSession) {
-                                                void cancelLearn(learnSession, "");
-                                            }
-                                            const value = event.target.value;
-                                            updateSelected({
-                                                gpioPin:
-                                                    value === ""
-                                                        ? null
-                                                        : Number(value)
-                                            });
-                                        }}
-                                        style={{ ...inputStyle, flex: "1 1 auto" }}
-                                    >
-                                        <option value="">Not connected</option>
-                                        {gpioPinOptions.map((pin) => (
-                                            <option
-                                                key={pin}
-                                                value={pin}
-                                                disabled={usedPins.has(pin)}
-                                            >
-                                                GPIO {pin}
-                                                {usedPins.has(pin) ? " — in use" : ""}
-                                            </option>
-                                        ))}
-                                    </select>
-                                    <button
-                                        type="button"
-                                        onClick={() => {
-                                            if (learnSession?.switchId === selected.id) {
-                                                void cancelLearn(learnSession);
-                                            } else {
-                                                void startLearn();
-                                            }
-                                        }}
-                                        disabled={
-                                            (
-                                                learnSession !== null
-                                                && learnSession.switchId !== selected.id
-                                            )
-                                            || (
-                                                learnSession === null
-                                                && (
-                                                    !controllerHardware.connected
-                                                    || controllerHardware.protocolVersion !== 2
-                                                    || reportedDigitalInputs.length === 0
-                                                )
-                                            )
-                                        }
-                                        style={{
-                                            ...learnButtonStyle,
-                                            opacity:
-                                                learnSession === null && (
-                                                    !controllerHardware.connected
-                                                    || controllerHardware.protocolVersion !== 2
-                                                    || reportedDigitalInputs.length === 0
-                                                )
-                                                    ? 0.55
-                                                    : 1
-                                        }}
-                                    >
-                                        {learnSession?.switchId === selected.id
-                                            ? "CANCEL"
-                                            : "LEARN"}
-                                    </button>
-                                </div>
-                            </label>
-
-                            <div style={noteStyle}>
-                                GPIO is optional. “Not connected” keeps this switch
-                                available on-screen for mouse/touch while disabling
-                                only its physical GPIO mapping.
-                                <div style={controllerStatusStyle}>
-                                    {controllerHardware.connected
-                                        ? controllerHardware.protocolVersion === 2
-                                            ? `${controllerHardware.boardName ?? "Controller"} connected • ${reportedDigitalInputs.length} digital inputs reported`
-                                            : "Controller connected, but capability discovery is unavailable. Manual selection remains available."
-                                        : "Controller not connected. Manual selection remains available."}
-                                </div>
-                                {learnFeedback && (
-                                    <div style={learnFeedbackStyle}>
-                                        {learnFeedback}
-                                    </div>
-                                )}
-                            </div>
 
                             <ActionEditor
                                 title="SHORT PRESS"
@@ -5094,33 +5024,6 @@ const inputStyle: React.CSSProperties = {
     border: `1px solid ${MFX_COLORS.border}`,
     background: MFX_COLORS.background,
     color: MFX_COLORS.text
-};
-
-const gpioLearnRowStyle: React.CSSProperties = {
-    display: "flex",
-    alignItems: "stretch",
-    gap: 7
-};
-
-const learnButtonStyle: React.CSSProperties = {
-    ...buttonStyle,
-    flex: "0 0 auto",
-    minWidth: 78,
-    padding: "7px 9px",
-    fontSize: "0.7rem",
-    letterSpacing: "0.04em"
-};
-
-const controllerStatusStyle: React.CSSProperties = {
-    marginTop: 7,
-    color: MFX_COLORS.muted,
-    fontWeight: 750
-};
-
-const learnFeedbackStyle: React.CSSProperties = {
-    marginTop: 7,
-    color: MFX_COLORS.cyanText,
-    fontWeight: 900
 };
 
 const noteStyle: React.CSSProperties = {

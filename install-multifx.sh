@@ -35,8 +35,9 @@ done
 find "${REACT_DIR}" -mindepth 1 -maxdepth 1 -exec rm -rf -- {} +
 cp -a "${SCRIPT_DIR}/react/." "${REACT_DIR}/"
 
-# Current-schema-only policy: do not keep/migrate an older controller config.
-# Save one human-readable backup, then install the factory config for this build.
+# Keep a human-readable backup before installing the schema-2 factory file.
+# The runtime state performs only the documented v0.2.0 -> schema-2 migration;
+# obsolete page/tile formats are deliberately not interpreted.
 if [ -f "${CONTROLLER_CONFIG}" ]; then
     cp -a "${CONTROLLER_CONFIG}" "${MFX_STATE_DIR}/controller-config.pre-current-schema.json"
 fi

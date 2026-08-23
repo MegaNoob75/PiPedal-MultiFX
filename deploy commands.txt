@@ -1,0 +1,14 @@
+deploy commands just front end
+
+sudo rm -rf /etc/pipedal/react/*
+sudo cp -a /home/ross/dist/. /etc/pipedal/react/
+sudo systemctl restart pipedal-encoder.service
+sudo systemctl restart pipedald
+sudo systemctl status pipedal-encoder.service --no-pager
+sudo env YDOTOOL_SOCKET=/tmp/.ydotool_socket ydotool key 29:1 19:1 19:0 29:0
+
+------------------------------------------------------------------------------------
+encoder bridge deploy
+
+sudo cp /home/ross/pipedal_encoder_bridge.py /usr/local/lib/pipedal-multifx/pipedal_encoder_bridge.py
+sudo chmod 755 /usr/local/lib/pipedal-multifx/pipedal_encoder_bridge.py
