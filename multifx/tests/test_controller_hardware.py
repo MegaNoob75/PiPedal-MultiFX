@@ -35,6 +35,21 @@ class ControllerHardwareConfigTests(unittest.TestCase):
         validated = bridge._validate_controller_config(self.factory_config())
         self.assertEqual(validated["schemaVersion"], 2)
         self.assertEqual(len(validated["hardware"]["analogControls"]), 4)
+        self.assertEqual(
+            validated["hardware"]["analogControls"][0]["midiHysteresis"],
+            2,
+        )
+
+    def test_existing_schema_2_gets_balanced_analog_response(self):
+        """Configs saved before v4 retain the two-step noise behavior."""
+        config = self.factory_config()
+        for control in config["hardware"]["analogControls"]:
+            control.pop("midiHysteresis")
+        validated = bridge._validate_controller_config(config)
+        self.assertTrue(all(
+            control["midiHysteresis"] == 2
+            for control in validated["hardware"]["analogControls"]
+        ))
 
     def test_v02_gpio_switch_migrates_once(self):
         """Only the immediately previous gpioPin field becomes a source."""
@@ -66,6 +81,12 @@ class ControllerHardwareConfigTests(unittest.TestCase):
         self.assertEqual(len(messages[-1]), 7)
         self.assertEqual(messages[0][5], bridge.CMD_CONFIG_BEGIN)
         self.assertEqual(messages[-1][5], bridge.CMD_CONFIG_COMMIT)
+        analog_records = [
+            message for message in messages
+            if message[5] == bridge.CMD_CONFIG_ANALOG
+        ]
+        self.assertTrue(all(len(message) == 19 for message in analog_records))
+        self.assertTrue(all(message[-1] == 2 for message in analog_records))
         self.assertTrue(all(
             0 <= byte < 128 for message in messages for byte in message
         ))

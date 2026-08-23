@@ -191,7 +191,8 @@
         "calibrationMin": 0,
         "calibrationMax": 4095,
         "inverted": false,
-        "filterShift": 4
+        "filterShift": 4,
+        "midiHysteresis": 2
       },
       {
         "id": "pot2",
@@ -202,7 +203,8 @@
         "calibrationMin": 0,
         "calibrationMax": 4095,
         "inverted": false,
-        "filterShift": 4
+        "filterShift": 4,
+        "midiHysteresis": 2
       },
       {
         "id": "pot3",
@@ -213,7 +215,8 @@
         "calibrationMin": 0,
         "calibrationMax": 4095,
         "inverted": false,
-        "filterShift": 4
+        "filterShift": 4,
+        "midiHysteresis": 2
       },
       {
         "id": "pot4",
@@ -224,7 +227,8 @@
         "calibrationMin": 0,
         "calibrationMax": 4095,
         "inverted": false,
-        "filterShift": 4
+        "filterShift": 4,
+        "midiHysteresis": 2
       }
     ],
     "encoders": [

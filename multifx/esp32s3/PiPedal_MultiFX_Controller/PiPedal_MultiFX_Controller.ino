@@ -10,6 +10,7 @@
  *   v1  direct-GPIO logical switch map (retained for older bridges)
  *   v2  capability discovery and transient digital/analog Learn
  *   v3  board/driver catalog and atomic portable hardware configuration
+ *   v4  configurable response threshold for each analog control
  */
 
 #include <Control_Surface.h>
@@ -109,15 +110,15 @@ void sendV2Capabilities() {
     midi.sendSysEx(message);
 }
 
-/** Send one short v3 source chunk, avoiding any incoming SysEx buffer limit. */
-void sendV3ProfileInput(const mfx::SourceDescriptor &descriptor) {
+/** Send one short hardware-profile chunk, avoiding SysEx buffer limits. */
+void sendHardwareProfileInput(const mfx::SourceDescriptor &descriptor) {
     constexpr size_t MESSAGE_SIZE = 1 + 4 + 1 + 1
         + SOURCE_DESCRIPTOR_SIZE + 1 + 1;
     uint8_t message[MESSAGE_SIZE] = {};
     size_t offset = 0;
     message[offset++] = 0xF0;
     for (uint8_t byte : SYSEX_PREFIX) message[offset++] = byte;
-    message[offset++] = mfx::PROTOCOL_V3;
+    message[offset++] = mfx::PROTOCOL_V4;
     message[offset++] = mfx::CMD_PROFILE_INPUT;
     writeDescriptor(&message[offset], descriptor);
     offset += SOURCE_DESCRIPTOR_SIZE;
@@ -130,14 +131,14 @@ void sendV3ProfileInput(const mfx::SourceDescriptor &descriptor) {
  * Report board identity, compiled driver catalog, direct pins, and every
  * channel supplied by the currently configured expansion modules.
  */
-void sendV3Profile() {
+void sendHardwareProfile() {
     constexpr size_t NAME_LENGTH = sizeof(mfx::BOARD_NAME) - 1;
     constexpr size_t BEGIN_SIZE = 1 + 4 + 1 + 1 + 1 + NAME_LENGTH + 4 + 1;
     uint8_t beginMessage[BEGIN_SIZE] = {};
     size_t offset = 0;
     beginMessage[offset++] = 0xF0;
     for (uint8_t byte : SYSEX_PREFIX) beginMessage[offset++] = byte;
-    beginMessage[offset++] = mfx::PROTOCOL_V3;
+    beginMessage[offset++] = mfx::PROTOCOL_V4;
     beginMessage[offset++] = mfx::CMD_PROFILE_REPORT;
     beginMessage[offset++] = NAME_LENGTH;
     for (size_t index = 0; index < NAME_LENGTH; ++index) {
@@ -153,7 +154,7 @@ void sendV3Profile() {
     for (const auto &pin : mfx::BOARD_PINS) {
         mfx::SourceDescriptor descriptor;
         if (controller.describeSource({mfx::SOURCE_GPIO, 0, pin.pin}, descriptor)) {
-            sendV3ProfileInput(descriptor);
+            sendHardwareProfileInput(descriptor);
         }
     }
 
@@ -175,13 +176,13 @@ void sendV3Profile() {
             mfx::SourceDescriptor descriptor;
             if (controller.describeSource(
                 {sourceType, static_cast<uint8_t>(moduleIndex + 1), channel}, descriptor
-            )) sendV3ProfileInput(descriptor);
+            )) sendHardwareProfileInput(descriptor);
         }
     }
 
     uint8_t endMessage[] = {
         0xF0, 0x7D, 0x4D, 0x46, 0x58,
-        mfx::PROTOCOL_V3, mfx::CMD_PROFILE_END, 0xF7,
+        mfx::PROTOCOL_V4, mfx::CMD_PROFILE_END, 0xF7,
     };
     midi.sendSysEx(endMessage);
 }
@@ -190,7 +191,7 @@ void sendV3Profile() {
 void sendConfigResult(uint8_t token, uint8_t status, uint8_t detail) {
     uint8_t message[] = {
         0xF0, 0x7D, 0x4D, 0x46, 0x58,
-        mfx::PROTOCOL_V3, mfx::CMD_CONFIG_RESULT,
+        mfx::PROTOCOL_V4, mfx::CMD_CONFIG_RESULT,
         token, status, detail, 0xF7,
     };
     midi.sendSysEx(message);
@@ -242,7 +243,7 @@ bool handleV1(const uint8_t *data, uint16_t start, uint16_t end) {
     const bool applied = controller.applyLegacySwitchPins(pins);
     if (applied) {
         sendV2Capabilities();
-        sendV3Profile();
+        sendHardwareProfile();
     }
     return applied;
 }
@@ -266,12 +267,12 @@ bool handleV2(const uint8_t *data, uint16_t start, uint16_t end) {
     return false;
 }
 
-/** Parse one record of the version-3 profile/configuration protocol. */
-bool handleV3(const uint8_t *data, uint16_t start, uint16_t end) {
-    if (data[start + 4] != mfx::PROTOCOL_V3) return false;
+/** Parse one record of the current portable hardware protocol. */
+bool handleHardwareProtocol(const uint8_t *data, uint16_t start, uint16_t end) {
+    if (data[start + 4] != mfx::PROTOCOL_V4) return false;
     const uint8_t command = data[start + 5];
     if (command == mfx::CMD_PROFILE_REQUEST && end - start == 6) {
-        sendV3Profile();
+        sendHardwareProfile();
         return true;
     }
     if (command == mfx::CMD_CONFIG_BEGIN && end - start == 11) {
@@ -297,7 +298,7 @@ bool handleV3(const uint8_t *data, uint16_t start, uint16_t end) {
         controller.setTransactionSwitch(data[start + 6], data[start + 7], item);
         return true;
     }
-    if (command == mfx::CMD_CONFIG_ANALOG && end - start == 18) {
+    if (command == mfx::CMD_CONFIG_ANALOG && end - start == 19) {
         mfx::AnalogConfig item;
         item.source = readSource(data, start + 8);
         item.midiCc = data[start + 11];
@@ -305,6 +306,7 @@ bool handleV3(const uint8_t *data, uint16_t start, uint16_t end) {
         item.calibrationMin = read14(data, start + 13);
         item.calibrationMax = read14(data, start + 15);
         item.flags = data[start + 17];
+        item.midiHysteresis = data[start + 18];
         controller.setTransactionAnalog(data[start + 6], data[start + 7], item);
         return true;
     }
@@ -327,7 +329,7 @@ bool handleV3(const uint8_t *data, uint16_t start, uint16_t end) {
         sendConfigResult(token, result, detail);
         if (result == mfx::CONFIG_APPLIED) {
             sendV2Capabilities();
-            sendV3Profile();
+            sendHardwareProfile();
         }
         return true;
     }
@@ -343,7 +345,7 @@ struct MultiFXMidiCallbacks : MIDI_Callbacks {
         if (!unwrapMessage(sysex, data, start, end)) return;
         if (handleV1(data, start, end)) return;
         if (handleV2(data, start, end)) return;
-        handleV3(data, start, end);
+        handleHardwareProtocol(data, start, end);
     }
 } midiCallbacks;
 

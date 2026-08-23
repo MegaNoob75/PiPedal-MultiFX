@@ -558,7 +558,8 @@ export default function MultiFXControllerHardwareSettings({
                 calibrationMin: 0,
                 calibrationMax: 4095,
                 inverted: false,
-                filterShift: 4
+                filterShift: 4,
+                midiHysteresis: 2
             }]
         });
     };
@@ -876,6 +877,8 @@ export default function MultiFXControllerHardwareSettings({
                                 onChange={(value) => replaceAnalog(index, { ...control, calibrationMax: value })} />
                             <NumberField label="Noise filtering (0–7)" value={control.filterShift} min={0} max={7}
                                 onChange={(value) => replaceAnalog(index, { ...control, filterShift: value })} />
+                            <NumberField label="Response (1 fine–4 stable)" value={control.midiHysteresis} min={1} max={4}
+                                onChange={(value) => replaceAnalog(index, { ...control, midiHysteresis: value })} />
                             <CheckboxField label="Reverse direction" checked={control.inverted}
                                 onChange={(value) => replaceAnalog(index, { ...control, inverted: value })} />
                         </div>

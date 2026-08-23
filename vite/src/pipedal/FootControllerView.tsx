@@ -41,6 +41,7 @@ import {
     subscribeMultiFXRuntimeState,
     updateMultiFXRuntimeState
 } from "./MultiFXRuntimeSync";
+import MultiFXParameterFeedback from "./MultiFXParameterFeedback";
 import {
     prepareBasePresetForWrite,
     restoreChainBypassForSafeWrite
@@ -3169,6 +3170,10 @@ export default function FootControllerView({
                     </div>
                 </div>
             )}
+
+            <MultiFXParameterFeedback
+                controllerConfig={controllerConfig}
+            />
 
             {statusToast && createPortal(
                 <div role="status" style={{ position: "fixed", left: "50%", top: 8, transform: "translateX(-50%)", zIndex: 2147483647, padding: "8px 14px", borderRadius: 10, border: `1px solid ${colors.activeSwitchBorder}`, background: colors.headerBackground, color: colors.activePresetNameText, fontWeight: 900 }}>{statusToast}</div>,

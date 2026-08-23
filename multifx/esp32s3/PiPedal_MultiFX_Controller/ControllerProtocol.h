@@ -27,6 +27,7 @@ constexpr uint8_t CMD_LEARN_CANCEL = 0x05;
 constexpr uint8_t CMD_LEARN_RESULT = 0x06;
 
 constexpr uint8_t PROTOCOL_V3 = 3;
+constexpr uint8_t PROTOCOL_V4 = 4;
 constexpr uint8_t CMD_PROFILE_REQUEST = 0x10;
 constexpr uint8_t CMD_PROFILE_REPORT = 0x11;
 constexpr uint8_t CMD_PROFILE_INPUT = 0x12;
@@ -101,7 +102,7 @@ enum ConfigStatus : uint8_t {
     CONFIG_STORAGE_ERROR = 5,
 };
 
-/** Compact physical source address used inside firmware and on protocol v3. */
+/** Compact physical source address used inside firmware and on hardware protocols. */
 struct SourceAddress {
     uint8_t type = SOURCE_DISABLED;
     uint8_t instance = 0;
@@ -134,6 +135,8 @@ struct AnalogConfig {
     uint16_t calibrationMin = 0;
     uint16_t calibrationMax = 4095;
     uint8_t flags = 0;
+    // 1 is finest response; larger values trade resolution for noise immunity.
+    uint8_t midiHysteresis = 2;
 };
 
 /** Source and MIDI behavior for one quadrature encoder and optional button. */
@@ -163,9 +166,9 @@ struct ControllerConfig {
 };
 
 constexpr uint32_t CONFIG_MAGIC = 0x4D465833UL; // ASCII-ish "MFX3"
-constexpr uint8_t STORED_CONFIG_VERSION = 1;
+constexpr uint8_t STORED_CONFIG_VERSION = 2;
 
-/** One descriptor returned by v2 Learn and the chunked v3 profile. */
+/** One descriptor returned by v2 Learn and the chunked hardware profile. */
 struct SourceDescriptor {
     SourceAddress source;
     uint8_t capabilities = 0;

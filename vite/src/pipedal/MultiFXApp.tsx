@@ -54,7 +54,9 @@ export default function MultiFXApp({ onExitToOriginal }: MultiFXAppProps) {
     const [menuOpen, setMenuOpen] = useState(false);
     const historyRef = useRef<MultiFXView[]>([]);
 
-    const [editSubpage, setEditSubpage] = useState<"chain" | "settings">("chain");
+    const [editSubpage, setEditSubpage] = useState<
+        "chain" | "settings" | "bindings"
+    >("chain");
     const [editEffectTitle, setEditEffectTitle] = useState<string>();
     const [editBackRequest, setEditBackRequest] = useState(0);
     const [controllerBackRequest, setControllerBackRequest] = useState(0);
@@ -234,7 +236,7 @@ export default function MultiFXApp({ onExitToOriginal }: MultiFXAppProps) {
             setSnapshotCancelRequest((value) => value + 1);
             return;
         }
-        if (view === "edit" && editSubpage === "settings") {
+        if (view === "edit" && editSubpage !== "chain") {
             setEditBackRequest((value) => value + 1);
             return;
         }
@@ -266,9 +268,11 @@ export default function MultiFXApp({ onExitToOriginal }: MultiFXAppProps) {
     const viewTitle: Record<MultiFXView, string> = {
         performance: performanceSnapshotMode ? "SNAPSHOTS" : "PERFORMANCE",
         banks: "BANKS / PRESETS",
-        edit: editSubpage === "settings"
-            ? `EFFECT — ${editEffectTitle ?? "SETTINGS"}`
-            : "PRESET EDITOR",
+        edit: editSubpage === "bindings"
+            ? `BIND — ${editEffectTitle ?? "EFFECT"}`
+            : editSubpage === "settings"
+                ? `EFFECT — ${editEffectTitle ?? "SETTINGS"}`
+                : "PRESET EDITOR",
         settings: "SETTINGS",
         controller: "CONTROLLER",
         theme: "THEME",

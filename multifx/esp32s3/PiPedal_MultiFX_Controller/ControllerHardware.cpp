@@ -23,6 +23,7 @@ constexpr uint8_t ANALOG_LEARN_CONFIRMATIONS = 4;
 constexpr uint32_t MODULE_REFRESH_US = 1000;
 constexpr uint32_t ANALOG_SAMPLE_US = 1000;
 constexpr uint16_t ANALOG_SEND_DEADBAND = 8;
+constexpr uint16_t ANALOG_ENDPOINT_SNAP_RAW = 32;
 constexpr uint8_t SWITCH_ACTIVE_LOW = 0x01;
 constexpr uint8_t SWITCH_PULLUP = 0x02;
 constexpr uint8_t ANALOG_INVERTED = 0x01;
@@ -175,6 +176,7 @@ void ControllerHardware::makeFactoryConfig(ControllerConfig &config) const {
         analog.filterShift = 4;
         analog.calibrationMin = 0;
         analog.calibrationMax = 4095;
+        analog.midiHysteresis = 2;
     }
 
     config.encoderCount = 1;
@@ -347,6 +349,8 @@ uint8_t ControllerHardware::validateConfig(
         if (!analog.source.enabled() || analog.midiCc >= 120
             || midiCcClaimed[analog.midiCc]
             || analog.filterShift > 7
+            || analog.midiHysteresis < 1
+            || analog.midiHysteresis > 4
             || analog.calibrationMin >= analog.calibrationMax
             || analog.calibrationMax > 4095) {
             detail = index + 1;
@@ -643,7 +647,8 @@ void ControllerHardware::updateAnalogControls() {
     const AnalogConfig &analog = active_.analogs[index];
     AnalogRuntime &runtime = analogRuntime_[index];
     const uint16_t raw = readAnalogSource(analog.source);
-    if (!runtime.initialized) {
+    const bool firstSample = !runtime.initialized;
+    if (firstSample) {
         runtime.initialized = true;
         runtime.filtered = raw;
         runtime.lastSentRaw = raw;
@@ -655,20 +660,52 @@ void ControllerHardware::updateAnalogControls() {
     }
 
     const uint16_t filtered = constrain(runtime.filtered, 0, 4095);
-    const uint16_t clamped = constrain(
-        filtered, analog.calibrationMin, analog.calibrationMax
+    const uint16_t calibrationSpan =
+        analog.calibrationMax - analog.calibrationMin;
+    const uint16_t endpointSnap = min(
+        ANALOG_ENDPOINT_SNAP_RAW,
+        static_cast<uint16_t>(calibrationSpan / 8)
     );
+
+    // Integer low-pass filtering can settle a few counts below its target.
+    // Use the unsmoothed sample only near calibrated endpoints so a control
+    // can still emit exact MIDI 0/127 without weakening filtering elsewhere.
+    uint16_t clamped;
+    if (raw <= analog.calibrationMin + endpointSnap) {
+        clamped = analog.calibrationMin;
+    } else if (raw >= analog.calibrationMax - endpointSnap) {
+        clamped = analog.calibrationMax;
+    } else {
+        clamped = constrain(
+            filtered, analog.calibrationMin, analog.calibrationMax
+        );
+    }
     uint8_t midiValue = static_cast<uint8_t>(
         (static_cast<uint32_t>(clamped - analog.calibrationMin) * 127U)
-        / (analog.calibrationMax - analog.calibrationMin)
+        / calibrationSpan
     );
     if (analog.flags & ANALOG_INVERTED) midiValue = 127 - midiValue;
-    if (!runtime.initialized) return;
+
+    // Establish a quiet baseline after boot/configuration. Without this, ADC
+    // settling noise can emit the current pot position even though the user
+    // has not touched the control.
+    if (firstSample) {
+        runtime.lastMidi = midiValue;
+        runtime.lastSentRaw = filtered;
+        return;
+    }
     if (midiValue == runtime.lastMidi) return;
     const uint16_t movement = filtered > runtime.lastSentRaw
         ? filtered - runtime.lastSentRaw
         : runtime.lastSentRaw - filtered;
     if (movement < ANALOG_SEND_DEADBAND) return;
+
+    const uint8_t midiMovement = midiValue > runtime.lastMidi
+        ? midiValue - runtime.lastMidi
+        : runtime.lastMidi - midiValue;
+    const bool atEndpoint = midiValue == 0 || midiValue == 127;
+    if (!atEndpoint && midiMovement < analog.midiHysteresis) return;
+
     runtime.lastMidi = midiValue;
     runtime.lastSentRaw = filtered;
     if (sendCc_) sendCc_(analog.midiCc, midiValue);

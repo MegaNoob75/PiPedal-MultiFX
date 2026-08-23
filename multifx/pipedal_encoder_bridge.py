@@ -85,9 +85,10 @@ CMD_LEARN_START = 0x04
 CMD_LEARN_CANCEL = 0x05
 CMD_LEARN_RESULT = 0x06
 
-# Protocol v3 adds firmware catalog discovery and an atomic multi-message
-# hardware transaction without changing the known-good v1/v2 envelopes.
-HARDWARE_PROTOCOL_VERSION = 3
+# Protocol v4 extends the v3 atomic hardware transaction with a per-analog
+# MIDI response threshold. The v1/v2 capability and Learn envelopes remain
+# unchanged so discovery and learning stay backward compatible.
+HARDWARE_PROTOCOL_VERSION = 4
 CMD_PROFILE_REQUEST = 0x10
 CMD_PROFILE_REPORT = 0x11
 CMD_PROFILE_INPUT = 0x12
@@ -370,6 +371,7 @@ DEFAULT_CONTROLLER_HARDWARE = {
             "calibrationMax": 4095,
             "inverted": False,
             "filterShift": 4,
+            "midiHysteresis": 2,
         }
         for index, pin in enumerate((8, 12, 13, 11))
     ],
@@ -388,20 +390,34 @@ DEFAULT_CONTROLLER_HARDWARE = {
 
 
 def _migrate_controller_config(value):
-    """Migrate only the immediately preceding schema-1 GPIO representation."""
-    if not isinstance(value, dict) or value.get("schemaVersion") != 1:
+    """Migrate schema 1 and default fields added safely within schema 2."""
+    if not isinstance(value, dict):
         return value
-    switches = value.get("switches")
-    if not isinstance(switches, list):
-        return value
-    migrated = _deepcopy(value)
-    migrated["schemaVersion"] = 2
-    migrated["hardware"] = _deepcopy(DEFAULT_CONTROLLER_HARDWARE)
-    for item in migrated["switches"]:
-        if not isinstance(item, dict):
-            continue
-        pin = item.pop("gpioPin", None)
-        item["input"] = None if pin is None else {"type": "gpio", "pin": pin}
+    if value.get("schemaVersion") == 1:
+        switches = value.get("switches")
+        if not isinstance(switches, list):
+            return value
+        migrated = _deepcopy(value)
+        migrated["schemaVersion"] = 2
+        migrated["hardware"] = _deepcopy(DEFAULT_CONTROLLER_HARDWARE)
+        for item in migrated["switches"]:
+            if not isinstance(item, dict):
+                continue
+            pin = item.pop("gpioPin", None)
+            item["input"] = None if pin is None else {"type": "gpio", "pin": pin}
+    else:
+        migrated = value
+
+    hardware = migrated.get("hardware")
+    controls = hardware.get("analogControls") if isinstance(hardware, dict) else None
+    if isinstance(controls, list) and any(
+        isinstance(control, dict) and "midiHysteresis" not in control
+        for control in controls
+    ):
+        migrated = _deepcopy(migrated)
+        for control in migrated["hardware"]["analogControls"]:
+            if isinstance(control, dict):
+                control.setdefault("midiHysteresis", 2)
     return migrated
 
 
@@ -527,12 +543,15 @@ def _validate_hardware_config(value, switch_inputs):
         minimum = control.get("calibrationMin")
         maximum = control.get("calibrationMax")
         filter_shift = control.get("filterShift")
+        midi_hysteresis = control.get("midiHysteresis")
         if not isinstance(cc, int) or isinstance(cc, bool) or not 0 <= cc <= 119 or cc in midi_ccs:
             raise ValueError(f"{label} MIDI CC is invalid or duplicated")
         if not isinstance(minimum, int) or not isinstance(maximum, int) or not 0 <= minimum < maximum <= 4095:
             raise ValueError(f"{label} calibration is invalid")
         if not isinstance(filter_shift, int) or isinstance(filter_shift, bool) or not 0 <= filter_shift <= 7:
             raise ValueError(f"{label} filter is invalid")
+        if not isinstance(midi_hysteresis, int) or isinstance(midi_hysteresis, bool) or not 1 <= midi_hysteresis <= 4:
+            raise ValueError(f"{label} analog response is invalid")
         if not isinstance(control.get("inverted"), bool):
             raise ValueError(f"{label} direction is invalid")
         source = control.get("input")
@@ -637,8 +656,12 @@ def load_persistent_state():
             saved = json.load(file)
         if not isinstance(saved, dict) or saved.get("schemaVersion") not in {1, STATE_SCHEMA_VERSION}:
             raise ValueError("unsupported MultiFX state schema")
-        migrated_state = saved.get("schemaVersion") == 1
-        controller = _validate_controller_config(saved.get("controllerConfig"))
+        raw_controller = saved.get("controllerConfig")
+        controller = _validate_controller_config(raw_controller)
+        migrated_state = (
+            saved.get("schemaVersion") == 1
+            or controller != raw_controller
+        )
         assignments = _normalize_assignments(saved.get("presetAssignments", {"version": 1, "banks": {}}))
         with state_lock:
             state["controllerConfig"] = controller
@@ -949,7 +972,7 @@ def _wire_source(source, module_indexes, module_by_id):
 
 
 def make_hardware_config_messages(controller_config, token):
-    """Serialize one validated controller config into a v3 transaction."""
+    """Serialize one validated controller config into a v4 transaction."""
     hardware = controller_config["hardware"]
     modules = hardware["modules"]
     module_indexes = {
@@ -1021,6 +1044,7 @@ def make_hardware_config_messages(controller_config, token):
             *_split_14bit(control["calibrationMin"]),
             *_split_14bit(control["calibrationMax"]),
             flags,
+            control["midiHysteresis"],
         ])
 
     for index, encoder in enumerate(encoders, 1):
@@ -1264,7 +1288,7 @@ def _handle_learn_result(data):
 
 
 def _handle_profile_report(data):
-    """Begin a chunked v3 board-profile report from the controller."""
+    """Begin a chunked portable board-profile report from the controller."""
     global profile_report_pending
     if len(data) < 11:
         return False
@@ -1306,7 +1330,7 @@ def _handle_profile_report(data):
 
 
 def _handle_profile_input(data):
-    """Append one source descriptor to the in-progress v3 profile report."""
+    """Append one source descriptor to the in-progress hardware profile."""
     global profile_report_pending
     if profile_report_pending is None or len(data) != 6 + SOURCE_DESCRIPTOR_SIZE + 1:
         return False
@@ -1325,7 +1349,10 @@ def _handle_profile_end(data):
     profile_report_pending = None
     with state_lock:
         hardware = state["controllerHardware"]
-        first_v3_report = (hardware.get("protocolVersion") or 0) < HARDWARE_PROTOCOL_VERSION
+        first_hardware_report = (
+            (hardware.get("protocolVersion") or 0)
+            < HARDWARE_PROTOCOL_VERSION
+        )
         hardware.update({
             "connected": True,
             "protocolVersion": HARDWARE_PROTOCOL_VERSION,
@@ -1342,7 +1369,7 @@ def _handle_profile_end(data):
         f"{len(completed['inputs'])} inputs, {len(completed['drivers'])} drivers.",
         flush=True,
     )
-    if first_v3_report and controller is not None:
+    if first_hardware_report and controller is not None:
         push_controller_hardware_config(controller, force=True)
     return True
 

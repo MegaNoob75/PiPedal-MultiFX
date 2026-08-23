@@ -610,7 +610,9 @@ export function ensureControllerPerformanceLayout(
 }
 
 function parseControllerConfig(value: unknown): LoadedControllerConfig {
-    const currentValue = migratePreviousControllerConfig(value);
+    const currentValue = addCurrentHardwareDefaults(
+        migratePreviousControllerConfig(value)
+    );
     const error = validateConfig(currentValue);
     if (error) {
         return {
@@ -624,6 +626,32 @@ function parseControllerConfig(value: unknown): LoadedControllerConfig {
             cloneConfig(currentValue as unknown as ControllerLayoutConfig)
         )
     };
+}
+
+/**
+ * Add fields introduced within schema 2 without discarding a user's hardware
+ * layout. This narrow default lets configurations saved before adjustable
+ * analog response load with the same balanced two-step behavior.
+ */
+function addCurrentHardwareDefaults(value: unknown): unknown {
+    if (!isRecord(value) || value.schemaVersion !== 2
+        || !isRecord(value.hardware)
+        || !Array.isArray(value.hardware.analogControls)) {
+        return value;
+    }
+    const needsUpgrade = value.hardware.analogControls.some(
+        (control) => isRecord(control) && control.midiHysteresis === undefined
+    );
+    if (!needsUpgrade) return value;
+
+    const upgraded = structuredClone(value) as Record<string, unknown>;
+    const hardware = upgraded.hardware as Record<string, unknown>;
+    hardware.analogControls = (hardware.analogControls as unknown[]).map(
+        (control) => isRecord(control) && control.midiHysteresis === undefined
+            ? { ...control, midiHysteresis: 2 }
+            : control
+    );
+    return upgraded;
 }
 
 /**

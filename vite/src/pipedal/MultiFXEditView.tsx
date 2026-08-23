@@ -5,6 +5,7 @@ import { GetControlView } from "./ControlViewFactory";
 import { Pedalboard, PedalboardItem } from "./Pedalboard";
 import { PiPedalModelFactory } from "./PiPedalModel";
 import MultiFXPluginBrowser from "./MultiFXPluginBrowser";
+import MultiFXParameterBindingView from "./MultiFXParameterBindingView";
 import { MFX_COLORS, MFX_HEADER_HEIGHT } from "./MultiFXTheme";
 import "./MultiFXEffectControls.css";
 
@@ -12,7 +13,7 @@ type BrowserTarget =
     | { kind: "replace"; instanceId: number }
     | { kind: "insert"; referenceId: number; append: boolean };
 
-type EditPage = "chain" | "settings";
+type EditPage = "chain" | "settings" | "bindings";
 
 interface DragCandidate {
     pointerId: number;
@@ -157,7 +158,7 @@ export default function MultiFXEditView({
     useEffect(() => {
         onPageChange?.(
             editPage,
-            editPage === "settings" && selectedItem
+            editPage !== "chain" && selectedItem
                 ? displayName(selectedItem)
                 : undefined
         );
@@ -176,7 +177,9 @@ export default function MultiFXEditView({
 
         previousBackRequestRef.current = backRequest;
 
-        if (editPage === "settings") {
+        if (editPage === "bindings") {
+            setEditPage("settings");
+        } else if (editPage === "settings") {
             setEditPage("chain");
         }
     }, [backRequest, editPage]);
@@ -816,6 +819,30 @@ export default function MultiFXEditView({
         );
     }
 
+    if (
+        editPage === "bindings"
+        && selectedItem
+        && selectedUiPlugin
+        && !selectedItem.isSyntheticItem()
+        && !selectedItem.isEmpty()
+        && !selectedItem.isSplit()
+    ) {
+        return (
+            <div className="multifx-edit-screen" style={screenStyle}>
+                <EffectSettingsHeader
+                    title={displayName(selectedItem)}
+                    draftMode={draftMode}
+                    subtitle="Controller bindings · current preset"
+                />
+                <MultiFXParameterBindingView
+                    item={selectedItem}
+                    uiPlugin={selectedUiPlugin}
+                    draftMode={draftMode}
+                />
+            </div>
+        );
+    }
+
     if (editPage === "settings" && selectedItem) {
         return (
             <div className="multifx-edit-screen" style={screenStyle}>
@@ -930,6 +957,16 @@ export default function MultiFXEditView({
                                     danger
                                     onClick={deleteSelected}
                                 />
+
+                                {selectedUiPlugin
+                                    && !selectedItem.isSplit() && (
+                                        <SmallButton
+                                            text="BIND"
+                                            cyan
+                                            onClick={() =>
+                                                setEditPage("bindings")}
+                                        />
+                                    )}
                             </>
                         )}
                 </div>

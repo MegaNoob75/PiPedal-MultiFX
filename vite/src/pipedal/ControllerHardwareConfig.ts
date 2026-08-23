@@ -58,6 +58,8 @@ export interface ControllerAnalogControlConfig {
     calibrationMax: number;
     inverted: boolean;
     filterShift: number;
+    /** Minimum accumulated 7-bit MIDI steps before firmware reports movement. */
+    midiHysteresis: number;
 }
 
 /** A quadrature encoder uses two digital inputs and an optional push input. */
@@ -180,7 +182,8 @@ function makeDefaultAnalog(
         calibrationMin: 0,
         calibrationMax: 4095,
         inverted: false,
-        filterShift: 4
+        filterShift: 4,
+        midiHysteresis: 2
     };
 }
 
@@ -467,7 +470,10 @@ export function validateControllerHardwareConfig(
             return `${rawControl.label} has an invalid calibration range.`;
         }
         if (typeof rawControl.inverted !== "boolean"
-            || !integerIn(rawControl.filterShift, 0, 7)) return `${rawControl.label} has invalid filtering settings.`;
+            || !integerIn(rawControl.filterShift, 0, 7)
+            || !integerIn(rawControl.midiHysteresis, 1, 4)) {
+            return `${rawControl.label} has invalid filtering or response settings.`;
+        }
         controlIds.add(rawControl.id);
         const owner = rawControl.label as string;
         const source = rawControl.input as ControllerInputSource | null;
