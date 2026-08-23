@@ -4,6 +4,7 @@
 Responsibilities are deliberately narrow:
   * translate the MultiFX USB-MIDI controller into ydotool key events;
   * send the current GPIO map to the ESP32 over the private SysEx protocol;
+  * discover controller hardware capabilities and coordinate transient Learn;
   * expose one small HTTP state service on port 8877.
 
 Persistence contract
@@ -74,6 +75,39 @@ FACTORY_CONTROLLER_CONFIG_FILE = "/etc/pipedal/controller-config.json"
 STATE_SCHEMA_VERSION = 1
 RUNTIME_VERSION = 3
 
+MFX_SYSEX_PREFIX = (0x7D, 0x4D, 0x46, 0x58)
+CONTROLLER_PROTOCOL_VERSION = 2
+CMD_CAPABILITY_REQUEST = 0x02
+CMD_CAPABILITY_REPORT = 0x03
+CMD_LEARN_START = 0x04
+CMD_LEARN_CANCEL = 0x05
+CMD_LEARN_RESULT = 0x06
+
+CAPABILITY_DIGITAL = 0x01
+CAPABILITY_ANALOG = 0x02
+SOURCE_GPIO = 0x00
+SOURCE_MUX = 0x01
+SOURCE_EXTERNAL_ADC = 0x02
+SOURCE_DESCRIPTOR_SIZE = 7
+
+INPUT_AVAILABLE = 0x01
+INPUT_RESERVED = 0x02
+INPUT_ASSIGNED = 0x04
+
+USAGE_NONE = 0x00
+USAGE_SWITCH = 0x01
+USAGE_ENCODER = 0x02
+USAGE_ENCODER_PUSH = 0x03
+USAGE_POT = 0x04
+USAGE_USB = 0x05
+USAGE_SYSTEM = 0x06
+
+LEARN_STATUS_LEARNED = 0x00
+LEARN_STATUS_TIMEOUT = 0x01
+LEARN_STATUS_CANCELLED = 0x02
+LEARN_STATUS_ERROR = 0x03
+LEARN_STATUS_CONFLICT = 0x04
+
 # Optional systemd override, e.g. MULTIFX_MIDI_DEVICE_HINT="PiPedal Control Surface".
 MIDI_DEVICE_HINT = os.environ.get("MULTIFX_MIDI_DEVICE_HINT", "").strip().lower()
 
@@ -90,15 +124,103 @@ state = {
     "chainBypassEnabledStates": {},
     "controllerConfig": None,
     "presetAssignments": {"version": 1, "banks": {}},
+    "controllerHardware": {
+        "connected": False,
+        "protocolVersion": None,
+        "boardName": None,
+        "inputs": [],
+    },
+    "controllerLearn": {
+        "status": "idle",
+        "token": None,
+        "capability": None,
+        "input": None,
+        "message": "",
+    },
 }
 
 midi_output_lock = threading.Lock()
 midi_output_port = None
 last_pushed_pin_signature = None
+next_controller_learn_token = 0
+physical_switch_lock = threading.Lock()
+pressed_physical_switches = set()
 
 
 def _deepcopy(value):
     return json.loads(json.dumps(value))
+
+
+def _capability_names(flags):
+    result = []
+    if flags & CAPABILITY_DIGITAL:
+        result.append("digital")
+    if flags & CAPABILITY_ANALOG:
+        result.append("analog")
+    return result
+
+
+def _source_identity(source_type, instance, channel):
+    if source_type == SOURCE_GPIO:
+        return "gpio", f"gpio:{instance}:{channel}", f"GPIO {channel}"
+    if source_type == SOURCE_MUX:
+        return "mux", f"mux:{instance}:{channel}", f"MUX{instance}.CH{channel}"
+    if source_type == SOURCE_EXTERNAL_ADC:
+        return (
+            "externalAdc",
+            f"externalAdc:{instance}:{channel}",
+            f"External ADC {instance}.CH{channel}",
+        )
+    return "other", f"other:{source_type}:{instance}:{channel}", f"Input {source_type}:{instance}:{channel}"
+
+
+def _usage_description(usage, usage_index):
+    if usage == USAGE_SWITCH:
+        return f"SW{usage_index}", f"Assigned to logical switch SW{usage_index}"
+    if usage == USAGE_ENCODER:
+        part = "A" if usage_index == 1 else "B" if usage_index == 2 else str(usage_index)
+        return f"Encoder {part}", f"Reserved for encoder {part}"
+    if usage == USAGE_ENCODER_PUSH:
+        return "Encoder push", "Reserved for encoder push"
+    if usage == USAGE_POT:
+        return f"Pot {usage_index}", f"Reserved for Pot {usage_index}"
+    if usage == USAGE_USB:
+        return "USB MIDI", "Reserved for native USB MIDI"
+    if usage == USAGE_SYSTEM:
+        return "Controller system", "Reserved by the controller firmware"
+    return None, None
+
+
+def controller_input_descriptor(raw):
+    if len(raw) != SOURCE_DESCRIPTOR_SIZE:
+        return None
+    source_type, instance, channel, capability_flags, state_flags, usage, usage_index = raw
+    capabilities = _capability_names(capability_flags)
+    if not capabilities:
+        return None
+    input_type, stable_id, label = _source_identity(source_type, instance, channel)
+    assigned_to, usage_reason = _usage_description(usage, usage_index)
+    reserved = bool(state_flags & INPUT_RESERVED)
+    assigned = bool(state_flags & INPUT_ASSIGNED)
+    available = bool(state_flags & INPUT_AVAILABLE) and not reserved and not assigned
+    reason = usage_reason
+    if reason is None and reserved:
+        reason = "Reserved by the controller profile"
+    elif reason is None and assigned:
+        reason = "Already assigned"
+
+    return {
+        "id": stable_id,
+        "type": input_type,
+        "instance": instance,
+        "channel": channel,
+        "capabilities": capabilities,
+        "label": label,
+        "available": available,
+        "reserved": reserved,
+        "assignedTo": assigned_to,
+        "reason": reason,
+    }
 
 
 def _valid_nonnegative_int(value):
@@ -243,11 +365,15 @@ def _assignment_bank_locked(bank_id, create=False):
 
 
 def update_state(patch):
+    global next_controller_learn_token
     if not isinstance(patch, dict):
         raise ValueError("JSON object required")
 
     persistent_changed = False
     controller_changed = False
+    controller_command = None
+    controller_command_kind = None
+    release_switches_for_learn = False
 
     with state_lock:
         if "snapshotMode" in patch:
@@ -274,6 +400,67 @@ def update_state(patch):
             )
             persistent_changed = True
             controller_changed = True
+
+        if "controllerLearnStart" in patch:
+            op = patch["controllerLearnStart"]
+            if not isinstance(op, dict) or op.get("capability") != "digital":
+                raise ValueError("Phase 1 Learn requires capability 'digital'")
+            hardware_switch = op.get("hardwareSwitch")
+            if not isinstance(hardware_switch, int) or isinstance(hardware_switch, bool) or not 1 <= hardware_switch <= MAX_FOOTSWITCHES:
+                raise ValueError("controllerLearnStart.hardwareSwitch is invalid")
+            hardware = state["controllerHardware"]
+            if not hardware["connected"]:
+                raise ValueError("controller is not connected")
+            if hardware["protocolVersion"] != CONTROLLER_PROTOCOL_VERSION:
+                raise ValueError("connected controller does not support Learn")
+            candidates = [
+                item for item in hardware["inputs"]
+                if "digital" in item.get("capabilities", [])
+                and not item.get("reserved", False)
+            ]
+            if not candidates:
+                raise ValueError("controller reported no learnable digital inputs")
+
+            next_controller_learn_token = (next_controller_learn_token % 126) + 1
+            token = next_controller_learn_token
+            state["controllerLearn"] = {
+                "status": "waiting",
+                "token": token,
+                "capability": "digital",
+                "input": None,
+                "message": "Waiting for switch press…",
+            }
+            controller_command = list(MFX_SYSEX_PREFIX) + [
+                CONTROLLER_PROTOCOL_VERSION,
+                CMD_LEARN_START,
+                token,
+                CAPABILITY_DIGITAL,
+                hardware_switch,
+            ]
+            controller_command_kind = "start"
+            release_switches_for_learn = True
+
+        if "controllerLearnCancel" in patch:
+            op = patch["controllerLearnCancel"]
+            token = op.get("token") if isinstance(op, dict) else None
+            if not isinstance(token, int) or isinstance(token, bool) or not 1 <= token <= 126:
+                raise ValueError("controllerLearnCancel.token is invalid")
+            current_learn = state["controllerLearn"]
+            if current_learn.get("token") == token:
+                if current_learn.get("status") == "waiting":
+                    controller_command = list(MFX_SYSEX_PREFIX) + [
+                        CONTROLLER_PROTOCOL_VERSION,
+                        CMD_LEARN_CANCEL,
+                        token,
+                    ]
+                    controller_command_kind = "cancel"
+                state["controllerLearn"] = {
+                    "status": "idle",
+                    "token": None,
+                    "capability": None,
+                    "input": None,
+                    "message": "",
+                }
 
         if "presetAssignmentUpdate" in patch:
             op = patch["presetAssignmentUpdate"]
@@ -339,7 +526,32 @@ def update_state(patch):
 
     if controller_changed and result.get("controllerConfig") is not None:
         push_controller_pin_config(result["controllerConfig"])
-    return result
+    if release_switches_for_learn:
+        release_pressed_physical_switches()
+    if controller_command is not None:
+        if not send_controller_sysex(controller_command, "controller command"):
+            with state_lock:
+                current_learn = state["controllerLearn"]
+                if controller_command_kind == "start" and current_learn.get("status") == "waiting":
+                    state["controllerLearn"] = {
+                        "status": "error",
+                        "token": current_learn.get("token"),
+                        "capability": current_learn.get("capability"),
+                        "input": None,
+                        "message": "Could not send Learn command to the controller.",
+                    }
+                    state["revision"] += 1
+                elif controller_command_kind == "cancel":
+                    state["controllerLearn"] = {
+                        "status": "error",
+                        "token": token,
+                        "capability": "digital",
+                        "input": None,
+                        "message": "Could not send Cancel. The controller will leave Learn when its timeout expires.",
+                    }
+                    state["revision"] += 1
+            return get_state()
+    return get_state() if controller_command is not None else result
 
 
 def controller_pin_pairs(controller_config):
@@ -379,6 +591,165 @@ def push_controller_pin_config(controller_config, force=False):
         except Exception as error:
             print(f"GPIO map send warning: {error}", file=sys.stderr, flush=True)
             return False
+
+
+def send_controller_sysex(data, description):
+    try:
+        message = mido.Message("sysex", data=data)
+    except Exception as error:
+        print(f"Invalid {description} SysEx: {error}", file=sys.stderr, flush=True)
+        return False
+    with midi_output_lock:
+        if midi_output_port is None:
+            return False
+        try:
+            midi_output_port.send(message)
+            return True
+        except Exception as error:
+            print(f"{description} send warning: {error}", file=sys.stderr, flush=True)
+            return False
+
+
+def request_controller_capabilities():
+    return send_controller_sysex(
+        list(MFX_SYSEX_PREFIX) + [
+            CONTROLLER_PROTOCOL_VERSION,
+            CMD_CAPABILITY_REQUEST,
+        ],
+        "capability request",
+    )
+
+
+def set_controller_connected(connected):
+    with state_lock:
+        state["controllerHardware"] = {
+            "connected": bool(connected),
+            "protocolVersion": None,
+            "boardName": None,
+            "inputs": [],
+        }
+        current_learn = state["controllerLearn"]
+        if connected:
+            state["controllerLearn"] = {
+                "status": "idle",
+                "token": None,
+                "capability": None,
+                "input": None,
+                "message": "",
+            }
+        elif current_learn.get("status") == "waiting":
+            state["controllerLearn"] = {
+                "status": "error",
+                "token": current_learn.get("token"),
+                "capability": current_learn.get("capability"),
+                "input": None,
+                "message": "Controller disconnected during Learn.",
+            }
+        state["revision"] += 1
+
+
+def _handle_capability_report(data):
+    if len(data) < 8:
+        return False
+    name_length = data[6]
+    name_start = 7
+    count_offset = name_start + name_length
+    if count_offset >= len(data):
+        return False
+    source_count = data[count_offset]
+    descriptor_start = count_offset + 1
+    if len(data) != descriptor_start + source_count * SOURCE_DESCRIPTOR_SIZE:
+        return False
+    try:
+        board_name = bytes(data[name_start:count_offset]).decode("ascii").strip()
+    except UnicodeDecodeError:
+        return False
+    if not board_name:
+        board_name = "MultiFX Controller"
+
+    inputs = []
+    for index in range(source_count):
+        offset = descriptor_start + index * SOURCE_DESCRIPTOR_SIZE
+        descriptor = controller_input_descriptor(
+            data[offset:offset + SOURCE_DESCRIPTOR_SIZE]
+        )
+        if descriptor is not None:
+            inputs.append(descriptor)
+
+    with state_lock:
+        state["controllerHardware"] = {
+            "connected": True,
+            "protocolVersion": CONTROLLER_PROTOCOL_VERSION,
+            "boardName": board_name,
+            "inputs": inputs,
+        }
+        state["revision"] += 1
+    print(
+        f"Controller capabilities <- {board_name}: {len(inputs)} inputs.",
+        flush=True,
+    )
+    return True
+
+
+def _handle_learn_result(data):
+    if len(data) != 8 + SOURCE_DESCRIPTOR_SIZE:
+        return False
+    token = data[6]
+    result_code = data[7]
+    descriptor = controller_input_descriptor(data[8:])
+    statuses = {
+        LEARN_STATUS_LEARNED: "learned",
+        LEARN_STATUS_TIMEOUT: "timeout",
+        LEARN_STATUS_CANCELLED: "cancelled",
+        LEARN_STATUS_ERROR: "error",
+        LEARN_STATUS_CONFLICT: "conflict",
+    }
+    status = statuses.get(result_code)
+    if status is None:
+        return False
+    if status in {"learned", "conflict"} and descriptor is None:
+        return False
+
+    if status == "learned":
+        message = f"Learned {descriptor['label']}."
+    elif status == "conflict":
+        usage = descriptor.get("assignedTo") or "another controller function"
+        message = f"{descriptor['label']} is already assigned to {usage}."
+    elif status == "timeout":
+        message = "Learn timed out. No switch press was detected."
+    elif status == "cancelled":
+        message = "Learn cancelled."
+    else:
+        message = "The controller could not complete Learn."
+
+    with state_lock:
+        current = state["controllerLearn"]
+        if current.get("status") != "waiting" or current.get("token") != token:
+            return True
+        state["controllerLearn"] = {
+            "status": status,
+            "token": token,
+            "capability": current.get("capability"),
+            "input": descriptor,
+            "message": message,
+        }
+        state["revision"] += 1
+    print(f"Controller Learn <- {message}", flush=True)
+    return True
+
+
+def handle_controller_sysex(raw_data):
+    data = list(raw_data)
+    if len(data) < 6 or tuple(data[:4]) != MFX_SYSEX_PREFIX:
+        return False
+    if data[4] != CONTROLLER_PROTOCOL_VERSION:
+        return False
+    command = data[5]
+    if command == CMD_CAPABILITY_REPORT:
+        return _handle_capability_report(data)
+    if command == CMD_LEARN_RESULT:
+        return _handle_learn_result(data)
+    return False
 
 
 def _origin_allowed(handler):
@@ -484,6 +855,22 @@ def send_key(sequence):
                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False)
 
 
+def release_pressed_physical_switches():
+    with physical_switch_lock:
+        pressed = sorted(pressed_physical_switches)
+        pressed_physical_switches.clear()
+    if pressed:
+        send_key([
+            f"{PHYSICAL_SWITCH_KEY_CODES[switch]}:0"
+            for switch in pressed
+        ])
+
+
+def controller_learn_waiting():
+    with state_lock:
+        return state["controllerLearn"].get("status") == "waiting"
+
+
 def _score_port_name(name):
     lower = name.lower()
     if MIDI_DEVICE_HINT:
@@ -540,7 +927,15 @@ def handle_control_change(control, value):
         return
     if FIRST_SWITCH_CC <= control <= LAST_SWITCH_CC:
         switch = control - FIRST_SWITCH_CC + 1
-        send_key([f"{PHYSICAL_SWITCH_KEY_CODES[switch]}:{1 if value >= 64 else 0}"])
+        if controller_learn_waiting():
+            return
+        pressed = value >= 64
+        with physical_switch_lock:
+            if pressed:
+                pressed_physical_switches.add(switch)
+            else:
+                pressed_physical_switches.discard(switch)
+        send_key([f"{PHYSICAL_SWITCH_KEY_CODES[switch]}:{1 if pressed else 0}"])
 
 
 def main():
@@ -556,18 +951,27 @@ def main():
                 with midi_output_lock:
                     midi_output_port = output_port
                     last_pushed_pin_signature = None
+                set_controller_connected(True)
                 current = get_state()
                 if current.get("controllerConfig") is not None:
                     push_controller_pin_config(current["controllerConfig"], force=True)
+                request_controller_capabilities()
                 print("MultiFX hardware bridge running.", flush=True)
                 for message in input_port:
                     if message.type == "control_change":
                         handle_control_change(message.control, message.value)
+                    elif message.type == "sysex":
+                        handle_controller_sysex(message.data)
+                raise RuntimeError("MIDI input disconnected.")
         except KeyboardInterrupt:
+            release_pressed_physical_switches()
+            set_controller_connected(False)
             return
         except Exception as error:
             with midi_output_lock:
                 midi_output_port = None
+            release_pressed_physical_switches()
+            set_controller_connected(False)
             print(f"Bridge error: {error}", file=sys.stderr, flush=True)
             print("Retrying in 2 seconds...", file=sys.stderr, flush=True)
             time.sleep(2)

@@ -210,7 +210,9 @@ export const CONTROLLER_CONFIG_CHANGED_EVENT =
 
 const CONTROLLER_STORAGE_KEY = "pipedal-multifx-controller-config-v2";
 
-export const FOOTSWITCH_GPIO_PINS: readonly number[] = [
+// Used only when no capability-aware controller is connected. Connected
+// controllers report their own usable inputs through the runtime bridge.
+export const FALLBACK_FOOTSWITCH_GPIO_PINS: readonly number[] = [
     1, 2, 3, 4, 5, 6, 7, 9, 10, 14, 15, 16, 39, 40, 41, 42, 47
 ];
 
@@ -474,9 +476,13 @@ function validateConfig(value: unknown): string | undefined {
         if (!integerIn(raw.hardwareSwitch, 1, MAX_FOOTSWITCHES) || hardware.has(raw.hardwareSwitch as number)) return "Physical switch numbers must be unique.";
         hardware.add(raw.hardwareSwitch as number);
         if (raw.gpioPin !== null) {
-            if (typeof raw.gpioPin !== "number" || !FOOTSWITCH_GPIO_PINS.includes(raw.gpioPin)) return "Invalid footswitch GPIO.";
-            if (pins.has(raw.gpioPin)) return "GPIO pins must be unique.";
-            pins.add(raw.gpioPin);
+            // Pin safety belongs to the connected controller firmware. Keeping
+            // the persisted schema board-neutral allows a configuration from a
+            // different supported controller to load before that hardware is
+            // connected.
+            if (!integerIn(raw.gpioPin, 0, 126)) return "Invalid footswitch GPIO.";
+            if (pins.has(raw.gpioPin as number)) return "GPIO pins must be unique.";
+            pins.add(raw.gpioPin as number);
         }
         if (!validAction(raw.action) || !validAction(raw.longPressAction)) return "Invalid switch action.";
         if (isRecord(raw.action) && raw.action.type === "preset") {

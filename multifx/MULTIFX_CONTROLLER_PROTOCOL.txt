@@ -1,8 +1,10 @@
 PiPedal MultiFX — Controller Protocol
 =====================================
 
-Current protocol version: 1
+Current capability/Learn protocol version: 2
 Maximum logical footswitches: 12
+
+All byte layouts below omit the on-wire F0/F7 SysEx delimiters.
 
 USB MIDI input from controller
 ------------------------------
@@ -16,9 +18,9 @@ The physical controller never assigns musical meaning to SW1..SW12. The
 current MultiFX controller configuration decides whether a switch selects a
 preset, changes bank, toggles Chain Bypass, enters Snapshot Mode, or is unused.
 
-Runtime GPIO configuration (bridge -> ESP32)
----------------------------------------------
-Private SysEx payload (MIDI transport supplies F0/F7):
+Runtime GPIO configuration v1 (bridge -> controller)
+----------------------------------------------------
+The known-good version-1 message remains supported for compatibility:
 
     7D 4D 46 58 01 COUNT [SW PIN]...
 
@@ -29,5 +31,102 @@ COUNT    number of SW/PIN pairs
 SW       logical switch 1..12
 PIN      GPIO 0..126, or 127 for disabled
 
-The ESP32 validates the complete map, rejects duplicate enabled pins, applies
-it atomically, and persists it in Preferences.
+The controller validates the complete map, rejects duplicate enabled pins,
+applies it atomically, and persists it in Preferences. Saving Controller
+Settings is what causes the bridge to send this persistent map.
+
+Capability and Learn envelope v2
+--------------------------------
+Version-2 commands use this prefix:
+
+    7D 4D 46 58 02 COMMAND ...
+
+02 is the capability/Learn protocol version. COMMAND is one of the values
+below. Additive future commands can use the same envelope without changing
+the version-1 GPIO configuration message.
+
+Input source descriptor
+-----------------------
+Capability and Learn messages use a seven-byte, board-neutral descriptor:
+
+    TYPE INSTANCE CHANNEL CAPS STATE USAGE USAGE_INDEX
+
+TYPE
+    00 direct GPIO
+    01 multiplexer channel (reserved for future support)
+    02 external ADC channel (reserved for future support)
+
+INSTANCE and CHANNEL form a stable source address. For direct GPIO,
+INSTANCE is 0 and CHANNEL is the GPIO number. A future MUX1.CH6 source can be
+TYPE=01, INSTANCE=1, CHANNEL=6 without pretending that it is a GPIO.
+
+CAPS bit flags
+    01 digital-input capable
+    02 analog/ADC capable
+
+STATE bit flags
+    01 available
+    02 reserved
+    04 assigned
+
+USAGE
+    00 none
+    01 logical switch (USAGE_INDEX is SW1..SW12)
+    02 encoder A/B
+    03 encoder push
+    04 potentiometer
+    05 native USB
+    06 other controller-system use
+
+The bridge converts each descriptor into a stable string ID, human-readable
+label, capability list, availability/reservation flags, and optional assignment
+or reason text for Controller Settings.
+
+Capability discovery
+--------------------
+Bridge -> controller request:
+
+    7D 4D 46 58 02 02
+
+Controller -> bridge report:
+
+    7D 4D 46 58 02 03 NAME_LEN NAME... INPUT_COUNT [DESCRIPTOR]...
+
+NAME is 7-bit ASCII. The current ESP32-S3 profile reports
+"ESP32-S3 DevKitC-1". The firmware is the hardware authority; the browser does
+not maintain an ESP32 pinout. The current profile reports safe switch inputs
+and marks each as available or assigned.
+
+Transient switch Learn
+----------------------
+Begin Learn (bridge -> controller):
+
+    7D 4D 46 58 02 04 TOKEN CAPS TARGET_SW
+
+CAPS is 01 for Phase-1 digital switch Learn. TARGET_SW is the logical hardware
+switch number being edited. TOKEN is 1..126 and correlates the asynchronous
+reply with the requesting browser session.
+
+Cancel Learn (bridge -> controller):
+
+    7D 4D 46 58 02 05 TOKEN
+
+Learn result (controller -> bridge):
+
+    7D 4D 46 58 02 06 TOKEN STATUS DESCRIPTOR
+
+STATUS
+    00 learned
+    01 timed out
+    02 cancelled
+    03 error/unsupported request
+    04 conflict (the learned input belongs to another logical switch)
+
+During Learn the controller consumes candidate switch transitions instead of
+sending CC40..CC51. The bridge also suppresses switch actions and releases any
+previously-held switch key before Learn begins. Cancel, timeout, success and
+conflict all restore normal controller scanning.
+
+Learn never writes Preferences or the shared persistent state. A successful
+result only fills the Controller Settings draft. The existing version-1 GPIO
+map is changed and persisted only after the user presses SAVE.
