@@ -74,12 +74,6 @@ import SettingsIcon from './svg/ic_settings.svg?react';
 import HelpOutlineIcon from './svg/ic_help_outline.svg?react';
 import FxAmplifierIcon from './svg/fx_amplifier.svg?react';
 import MultiFXApp from './MultiFXApp';
-import {
-    MULTIFX_RUNTIME_POLL_MS,
-    readMultiFXRuntimeState,
-    updateMultiFXRuntimeState
-} from './MultiFXRuntimeSync';
-
 
 import DialogEx from './DialogEx';
 
@@ -355,9 +349,6 @@ export
     errorChangeHandler_: OnChangedHandler<string>;
     stateChangeHandler_: OnChangedHandler<State>;
 
-    private mainViewSyncTimer_: number | null = null;
-    private mainViewSyncStopped_ = false;
-
     constructor(props: AppProps) {
         super(props);
         this.model_ = PiPedalModelFactory.getInstance();
@@ -405,50 +396,11 @@ export
         this.handleZoomedUiControlChanged = this.handleZoomedUiControlChanged.bind(this);
     }
 
-    private setSharedPerformanceView(performanceView: boolean) {
+    // Performance View vs. Original PiPedal View is intentionally local to
+    // this browser. Musical/controller state is shared; navigation is not.
+    private setPerformanceView(performanceView: boolean) {
         if (this.state.performanceView !== performanceView) {
             this.setState({ performanceView });
-        }
-
-        void updateMultiFXRuntimeState({
-            mainView: performanceView
-                ? "performance"
-                : "default"
-        }).catch(() => {
-            // Runtime sync is optional during development/offline use.
-        });
-    }
-
-    private scheduleMainViewSync() {
-        if (this.mainViewSyncStopped_) return;
-
-        this.mainViewSyncTimer_ = window.setTimeout(
-            () => {
-                void this.pollMainViewSync();
-            },
-            MULTIFX_RUNTIME_POLL_MS
-        );
-    }
-
-    private async pollMainViewSync() {
-        if (this.mainViewSyncStopped_) return;
-
-        try {
-            const runtimeState =
-                await readMultiFXRuntimeState();
-            const performanceView =
-                runtimeState.mainView !== "default";
-
-            if (
-                !this.mainViewSyncStopped_
-                && this.state.performanceView !== performanceView
-            ) {
-                this.setState({ performanceView });
-            }
-        } catch {
-            // Keep the current local view if the bridge is unavailable.
-        } finally {
-            this.scheduleMainViewSync();
         }
     }
 
@@ -671,8 +623,6 @@ export
             this.handleZoomedUiControlChanged
         );
 
-        this.mainViewSyncStopped_ = false;
-        void this.pollMainViewSync();
     }
     handleZoomedUiControlChanged() {
         this.setState({
@@ -699,12 +649,6 @@ export
 
     componentWillUnmount() {
         super.componentWillUnmount();
-
-        this.mainViewSyncStopped_ = true;
-        if (this.mainViewSyncTimer_ !== null) {
-            window.clearTimeout(this.mainViewSyncTimer_);
-            this.mainViewSyncTimer_ = null;
-        }
 
         this.model_.zoomedUiControl.removeOnChangedHandler(
             this.handleZoomedUiControlChanged
@@ -865,7 +809,7 @@ export
                 {this.state.performanceView ? (
                     <MultiFXApp
                         onExitToOriginal={() => {
-                            this.setSharedPerformanceView(false);
+                            this.setPerformanceView(false);
                         }}
                     />
                 ) : (
@@ -890,7 +834,7 @@ export
                                         </IconButtonEx>
                                         <Button
                                             variant="contained"
-                                            onClick={() => { this.setSharedPerformanceView(true); }}
+                                            onClick={() => { this.setPerformanceView(true); }}
                                             style={{
                                                 marginLeft: 8,
                                                 marginRight: 10,
@@ -937,7 +881,7 @@ export
                                     </IconButtonEx>
                                     <Button
                                         variant="contained"
-                                        onClick={() => { this.setSharedPerformanceView(true); }}
+                                        onClick={() => { this.setPerformanceView(true); }}
                                         style={{
                                             position: "absolute",
                                             left: 68,
@@ -976,7 +920,7 @@ export
                                     onClick={(ev: any) => {
                                         ev.stopPropagation();
                                         this.hideDrawer(true);
-                                        this.setSharedPerformanceView(true);
+                                        this.setPerformanceView(true);
                                     }}>
                                     <ListItemIcon >
                                         <FxAmplifierIcon color='inherit' className={classes.menuIcon} style={{ width: 24, height: 24 }} />

@@ -9,12 +9,12 @@ import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { BankIndex } from "./Banks";
 import {
-    applyPresetTileStoreFromRuntime,
-    loadPresetBankViewState,
-    savePresetBankNavigation,
-    savePresetTileIds,
-    MULTIFX_PRESET_TILE_STORE_CHANGED_EVENT
-} from "./MultiFXPresetTileMap";
+    clearPresetAssignmentsForPreset,
+    getBankPresetAssignments,
+    MULTIFX_PRESET_ASSIGNMENTS_CHANGED_EVENT,
+    setPresetAssignment,
+    swapPresetAssignments
+} from "./MultiFXPresetAssignments";
 import {
     PiPedalModelFactory,
     PresetIndex,
@@ -38,10 +38,13 @@ import {
 import {
     MultiFXRuntimeState,
     MultiFXRuntimeStatePatch,
-    MULTIFX_RUNTIME_POLL_MS,
-    readMultiFXRuntimeState,
+    subscribeMultiFXRuntimeState,
     updateMultiFXRuntimeState
 } from "./MultiFXRuntimeSync";
+import {
+    prepareBasePresetForWrite,
+    restoreChainBypassForSafeWrite
+} from "./MultiFXPresetSafety";
 
 type MarqueeTextProps = {
     text: string;
@@ -158,7 +161,6 @@ type SwitchVisualState = {
 
 type PresetDragCandidate = {
     pointerId: number;
-    presetId: number;
     slotIndex: number;
     name: string;
     startX: number;
@@ -221,27 +223,8 @@ export type NewPresetDraft = {
     presetId: number;
     previousPresetId: number;
     bankId: number;
-    targetTileIndex: number;
-    presetSlotCount: number;
-    tileIds: Array<number | null>;
+    targetSwitchId: string;
 };
-
-export function normalizePresetTilePages(
-    tileIds: Array<number | null>,
-    pageSize: number
-): Array<number | null> {
-    const safePageSize = Math.max(1, pageSize);
-    const padded = [...tileIds];
-    while (padded.length % safePageSize !== 0) padded.push(null);
-
-    const pages: Array<Array<number | null>> = [];
-    for (let offset = 0; offset < padded.length; offset += safePageSize) {
-        const page = padded.slice(offset, offset + safePageSize);
-        if (page.some((presetId) => presetId !== null)) pages.push(page);
-    }
-    pages.push(Array<number | null>(safePageSize).fill(null));
-    return pages.flat();
-}
 
 type FootControllerViewProps = {
     onOpenEditor?: (draft?: NewPresetDraft, presetId?: number) => void;
@@ -259,6 +242,7 @@ export default function FootControllerView({
     const model = PiPedalModelFactory.getInstance();
     const [controllerConfig, setControllerConfig] =
         useState<ControllerLayoutConfig>(defaultControllerConfig);
+    const [controllerConfigLoaded, setControllerConfigLoaded] = useState(false);
     const [configError, setConfigError] = useState<string | undefined>(undefined);
     const [jackStatus, setJackStatus] = useState<JackHostStatus | undefined>(
         undefined
@@ -270,8 +254,7 @@ export default function FootControllerView({
     const [menuIndex, setMenuIndex] = useState(0);
     const menuItemRefs = useRef<Array<HTMLButtonElement | null>>([]);
     const [selectedPresetSlot, setSelectedPresetSlot] = useState(0);
-    const [currentPage, setCurrentPage] = useState(0);
-    const [presetTileIds, setPresetTileIds] = useState<Array<number | null>>([]);
+    const [presetAssignmentsBySlot, setPresetAssignmentsBySlot] = useState<Array<number | null>>([]);
     const [presetAssignPickerOpen, setPresetAssignPickerOpen] = useState(false);
     const [presetAssignTargetIndex, setPresetAssignTargetIndex] = useState<number | null>(null);
     const [statusToast, setStatusToast] = useState<string | null>(null);
@@ -291,9 +274,6 @@ export default function FootControllerView({
     const [selectedSnapshot, setSelectedSnapshot] = useState<number>(
         () => model.selectedSnapshot.get()
     );
-    const runtimeSyncRevisionRef = useRef(-1);
-    const runtimeSyncPendingWritesRef = useRef(0);
-    const runtimeSyncWriteQueueRef = useRef<Promise<void>>(Promise.resolve());
 
     const initialPresetState = model.presets.get();
     const [cleanPresetBaseline, setCleanPresetBaseline] =
@@ -326,45 +306,31 @@ export default function FootControllerView({
         useRef(initialPresetState.presetChanged);
 
     const applyRuntimeState = (state: MultiFXRuntimeState) => {
-        // Apply the shared Performance bank store immediately. This does not
-        // depend on the separate tile poller, so a remote assignment/page
-        // change is visible as soon as any runtime read sees it.
-        if (state.presetTileStore !== undefined) {
-            applyPresetTileStoreFromRuntime(state.presetTileStore);
-        }
-
-        runtimeSyncRevisionRef.current = Math.max(runtimeSyncRevisionRef.current, state.revision);
         chainBypassPresetIdRef.current = state.chainBypassPresetId;
-        chainBypassWasPresetChangedRef.current = state.chainBypassWasPresetChanged;
-        const enabledStateEntries: Array<[number, boolean]> = [];
-        for (const [instanceId, enabled] of Object.entries(state.chainBypassEnabledStates)) {
-            const numericInstanceId = Number(instanceId);
-            if (Number.isFinite(numericInstanceId)) {
-                enabledStateEntries.push([numericInstanceId, Boolean(enabled)]);
+        chainBypassWasPresetChangedRef.current =
+            state.chainBypassWasPresetChanged;
+
+        const enabledStates = new Map<number, boolean>();
+        for (const [instanceId, enabled] of Object.entries(
+            state.chainBypassEnabledStates
+        )) {
+            const numericId = Number(instanceId);
+            if (Number.isFinite(numericId)) {
+                enabledStates.set(numericId, Boolean(enabled));
             }
         }
-        chainBypassSnapshotRef.current = new Map<number, boolean>(enabledStateEntries);
+        chainBypassSnapshotRef.current = enabledStates;
         setChainBypassed(state.chainBypassed);
         snapshotModePresetIdRef.current = state.snapshotPresetId;
         setSnapshotMode(state.snapshotMode);
-
     };
 
     const publishRuntimeState = (patch: MultiFXRuntimeStatePatch) => {
-        runtimeSyncPendingWritesRef.current += 1;
-        runtimeSyncWriteQueueRef.current = runtimeSyncWriteQueueRef.current
-            .catch(() => undefined)
-            .then(async () => {
-                const state = await updateMultiFXRuntimeState(patch);
-                applyRuntimeState(state);
-            })
-            .catch((error) => console.warn("MultiFX runtime sync update failed.", error))
-            .finally(() => {
-                runtimeSyncPendingWritesRef.current = Math.max(
-                    0,
-                    runtimeSyncPendingWritesRef.current - 1
-                );
-            });
+        void updateMultiFXRuntimeState(patch)
+            .then(applyRuntimeState)
+            .catch((error) =>
+                console.warn("MultiFX runtime sync update failed.", error)
+            );
     };
 
     const showStatusToast = (message: string) => {
@@ -521,10 +487,10 @@ export default function FootControllerView({
         clientY: number
     ): number | null => {
         const element = document.elementFromPoint(clientX, clientY) as HTMLElement | null;
-        const tile = element?.closest("[data-mfx-performance-preset-index]") as HTMLElement | null;
-        if (!tile) return null;
+        const presetSwitch = element?.closest("[data-mfx-performance-preset-index]") as HTMLElement | null;
+        if (!presetSwitch) return null;
 
-        const indexValue = Number(tile.dataset.mfxPerformancePresetIndex);
+        const indexValue = Number(presetSwitch.dataset.mfxPerformancePresetIndex);
         return Number.isFinite(indexValue) ? indexValue : null;
     };
 
@@ -543,7 +509,10 @@ export default function FootControllerView({
             )
             : controllerConfig.switches;
 
-    const presetSwitchConfigs = displaySwitchConfigs
+    // Logical preset slots come from the controller configuration, not from
+    // what happens to be visually placed in Freeform mode. An unplaced switch
+    // is hidden, but it remains a logical preset switch and keeps its assignment.
+    const presetSwitchConfigs = controllerConfig.switches
         .filter((s) => s.action.type === "preset")
         .sort((a, b) =>
             (a.action.type === "preset" ? a.action.presetIndex : 0)
@@ -567,55 +536,99 @@ export default function FootControllerView({
     const performanceElements =
         controllerConfig.performanceLayout.elements;
 
-    const persistPresetTileIds = (nextTileIds: Array<number | null>) => {
-        const bankId = model.banks.get().selectedBank;
-        const presetIds = model.presets.get().presets.map((p) => p.instanceId);
-        const normalizedTileIds = normalizePresetTilePages(nextTileIds, presetSlotCount);
-        setPresetTileIds(normalizedTileIds);
-        savePresetTileIds(bankId, normalizedTileIds, presetIds, presetSlotCount);
-        return normalizedTileIds;
+    const switchIdForPresetSlot = (slotIndex: number): string | null => {
+        return presetSwitchConfigs[slotIndex]?.id ?? null;
     };
 
-    const moveOrSwapPerformancePreset = (sourcePresetId: number, targetTileIndex: number) => {
-        const sourceTileIndex = presetTileIds.findIndex((id) => id === sourcePresetId);
+    const reloadPresetAssignments = () => {
+        const bank = getBankPresetAssignments(banks.selectedBank);
+        setPresetAssignmentsBySlot(
+            presetSwitchConfigs.map((switchConfig) =>
+                bank[switchConfig.id] ?? null
+            )
+        );
+    };
+
+    const moveOrSwapPerformancePreset = (
+        sourceSlotIndex: number,
+        targetSlotIndex: number
+    ) => {
         if (
-            sourceTileIndex < 0 || targetTileIndex < 0
-            || targetTileIndex >= presetTileIds.length
-            || sourceTileIndex === targetTileIndex
+            sourceSlotIndex < 0
+            || sourceSlotIndex >= presetSlotCount
+            || targetSlotIndex < 0
+            || targetSlotIndex >= presetSlotCount
+            || sourceSlotIndex === targetSlotIndex
         ) return;
-        const next = [...presetTileIds];
-        const targetPresetId = next[targetTileIndex];
-        next[sourceTileIndex] = targetPresetId;
-        next[targetTileIndex] = sourcePresetId;
-        persistPresetTileIds(next);
-        showStatusToast(targetPresetId === null ? "Preset moved to empty tile" : "Preset tiles swapped");
+
+        const sourceSwitchId = switchIdForPresetSlot(sourceSlotIndex);
+        const targetSwitchId = switchIdForPresetSlot(targetSlotIndex);
+        if (!sourceSwitchId || !targetSwitchId) return;
+
+        const sourcePresetId = presetAssignmentsBySlot[sourceSlotIndex];
+        if (sourcePresetId === null || sourcePresetId === undefined) return;
+
+        const targetPresetId = presetAssignmentsBySlot[targetSlotIndex] ?? null;
+        setPresetAssignmentsBySlot((current) => {
+            const next = [...current];
+            next[sourceSlotIndex] = targetPresetId;
+            next[targetSlotIndex] = sourcePresetId;
+            return next;
+        });
+
+        void swapPresetAssignments(
+            banks.selectedBank,
+            sourceSwitchId,
+            targetSwitchId
+        ).catch((error) => model.showAlert(String(error)));
+
+        showStatusToast(
+            targetPresetId === null
+                ? "Preset moved to empty switch"
+                : "Preset assignments swapped"
+        );
     };
 
-    const removePerformancePresetFromTile = (presetId: number) => {
-        const sourceTileIndex = presetTileIds.findIndex((id) => id === presetId);
-        if (sourceTileIndex < 0) return;
-        const next = [...presetTileIds];
-        next[sourceTileIndex] = null;
-        persistPresetTileIds(next);
-        showStatusToast("Tile cleared — PiPedal preset kept");
+    const removePerformancePresetFromSlot = (sourceSlotIndex: number) => {
+        const switchId = switchIdForPresetSlot(sourceSlotIndex);
+        if (!switchId || presetAssignmentsBySlot[sourceSlotIndex] == null) return;
+
+        setPresetAssignmentsBySlot((current) => {
+            const next = [...current];
+            next[sourceSlotIndex] = null;
+            return next;
+        });
+
+        void setPresetAssignment(
+            banks.selectedBank,
+            switchId,
+            null
+        ).catch((error) => model.showAlert(String(error)));
+        showStatusToast("Assignment cleared — PiPedal preset kept");
     };
 
-    const assignPresetIdToTile = (presetId: number, targetTileIndex: number) => {
-        if (targetTileIndex < 0 || targetTileIndex >= presetTileIds.length) return;
+    const assignPresetIdToSlot = (presetId: number, targetSlotIndex: number) => {
+        const switchId = switchIdForPresetSlot(targetSlotIndex);
+        if (!switchId) return;
 
-        // Assignment is not a move. The same PiPedal preset may intentionally
-        // appear on more than one Performance tile. Drag/drop remains the
-        // explicit move/swap gesture.
-        const next = [...presetTileIds];
-        if (next[targetTileIndex] === presetId) {
+        if (presetAssignmentsBySlot[targetSlotIndex] === presetId) {
             setPresetAssignPickerOpen(false);
             setPresetAssignTargetIndex(null);
             return;
         }
 
-        next[targetTileIndex] = presetId;
-        persistPresetTileIds(next);
-        showStatusToast("Preset assigned to tile");
+        setPresetAssignmentsBySlot((current) => {
+            const next = [...current];
+            next[targetSlotIndex] = presetId;
+            return next;
+        });
+
+        void setPresetAssignment(
+            banks.selectedBank,
+            switchId,
+            presetId
+        ).catch((error) => model.showAlert(String(error)));
+        showStatusToast("Preset assigned to switch");
         setPresetAssignPickerOpen(false);
         setPresetAssignTargetIndex(null);
     };
@@ -629,8 +642,7 @@ export default function FootControllerView({
         const rect = event.currentTarget.getBoundingClientRect();
         const candidate: PresetDragCandidate = {
             pointerId: event.pointerId,
-            presetId: preset.instanceId,
-            slotIndex,
+            slotIndex: slotIndex,
             name: preset.name,
             startX: event.clientX,
             startY: event.clientY,
@@ -697,11 +709,11 @@ export default function FootControllerView({
         event.preventDefault();
         event.stopPropagation();
         if (overTrash) {
-            removePerformancePresetFromTile(candidate.presetId);
+            removePerformancePresetFromSlot(candidate.slotIndex);
             return;
         }
         if (dropTargetIndex !== null) {
-            moveOrSwapPerformancePreset(candidate.presetId, dropTargetIndex);
+            moveOrSwapPerformancePreset(candidate.slotIndex, dropTargetIndex);
         }
     };
 
@@ -719,10 +731,12 @@ export default function FootControllerView({
     useEffect(() => {
         let cancelled = false;
         const loadConfig = async () => {
+            setControllerConfigLoaded(false);
             const result = await loadControllerConfig();
             if (!cancelled) {
                 setControllerConfig(result.config);
                 setConfigError(result.error);
+                setControllerConfigLoaded(true);
             }
         };
         const changed = () => void loadConfig();
@@ -850,143 +864,63 @@ export default function FootControllerView({
     }, [model]);
 
     useEffect(() => {
-        let cancelled = false;
-        let timer: number | null = null;
-        let abortController: AbortController | null = null;
-        const schedule = () => {
-            if (!cancelled) timer = window.setTimeout(poll, MULTIFX_RUNTIME_POLL_MS);
-        };
-        const poll = async () => {
-            if (cancelled) return;
-            if (runtimeSyncPendingWritesRef.current > 0) {
-                schedule();
+        return subscribeMultiFXRuntimeState((state) => {
+            const currentPresetId =
+                model.presets.get().selectedInstanceId;
+            const staleBypass =
+                state.chainBypassed
+                && state.chainBypassPresetId !== currentPresetId;
+            const staleSnapshotMode =
+                state.snapshotMode
+                && state.snapshotPresetId !== currentPresetId;
+
+            if (staleBypass || staleSnapshotMode) {
+                const patch: MultiFXRuntimeStatePatch = {};
+                if (staleBypass) {
+                    patch.chainBypassed = false;
+                    patch.chainBypassPresetId = null;
+                    patch.chainBypassWasPresetChanged = false;
+                    patch.chainBypassEnabledStates = {};
+                }
+                if (staleSnapshotMode) {
+                    patch.snapshotMode = false;
+                    patch.snapshotPresetId = null;
+                }
+
+                void updateMultiFXRuntimeState(patch)
+                    .then(applyRuntimeState)
+                    .catch(() => undefined);
                 return;
             }
-            abortController = new AbortController();
-            try {
-                const state = await readMultiFXRuntimeState(abortController.signal);
-                if (state.revision <= runtimeSyncRevisionRef.current) {
-                    schedule();
-                    return;
-                }
-                const currentPresetId = model.presets.get().selectedInstanceId;
-                const staleBypass = state.chainBypassed && state.chainBypassPresetId !== currentPresetId;
-                const staleSnapshotMode = state.snapshotMode && state.snapshotPresetId !== currentPresetId;
-                if (staleBypass || staleSnapshotMode) {
-                    const patch: MultiFXRuntimeStatePatch = {};
-                    if (staleBypass) {
-                        patch.chainBypassed = false;
-                        patch.chainBypassPresetId = null;
-                        patch.chainBypassWasPresetChanged = false;
-                        patch.chainBypassEnabledStates = {};
-                    }
-                    if (staleSnapshotMode) {
-                        patch.snapshotMode = false;
-                        patch.snapshotPresetId = null;
-                    }
-                    runtimeSyncPendingWritesRef.current += 1;
-                    try {
-                        const normalized = await updateMultiFXRuntimeState(patch, abortController.signal);
-                        if (!cancelled) applyRuntimeState(normalized);
-                    } finally {
-                        runtimeSyncPendingWritesRef.current = Math.max(0, runtimeSyncPendingWritesRef.current - 1);
-                    }
-                } else {
-                    applyRuntimeState(state);
-                }
-            } catch { }
-            schedule();
-        };
-        void poll();
-        return () => {
-            cancelled = true;
-            if (timer !== null) window.clearTimeout(timer);
-            abortController?.abort();
-        };
+
+            applyRuntimeState(state);
+        });
     }, [model]);
 
-
     useEffect(() => {
-        const reloadSharedBankState = () => {
-            const bankId = model.banks.get().selectedBank;
-            const presetIds = model.presets.get().presets.map(
-                (p) => p.instanceId
-            );
-            const shared = loadPresetBankViewState(
-                bankId,
-                presetIds,
-                presetSlotCount
-            );
-            const nextTileIds = normalizePresetTilePages(
-                shared.slots,
-                presetSlotCount
-            );
+        if (!controllerConfigLoaded) return;
 
-            setPresetTileIds(nextTileIds);
-
-            const nextPageCount = Math.max(
-                1,
-                Math.ceil(nextTileIds.length / presetSlotCount)
-            );
-            setCurrentPage(
-                Math.min(shared.currentPage, nextPageCount - 1)
-            );
-            setSelectedPresetSlot(
-                Math.min(
-                    shared.selectedSlot,
-                    Math.max(0, presetSlotCount - 1)
-                )
-            );
-        };
-
-        reloadSharedBankState();
+        const reload = () => reloadPresetAssignments();
+        reload();
         window.addEventListener(
-            MULTIFX_PRESET_TILE_STORE_CHANGED_EVENT,
-            reloadSharedBankState
+            MULTIFX_PRESET_ASSIGNMENTS_CHANGED_EVENT,
+            reload
         );
         return () => {
             window.removeEventListener(
-                MULTIFX_PRESET_TILE_STORE_CHANGED_EVENT,
-                reloadSharedBankState
+                MULTIFX_PRESET_ASSIGNMENTS_CHANGED_EVENT,
+                reload
             );
         };
-    }, [model, banks.selectedBank, presets, presetSlotCount]);
-
-    const pageCount = Math.max(
-        1,
-        Math.ceil(Math.max(presetSlotCount, presetTileIds.length) / presetSlotCount)
-    );
-    const wrapPage = (page: number) => ((page % pageCount) + pageCount) % pageCount;
-    const publishPerformanceNavigation = (
-        page: number,
-        slot: number = selectedPresetSlot
-    ) => {
-        const bankId = model.banks.get().selectedBank;
-        const presetIds = model.presets.get().presets.map(
-            (preset) => preset.instanceId
-        );
-
-        savePresetBankNavigation(
-            bankId,
-            presetIds,
-            presetSlotCount,
-            page,
-            slot
-        );
-    };
-
-    const changePage = (direction: number) => {
-        if (pageCount <= 1) return;
-        const nextPage = wrapPage(currentPage + direction);
-        setCurrentPage(nextPage);
-        publishPerformanceNavigation(nextPage);
-        setBankMenuOpen(false);
-        setPresetMenuOpen(false);
-    };
+    }, [
+        controllerConfigLoaded,
+        banks.selectedBank,
+        presetSwitchConfigs.map((item) => item.id).join("|")
+    ]);
 
     const getPresetForSlot = (slotIndex: number): PresetIndexEntry | undefined => {
         if (slotIndex < 0 || slotIndex >= presetSlotCount) return undefined;
-        const presetId = presetTileIds[currentPage * presetSlotCount + slotIndex];
+        const presetId = presetAssignmentsBySlot[slotIndex];
         if (presetId === null || presetId === undefined) return undefined;
         return presets.getItem(presetId) ?? undefined;
     };
@@ -1056,18 +990,14 @@ export default function FootControllerView({
         const preset = getPresetForSlot(selectedPresetSlot);
         if (!preset || presetActionBusy) return;
         const deletedPresetId = preset.instanceId;
-        const deletedPage = currentPage;
         setPresetActionBusy(true);
         try {
             await model.deletePresetItems(new Set<number>([deletedPresetId]));
-            const sourceTileIndex = presetTileIds.findIndex((id) => id === deletedPresetId);
-            if (sourceTileIndex >= 0) {
-                const next = [...presetTileIds];
-                next[sourceTileIndex] = null;
-                const normalized = persistPresetTileIds(next);
-                const normalizedPageCount = Math.max(1, Math.ceil(normalized.length / presetSlotCount));
-                setCurrentPage(Math.min(deletedPage, normalizedPageCount - 1));
-            }
+            await clearPresetAssignmentsForPreset(
+                banks.selectedBank,
+                deletedPresetId
+            );
+            reloadPresetAssignments();
             closePresetOptions();
             showStatusToast("Preset deleted");
         } catch (error) {
@@ -1078,42 +1008,43 @@ export default function FootControllerView({
     };
 
     const moveMainCursor = (direction: number) => {
-        const tileCount = pageCount * presetSlotCount;
-        const currentTileIndex = currentPage * presetSlotCount + selectedPresetSlot;
-        const nextTileIndex = currentTileIndex + direction;
-        if (nextTileIndex >= 0 && nextTileIndex < tileCount) {
-            const nextPage = Math.floor(nextTileIndex / presetSlotCount);
-            const nextSlot = nextTileIndex % presetSlotCount;
-            setCurrentPage(nextPage);
+        const nextSlot = selectedPresetSlot + direction;
+        if (nextSlot >= 0 && nextSlot < presetSlotCount) {
             setSelectedPresetSlot(nextSlot);
-            publishPerformanceNavigation(nextPage, nextSlot);
             return;
         }
+
+        // Crossing the first/last preset switch moves to the adjacent PiPedal
+        // bank. Banks are the only grouping layer; there is no nested paging.
         pendingBankSlotRef.current = direction > 0 ? 0 : -1;
         if (direction > 0) model.nextBank();
         else model.previousBank();
     };
 
-    const createNewPresetFromCurrent = () => {
+    const createNewPresetFromCurrent = async () => {
         if (blockPresetWriteWhileSnapshotActive("Creating a preset")) return;
         const currentPresets = model.presets.get();
         const selectedId = currentPresets.selectedInstanceId;
         const bankId = model.banks.get().selectedBank;
-        const targetTileIndex = currentPage * presetSlotCount + selectedPresetSlot;
-        closePresetOptions();
-        model.newPresetItem(selectedId)
-            .then((instanceId) => {
-                model.loadPreset(instanceId);
-                onOpenEditor?.({
-                    presetId: instanceId,
-                    previousPresetId: selectedId,
-                    bankId,
-                    targetTileIndex,
-                    presetSlotCount,
-                    tileIds: [...presetTileIds]
-                });
-            })
-            .catch((error) => model.showAlert(String(error)));
+        const targetSwitchId = switchIdForPresetSlot(selectedPresetSlot);
+        if (!targetSwitchId || selectedId < 0) return;
+
+        try {
+            // A new preset must be copied from the real base sound, never from
+            // a temporary Chain Bypass state. Dirty base edits are preserved.
+            await restoreChainBypassForSafeWrite(model);
+            closePresetOptions();
+            const instanceId = await model.newPresetItem(selectedId);
+            model.loadPreset(instanceId);
+            onOpenEditor?.({
+                presetId: instanceId,
+                previousPresetId: selectedId,
+                bankId,
+                targetSwitchId
+            });
+        } catch (error) {
+            model.showAlert(String(error));
+        }
     };
 
     const loadSelectedSlotPreset = () => {
@@ -1127,7 +1058,7 @@ export default function FootControllerView({
         if (blockPresetWriteWhileSnapshotActive("Editing the base preset")) return;
         const preset = getPresetForSlot(selectedPresetSlot);
         if (!preset) {
-            createNewPresetFromCurrent();
+            void createNewPresetFromCurrent();
             return;
         }
         closePresetOptions();
@@ -1141,13 +1072,13 @@ export default function FootControllerView({
 
     const getPresetOptions = () => {
         const preset = getPresetForSlot(selectedPresetSlot);
-        if (!preset) return ["Assign Preset to This Tile", "Create New Preset", "Cancel"];
+        if (!preset) return ["Assign Preset to This Switch", "Create New Preset", "Cancel"];
         const options = ["Load Preset", "Edit Preset"];
         if (
             preset.instanceId === model.presets.get().selectedInstanceId
             && !snapshotPerformanceActive
         ) options.push("Save Loaded Preset");
-        options.push("Assign Different Preset", "Remove From Tile", "Delete Preset", "Cancel");
+        options.push("Assign Different Preset", "Remove From Switch", "Delete Preset", "Cancel");
         return options;
     };
 
@@ -1158,21 +1089,23 @@ export default function FootControllerView({
             case "Edit Preset": editSelectedSlotPreset(); break;
             case "Save Loaded Preset":
                 if (!blockPresetWriteWhileSnapshotActive("Saving the preset")) {
+                    const presetId = model.presets.get().selectedInstanceId;
                     closePresetOptions();
-                    model.saveCurrentPreset();
+                    void prepareBasePresetForWrite(model, presetId)
+                        .then(() => model.saveCurrentPreset())
+                        .catch((error) => model.showAlert(String(error)));
                 }
                 break;
-            case "Create New Preset": createNewPresetFromCurrent(); break;
-            case "Remove From Tile": {
-                const preset = getPresetForSlot(selectedPresetSlot);
+            case "Create New Preset": void createNewPresetFromCurrent(); break;
+            case "Remove From Switch": {
                 closePresetOptions();
-                if (preset) removePerformancePresetFromTile(preset.instanceId);
+                removePerformancePresetFromSlot(selectedPresetSlot);
                 break;
             }
             case "Delete Preset": setPresetDeleteConfirmOpen(true); break;
             case "Assign Different Preset":
-            case "Assign Preset to This Tile":
-                setPresetAssignTargetIndex(currentPage * presetSlotCount + selectedPresetSlot);
+            case "Assign Preset to This Switch":
+                setPresetAssignTargetIndex(selectedPresetSlot);
                 closePresetOptions();
                 setPresetAssignPickerOpen(true);
                 break;
@@ -1346,7 +1279,7 @@ export default function FootControllerView({
         };
     }, [
         bankMenuOpen, presetMenuOpen, presetOptionsOpen, presetOptionIndex,
-        selectedPresetSlot, presetSlotCount, currentPage, pageCount,
+        selectedPresetSlot, presetSlotCount,
         controllerConfig, banks, presets, chainBypassed, snapshotMode,
         snapshotPedalboard, selectedSnapshot, model
     ]);
@@ -1356,20 +1289,15 @@ export default function FootControllerView({
         menuItemRefs.current[menuIndex]?.scrollIntoView({ block: "nearest", behavior: "smooth" });
     }, [menuIndex, bankMenuOpen, presetMenuOpen]);
 
-    useEffect(() => setCurrentPage((page) => Math.min(page, pageCount - 1)), [pageCount]);
     useEffect(() => setSelectedPresetSlot((slot) => Math.min(Math.max(0, slot), presetSlotCount - 1)), [presetSlotCount]);
 
     useEffect(() => {
         const activePresetId = presets.selectedInstanceId;
-        const activeIndex = presetTileIds.findIndex((id) => id === activePresetId);
+        const activeIndex = presetAssignmentsBySlot.findIndex((id) => id === activePresetId);
         if (activeIndex < 0 || lastRevealedActivePresetIdRef.current === activePresetId) return;
         lastRevealedActivePresetIdRef.current = activePresetId;
-        const nextPage = Math.floor(activeIndex / presetSlotCount);
-        const nextSlot = activeIndex % presetSlotCount;
-        setCurrentPage(nextPage);
-        setSelectedPresetSlot(nextSlot);
-        publishPerformanceNavigation(nextPage, nextSlot);
-    }, [presets.selectedInstanceId, presetSlotCount, presetTileIds]);
+        setSelectedPresetSlot(activeIndex);
+    }, [presets.selectedInstanceId, presetSlotCount, presetAssignmentsBySlot]);
 
     useEffect(() => {
         if (!chainBypassed) return;
@@ -1402,20 +1330,19 @@ export default function FootControllerView({
         if (pendingBankSlotRef.current === null) return;
         const requestedSlot = pendingBankSlotRef.current;
         pendingBankSlotRef.current = null;
+
         if (requestedSlot === -1) {
-            for (let index = presetTileIds.length - 1; index >= 0; --index) {
-                if (presetTileIds[index] !== null) {
-                    setCurrentPage(Math.floor(index / presetSlotCount));
-                    setSelectedPresetSlot(index % presetSlotCount);
+            for (let index = presetAssignmentsBySlot.length - 1; index >= 0; --index) {
+                if (presetAssignmentsBySlot[index] !== null) {
+                    setSelectedPresetSlot(index);
                     return;
                 }
             }
         }
-        const firstIndex = presetTileIds.findIndex((id) => id !== null);
-        const landingIndex = firstIndex >= 0 ? firstIndex : 0;
-        setCurrentPage(Math.floor(landingIndex / presetSlotCount));
-        setSelectedPresetSlot(landingIndex % presetSlotCount);
-    }, [presetTileIds, presetSlotCount]);
+
+        const firstAssigned = presetAssignmentsBySlot.findIndex((id) => id !== null);
+        setSelectedPresetSlot(firstAssigned >= 0 ? firstAssigned : 0);
+    }, [presetAssignmentsBySlot]);
 
     const openBankMenu = () => {
         setPresetMenuOpen(false);
@@ -1539,59 +1466,56 @@ export default function FootControllerView({
         return getPresetForSlot(slotIndex);
     };
 
-    const toggleChainBypass = () => {
-        if (!chainBypassed && snapshotMode) {
-            snapshotModePresetIdRef.current = null;
-            setSnapshotMode(false);
-        }
+    const waitForCleanBasePreset = (presetId: number): Promise<void> => {
+        return new Promise<void>((resolve, reject) => {
+            let settled = false;
 
-        const pedalboard = model.pedalboard.get();
-        const items = pedalboard.items.filter((item) => !item.isEmpty() && !item.isSyntheticItem());
+            const cleanup = () => {
+                model.presets.removeOnChangedHandler(check);
+                model.selectedSnapshot.removeOnChangedHandler(check);
+                model.presetChanged.removeOnChangedHandler(check);
+                model.state.removeOnChangedHandler(onState);
+            };
 
-        if (!chainBypassed) {
-            const snapshot = new Map<number, boolean>();
-            for (const item of items) snapshot.set(item.instanceId, item.isEnabled);
-            const currentPresetId = model.presets.get().selectedInstanceId;
-            const wasPresetChanged = effectivePresetChanged;
-            chainBypassSnapshotRef.current = snapshot;
-            chainBypassPresetIdRef.current = currentPresetId;
-            chainBypassWasPresetChangedRef.current = wasPresetChanged;
+            const finish = () => {
+                if (settled) return;
+                settled = true;
+                cleanup();
+                resolve();
+            };
 
-            for (const item of items) {
-                if (item.isEnabled) model.setPedalboardItemEnabled(item.instanceId, false);
-            }
+            const fail = (message: string) => {
+                if (settled) return;
+                settled = true;
+                cleanup();
+                reject(new Error(message));
+            };
 
-            setChainBypassed(true);
-            publishRuntimeState({
-                snapshotMode: false,
-                snapshotPresetId: null,
-                chainBypassed: true,
-                chainBypassPresetId: currentPresetId,
-                chainBypassWasPresetChanged: wasPresetChanged,
-                chainBypassEnabledStates: Object.fromEntries(
-                    Array.from(snapshot.entries()).map(([instanceId, enabled]) => [String(instanceId), enabled])
-                )
-            });
-            showStatusToast("CHAIN BYPASSED");
-            return;
-        }
-
-        const currentPresetId = model.presets.get().selectedInstanceId;
-        const snapshot = chainBypassSnapshotRef.current;
-        const samePreset = chainBypassPresetIdRef.current === currentPresetId;
-        if (samePreset) {
-            if (!chainBypassWasPresetChangedRef.current) {
-                model.loadPreset(currentPresetId);
-            } else {
-                for (const item of items) {
-                    const enabled = snapshot.get(item.instanceId);
-                    if (enabled !== undefined && item.isEnabled !== enabled) {
-                        model.setPedalboardItemEnabled(item.instanceId, enabled);
-                    }
+            function check() {
+                if (
+                    model.presets.get().selectedInstanceId === presetId
+                    && model.selectedSnapshot.get() < 0
+                    && !model.presetChanged.get()
+                ) {
+                    finish();
                 }
             }
-        }
 
+            const onState = (state: State) => {
+                if (state === State.Error) {
+                    fail("PiPedal disconnected while restoring the base preset.");
+                }
+            };
+
+            model.presets.addOnChangedHandler(check);
+            model.selectedSnapshot.addOnChangedHandler(check);
+            model.presetChanged.addOnChangedHandler(check);
+            model.state.addOnChangedHandler(onState);
+            check();
+        });
+    };
+
+    const clearChainBypassRuntime = () => {
         chainBypassSnapshotRef.current = new Map();
         chainBypassPresetIdRef.current = null;
         chainBypassWasPresetChangedRef.current = false;
@@ -1602,15 +1526,107 @@ export default function FootControllerView({
             chainBypassWasPresetChanged: false,
             chainBypassEnabledStates: {}
         });
+    };
+
+    const restoreChainBypass = async (): Promise<void> => {
+        if (!chainBypassed) return;
+
+        const currentPresetId = model.presets.get().selectedInstanceId;
+        const samePreset = chainBypassPresetIdRef.current === currentPresetId;
+        const originalWasDirty = chainBypassWasPresetChangedRef.current;
+        const enabledSnapshot = new Map(chainBypassSnapshotRef.current);
+
+        if (samePreset) {
+            if (!originalWasDirty) {
+                // The base was clean before bypass. A real preset reload is the
+                // safest restoration because it atomically restores every
+                // plugin's saved enabled/control state.
+                model.loadPreset(currentPresetId);
+                await waitForCleanBasePreset(currentPresetId);
+            } else {
+                // A dirty base cannot be reloaded without losing the user's
+                // unsaved edits. Restore only the enabled flags that bypass
+                // changed and leave the rest of the live pedalboard untouched.
+                const items = model.pedalboard.get().items.filter(
+                    (item) => !item.isEmpty() && !item.isSyntheticItem()
+                );
+                for (const item of items) {
+                    const enabled = enabledSnapshot.get(item.instanceId);
+                    if (enabled !== undefined && item.isEnabled !== enabled) {
+                        model.setPedalboardItemEnabled(item.instanceId, enabled);
+                    }
+                }
+            }
+        }
+
+        clearChainBypassRuntime();
         showStatusToast("CHAIN ACTIVE");
     };
 
-    const toggleSnapshotMode = () => {
+    const toggleChainBypass = async () => {
+        if (chainBypassed) {
+            try {
+                await restoreChainBypass();
+            } catch (error) {
+                model.showAlert(String(error));
+            }
+            return;
+        }
+
+        // Snapshot Mode and Chain Bypass are mutually exclusive temporary
+        // modes. Leaving Snapshot Mode changes only the UI mode; an already
+        // recalled native snapshot is still owned by PiPedal.
+        if (snapshotMode) {
+            snapshotModePresetIdRef.current = null;
+            setSnapshotMode(false);
+        }
+
+        const pedalboard = model.pedalboard.get();
+        const items = pedalboard.items.filter(
+            (item) => !item.isEmpty() && !item.isSyntheticItem()
+        );
+        const enabledSnapshot = new Map<number, boolean>();
+        for (const item of items) {
+            enabledSnapshot.set(item.instanceId, item.isEnabled);
+        }
+
+        const currentPresetId = model.presets.get().selectedInstanceId;
+        chainBypassSnapshotRef.current = enabledSnapshot;
+        chainBypassPresetIdRef.current = currentPresetId;
+        chainBypassWasPresetChangedRef.current = effectivePresetChanged;
+
+        for (const item of items) {
+            if (item.isEnabled) {
+                model.setPedalboardItemEnabled(item.instanceId, false);
+            }
+        }
+
+        setChainBypassed(true);
+        publishRuntimeState({
+            snapshotMode: false,
+            snapshotPresetId: null,
+            chainBypassed: true,
+            chainBypassPresetId: currentPresetId,
+            chainBypassWasPresetChanged: effectivePresetChanged,
+            chainBypassEnabledStates: Object.fromEntries(
+                Array.from(enabledSnapshot.entries()).map(
+                    ([instanceId, enabled]) => [String(instanceId), enabled]
+                )
+            )
+        });
+        showStatusToast("CHAIN BYPASSED");
+    };
+
+    const toggleSnapshotMode = async () => {
         if (snapshotMode) {
             snapshotModePresetIdRef.current = null;
             setSnapshotMode(false);
             publishRuntimeState({ snapshotMode: false, snapshotPresetId: null });
-            showStatusToast(selectedSnapshot >= 0 ? `SNAPSHOT ${selectedSnapshot + 1} ACTIVE` : "SNAPSHOT MODE OFF");
+            showStatusToast(
+                selectedSnapshot >= 0
+                    ? `SNAPSHOT ${selectedSnapshot + 1} ACTIVE`
+                    : "SNAPSHOT MODE OFF"
+            );
             return;
         }
 
@@ -1620,10 +1636,21 @@ export default function FootControllerView({
             && !nativeSnapshotAlreadyActive
             && (!chainBypassed || chainBypassWasPresetChangedRef.current);
         if (hasUnsavedBasePresetChanges) {
-            model.showAlert("Save or discard the base preset changes before entering Snapshot Mode.");
+            model.showAlert(
+                "Save or discard the base preset changes before entering Snapshot Mode."
+            );
             return;
         }
-        if (chainBypassed) toggleChainBypass();
+
+        try {
+            // This used to call toggleChainBypass() and immediately continue,
+            // racing the asynchronous clean-base reload. Await restoration
+            // before capturing the snapshot layout or enabling Snapshot Mode.
+            await restoreChainBypass();
+        } catch (error) {
+            model.showAlert(String(error));
+            return;
+        }
 
         const currentPresetId = model.presets.get().selectedInstanceId;
         snapshotModePresetIdRef.current = currentPresetId;
@@ -1645,7 +1672,7 @@ export default function FootControllerView({
     useEffect(() => {
         if (snapshotExitRequest === previousSnapshotExitRequestRef.current) return;
         previousSnapshotExitRequestRef.current = snapshotExitRequest;
-        if (snapshotMode) toggleSnapshotMode();
+        if (snapshotMode) void toggleSnapshotMode();
     }, [snapshotExitRequest, snapshotMode]);
 
     const runSwitchAction = (
@@ -1666,27 +1693,26 @@ export default function FootControllerView({
                     }
                     return;
                 }
-                if (pageCount > 1 && presetSlotIndex === presetSlotCount - 1 && !preset) {
-                    changePage(1);
-                    return;
-                }
-                if (pageCount > 1 && preset?.instanceId === presets.selectedInstanceId) {
-                    if (presetSlotIndex === 0) { changePage(-1); return; }
-                    if (presetSlotIndex === presetSlotCount - 1) { changePage(1); return; }
+                if (preset && presetSlotIndex >= 0) {
+                    // Preserve the exact duplicate switch assignment the user/hardware chose.
+                    // The generic active-preset reveal effect otherwise finds
+                    // the first matching preset ID and can jump to another copy.
+                    lastRevealedActivePresetIdRef.current = preset.instanceId;
+                    setSelectedPresetSlot(presetSlotIndex);
                 }
                 selectPreset(preset);
                 return;
             case "bankUp":
-                if (snapshotMode) toggleSnapshotMode(); else model.nextBank();
+                if (snapshotMode) void toggleSnapshotMode(); else model.nextBank();
                 return;
             case "bankDown":
-                if (snapshotMode) toggleSnapshotMode(); else model.previousBank();
+                if (snapshotMode) void toggleSnapshotMode(); else model.previousBank();
                 return;
             case "chainBypass":
-                toggleChainBypass();
+                void toggleChainBypass();
                 return;
             case "snapshotMode":
-                toggleSnapshotMode();
+                void toggleSnapshotMode();
                 return;
             case "none":
                 return;
@@ -1756,15 +1782,6 @@ export default function FootControllerView({
         } catch { }
     };
 
-    const currentPageStart = currentPage * presetSlotCount;
-    const currentPageTileIds = presetTileIds.slice(currentPageStart, currentPageStart + presetSlotCount);
-    const isEmptyLastPage =
-        currentPage === pageCount - 1
-        && currentPageTileIds.length === presetSlotCount
-        && currentPageTileIds.every((id) => id === null);
-    const visiblePresetStart = currentPage * presetSlotCount + 1;
-    const visiblePresetEnd = Math.min(visiblePresetStart + presetSlotCount - 1, Math.max(1, presets.presets.length));
-
     const renderSwitch = (switchConfig: ControllerSwitchConfig) => {
         const preset = getPreset(switchConfig);
         const isPresetAction = switchConfig.action.type === "preset";
@@ -1774,10 +1791,7 @@ export default function FootControllerView({
         const presetSlotIndex = isPresetAction
             ? presetSwitchConfigs.findIndex((entry) => entry.id === switchConfig.id)
             : -1;
-        const absolutePresetIndex =
-            isPresetAction && presetSlotIndex >= 0
-                ? currentPage * presetSlotCount + presetSlotIndex
-                : -1;
+        const absolutePresetIndex = presetSlotIndex;
         const isPresetDropTarget =
             presetDrag !== null
             && absolutePresetIndex >= 0
@@ -1787,26 +1801,6 @@ export default function FootControllerView({
         const isDisabled = switchConfig.action.type === "none";
         const longPressLabel = isPresetAction && !preset ? undefined : getLongPressLabel(switchConfig.longPressAction);
 
-        // These badges mirror the edge-tile paging behavior in runSwitchAction.
-        // They make it obvious that pressing the active first/last preset (or an
-        // empty last preset tile) changes to another preset page in this bank.
-        const isPageDownSwitch =
-            pageCount > 1
-            && isPresetAction
-            && presetSlotIndex === 0
-            && isActive;
-        const isPageUpSwitch =
-            pageCount > 1
-            && isPresetAction
-            && !isPageDownSwitch
-            && presetSlotIndex === presetSlotCount - 1
-            && (isActive || !preset);
-        const pageSwitchLabel =
-            isPageDownSwitch
-                ? "PAGE DOWN"
-                : isPageUpSwitch
-                    ? "PAGE UP"
-                    : undefined;
 
         // Use exactly the same visual palette as a preset tile.
         // A populated, unselected preset uses the normal visual state; only
@@ -1823,7 +1817,7 @@ export default function FootControllerView({
                 data-mfx-performance-preset-index={absolutePresetIndex >= 0 ? absolutePresetIndex : undefined}
                 data-mfx-performance-preset-id={isPresetAction && preset ? preset.instanceId : undefined}
                 onPointerDown={(event) => {
-                    if (isPresetAction && preset && presetSlotIndex >= 0) beginPresetDrag(event, preset, presetSlotIndex);
+                    if (isPresetAction && preset && absolutePresetIndex >= 0) beginPresetDrag(event, preset, absolutePresetIndex);
                     else if (isPresetAction && presetSlotIndex >= 0) {
                         suppressNextClickRef.current = false;
                         try { event.currentTarget.setPointerCapture(event.pointerId); } catch { }
@@ -1870,7 +1864,7 @@ export default function FootControllerView({
                     overflow: "hidden",
                     opacity: isDisabled
                         ? colors.disabledSwitchOpacity
-                        : presetDrag && preset && presetDrag.presetId === preset.instanceId
+                        : presetDrag && absolutePresetIndex === presetDrag.slotIndex
                             ? 0.38
                             : 1,
                     color: "inherit",
@@ -1883,32 +1877,6 @@ export default function FootControllerView({
                     gridColumn: freeformRect ? undefined : switchConfig.column
                 }}
             >
-                {pageSwitchLabel && (
-                    <span
-                        aria-hidden="true"
-                        style={{
-                            position: "absolute",
-                            top: 6,
-                            // A populated preset has the status LED at right:7.
-                            // Move the page badge left so both indicators remain visible.
-                            right: preset ? 29 : 7,
-                            zIndex: 2,
-                            padding: "3px 6px",
-                            borderRadius: 7,
-                            border: `1px solid ${colors.bankSwitchBorder}`,
-                            background: colors.bankSwitchBackground,
-                            color: colors.bankSwitchLabelText,
-                            fontSize: "clamp(.46rem, .95vw, .58rem)",
-                            fontWeight: 900,
-                            letterSpacing: "0.04em",
-                            lineHeight: 1,
-                            whiteSpace: "nowrap",
-                            pointerEvents: "none"
-                        }}
-                    >
-                        {pageSwitchLabel}
-                    </span>
-                )}
                 {isPresetAction && preset && (
                     <span aria-hidden="true" style={{
                         position: "absolute", top: 6, right: 7, width: 16, height: 16,
@@ -2111,102 +2079,6 @@ export default function FootControllerView({
                 )}
             </div>
         </>
-    );
-
-    const presetPageHeaderContent = (
-        <div style={{
-            width: "100%",
-            height: "100%",
-            minWidth: 0,
-            minHeight: 0,
-            display: "flex",
-            alignItems: "center",
-            justifyContent: "center",
-            gap: useFreeformPerformanceLayout
-                ? "clamp(1px, 2cqw, 8px)"
-                : 12,
-            color: colors.bankTitleText,
-            fontSize: useFreeformPerformanceLayout
-                ? "clamp(.45rem, min(6cqw, 16cqh), .82rem)"
-                : ".82rem",
-            lineHeight: 1,
-            fontWeight: "bold"
-        }}>
-            <button
-                type="button"
-                onClick={() => changePage(-1)}
-                disabled={snapshotMode || pageCount <= 1}
-                style={{
-                    width: useFreeformPerformanceLayout
-                        ? "clamp(20px, 16cqw, 42px)"
-                        : undefined,
-                    minWidth: useFreeformPerformanceLayout ? 20 : 42,
-                    height: useFreeformPerformanceLayout
-                        ? "clamp(20px, 55cqh, 30px)"
-                        : undefined,
-                    minHeight: useFreeformPerformanceLayout ? 20 : 30,
-                    padding: useFreeformPerformanceLayout ? 0 : undefined,
-                    fontSize: useFreeformPerformanceLayout
-                        ? "clamp(.55rem, min(7cqw, 22cqh), 1rem)"
-                        : undefined,
-                    lineHeight: 1,
-                    borderRadius: useFreeformPerformanceLayout
-                        ? "clamp(4px, 3cqw, 7px)"
-                        : 7,
-                    border: `1px solid ${colors.bankSwitchBorder}`,
-                    background: colors.bankSwitchBackground,
-                    color: colors.bankSwitchValueText,
-                    flex: "0 0 auto"
-                }}
-            >
-                ◀
-            </button>
-            <span style={{
-                minWidth: 0,
-                flex: "1 1 auto",
-                textAlign: "center",
-                whiteSpace: "nowrap",
-                overflow: "hidden",
-                textOverflow: "ellipsis"
-            }}>
-                {snapshotMode
-                    ? "SNAPSHOT MODE • 6 SLOTS"
-                    : isEmptyLastPage
-                        ? "Add Presets"
-                        : presets.presets.length > 0
-                            ? `Presets ${visiblePresetStart}–${visiblePresetEnd} / ${presets.presets.length}`
-                            : "Add Presets"}
-            </span>
-            <button
-                type="button"
-                onClick={() => changePage(1)}
-                disabled={snapshotMode || pageCount <= 1}
-                style={{
-                    width: useFreeformPerformanceLayout
-                        ? "clamp(20px, 16cqw, 42px)"
-                        : undefined,
-                    minWidth: useFreeformPerformanceLayout ? 20 : 42,
-                    height: useFreeformPerformanceLayout
-                        ? "clamp(20px, 55cqh, 30px)"
-                        : undefined,
-                    minHeight: useFreeformPerformanceLayout ? 20 : 30,
-                    padding: useFreeformPerformanceLayout ? 0 : undefined,
-                    fontSize: useFreeformPerformanceLayout
-                        ? "clamp(.55rem, min(7cqw, 22cqh), 1rem)"
-                        : undefined,
-                    lineHeight: 1,
-                    borderRadius: useFreeformPerformanceLayout
-                        ? "clamp(4px, 3cqw, 7px)"
-                        : 7,
-                    border: `1px solid ${colors.bankSwitchBorder}`,
-                    background: colors.bankSwitchBackground,
-                    color: colors.bankSwitchValueText,
-                    flex: "0 0 auto"
-                }}
-            >
-                ▶
-            </button>
-        </div>
     );
 
     const activePresetHeaderContent = (
@@ -2609,16 +2481,6 @@ export default function FootControllerView({
                                         {bankHeaderContent}
                                     </div>
                                 );
-                            } else if (id === "presetPage") {
-                                content = (
-                                    <div style={{
-                                        position: "relative",
-                                        zIndex: 1,
-                                        width: "100%"
-                                    }}>
-                                        {presetPageHeaderContent}
-                                    </div>
-                                );
                             } else if (id === "activePreset") {
                                 content = (
                                     <div style={{
@@ -2664,14 +2526,6 @@ export default function FootControllerView({
                 }}>
                     {bankHeaderContent}
 
-                    <div style={{
-                        display: "flex",
-                        alignItems: "center",
-                        justifyContent: "center",
-                        minHeight: 38
-                    }}>
-                        {presetPageHeaderContent}
-                    </div>
 
                     <div style={{
                         borderTop: `1px solid ${colors.headerDivider}`,
@@ -2686,8 +2540,8 @@ export default function FootControllerView({
             {presetAssignPickerOpen && presetAssignTargetIndex !== null && (
                 <div style={{ position: "absolute", inset: 0, zIndex: 520, background: "rgba(0,0,0,.78)", display: "flex", alignItems: "center", justifyContent: "center" }} onClick={() => { setPresetAssignPickerOpen(false); setPresetAssignTargetIndex(null); }}>
                     <div style={{ width: "min(680px,94vw)", maxHeight: "84vh", overflowY: "auto", padding: 18, borderRadius: 12, border: `3px solid ${colors.bankSwitchBorder}`, background: colors.headerBackground }} onClick={(event) => event.stopPropagation()}>
-                        <div style={{ color: colors.bankTitleText, fontWeight: 900, marginBottom: 10 }}>ASSIGN PRESET TO TILE</div>
-                        {presets.presets.map((preset) => <button key={preset.instanceId} type="button" onClick={() => assignPresetIdToTile(preset.instanceId, presetAssignTargetIndex)} style={{ ...dropdownItemStyle(preset.instanceId === presets.selectedInstanceId, false), margin: "5px 0" }}>{preset.name}</button>)}
+                        <div style={{ color: colors.bankTitleText, fontWeight: 900, marginBottom: 10 }}>ASSIGN PRESET TO SWITCH</div>
+                        {presets.presets.map((preset) => <button key={preset.instanceId} type="button" onClick={() => assignPresetIdToSlot(preset.instanceId, presetAssignTargetIndex)} style={{ ...dropdownItemStyle(preset.instanceId === presets.selectedInstanceId, false), margin: "5px 0" }}>{preset.name}</button>)}
                         <button type="button" onClick={() => { setPresetAssignPickerOpen(false); setPresetAssignTargetIndex(null); }} style={{ ...dropdownItemStyle(false, false), marginTop: 10 }}>CANCEL</button>
                     </div>
                 </div>
@@ -2727,7 +2581,7 @@ export default function FootControllerView({
             {presetOptionsOpen && (
                 <div style={{ position: "absolute", inset: 0, zIndex: 500, display: "flex", alignItems: "center", justifyContent: "center", background: "rgba(0,0,0,.72)" }} onClick={closePresetOptions}>
                     <div style={{ width: "min(620px,92vw)", maxHeight: "82vh", overflowY: "auto", padding: 18, borderRadius: 12, border: `3px solid ${colors.bankSwitchBorder}`, background: colors.headerBackground }} onClick={(event) => event.stopPropagation()}>
-                        <div style={{ color: colors.bankTitleText, fontWeight: 900, marginBottom: 10 }}>PRESET TILE {selectedPresetSlot + 1} • PAGE {currentPage + 1}</div>
+                        <div style={{ color: colors.bankTitleText, fontWeight: 900, marginBottom: 10 }}>PRESET SWITCH {selectedPresetSlot + 1}</div>
                         {selectedSlotPreset && <div style={{ display: "flex", gap: 8, marginBottom: 10 }}>
                             <input value={presetRenameValue} onChange={(event) => setPresetRenameValue(event.target.value)} style={{ flex: 1, minHeight: 48, background: colors.switchBackground, color: colors.pageText, border: `2px solid ${colors.activeSwitchBorder}`, borderRadius: 8, padding: "6px 10px" }} />
                             <button type="button" onClick={() => void renameSelectedSlotPreset()}>RENAME</button>

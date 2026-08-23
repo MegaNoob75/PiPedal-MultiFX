@@ -1,0 +1,33 @@
+PiPedal MultiFX — Controller Protocol
+=====================================
+
+Current protocol version: 1
+Maximum logical footswitches: 12
+
+USB MIDI input from controller
+------------------------------
+CC30       Encoder rotation
+CC31       Encoder push
+CC40..CC51 Logical footswitch SW1..SW12
+             value >= 64 = pressed
+             value < 64  = released
+
+The physical controller never assigns musical meaning to SW1..SW12. The
+current MultiFX controller configuration decides whether a switch selects a
+preset, changes bank, toggles Chain Bypass, enters Snapshot Mode, or is unused.
+
+Runtime GPIO configuration (bridge -> ESP32)
+---------------------------------------------
+Private SysEx payload (MIDI transport supplies F0/F7):
+
+    7D 4D 46 58 01 COUNT [SW PIN]...
+
+7D       non-commercial manufacturer ID
+4D4658   ASCII "MFX"
+01       protocol version
+COUNT    number of SW/PIN pairs
+SW       logical switch 1..12
+PIN      GPIO 0..126, or 127 for disabled
+
+The ESP32 validates the complete map, rejects duplicate enabled pins, applies
+it atomically, and persists it in Preferences.

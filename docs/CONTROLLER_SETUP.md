@@ -1,104 +1,31 @@
 # Controller Setup
 
-[← Back to main README](../README.md)
+The current MultiFX controller protocol supports **12 logical footswitches**.
 
-PiPedal MultiFX supports a physical MIDI foot controller and can expose up to **32 physical switch inputs** to the user interface.
+Each footswitch sends a neutral physical identity (SW1..SW12 / CC40..CC51). Controller Settings decides what that switch does. The ESP32 does not contain preset, bank or snapshot logic.
 
-![Controller Settings](images/controller-settings.png)
+## Current ESP32-S3 hardware
 
-## Opening Controller Settings
+- Encoder A: GPIO 21
+- Encoder B: GPIO 17
+- Encoder push: GPIO 18
+- Pots: GPIO 8, 12, 13, 11
+- Footswitch GPIO mapping: sent at runtime by the MultiFX bridge and stored in ESP32 Preferences
 
-Open:
-
-```text
-MFX
-→ Settings
-→ Controller
-```
-
-The Controller Settings screen lets you build a visual switch layout that matches the physical enclosure while keeping hardware input assignments independent from screen position.
-
-## Physical Switch Inputs
-
-Each on-screen switch can be mapped to one physical switch input.
-
-For the MultiFX 32-switch MIDI protocol, switches use consecutive MIDI Control Change numbers:
+The canonical firmware is:
 
 ```text
-SW1  = CC 40
-SW2  = CC 41
-...
-SW32 = CC 71
+multifx/esp32s3/PiPedal_MultiFX_Controller/PiPedal_MultiFX_Controller.ino
 ```
 
-A value of **64 or higher** is treated as a press. A value below 64 is treated as a release.
-
-## Short Press and Long Press
-
-Each hardware switch can have:
-
-- a **Short press action**
-- an optional **Long press action**
-
-The controller-wide long-press threshold is configurable in milliseconds.
-
-Current action types include:
-
-- Preset Slot
-- Bank Up
-- Bank Down
-- Snapshot Mode
-- Chain Bypass
-- Unused
-
-The Performance View shows configured long-press functions using a small `HOLD:` label so alternate footswitch functions remain visible during use.
-
-### Snapshot Mode Behavior
-
-When Snapshot Mode is open, the preset tiles are replaced by the six native PiPedal snapshot slots.
-
-A normal short press of a switch whose regular action is **Bank Up** or **Bank Down** returns to Performance View instead of changing banks. Any recalled snapshot remains active.
-
-## Browser Transport
-
-The controller bridge translates switch events so they can reach the browser interface.
-
-The browser-key mapping is:
+The canonical protocol description is:
 
 ```text
-SW1–SW9    → keys 1–9
-SW10       → key 0
-SW11–SW32  → F1–F22
+multifx/MULTIFX_CONTROLLER_PROTOCOL.txt
 ```
 
-The key is only a physical-switch identity. The saved controller configuration determines the action performed by that switch.
+A physical controller is optional. Logical switches with `gpioPin: null` remain usable with touch/mouse.
 
-## Controller Configuration
+## MIDI device selection
 
-The controller configuration is stored at:
-
-```text
-/etc/pipedal/controller-config.json
-```
-
-The MultiFX installer preserves an existing controller configuration during normal updates.
-
-## Testing the Controller Bridge
-
-Check the service:
-
-```bash
-systemctl status pipedal-encoder.service --no-pager
-```
-
-For recent log output:
-
-```bash
-journalctl -u pipedal-encoder.service -n 50 --no-pager
-```
-
-A healthy service should be active and should report the MIDI input it selected.
-
-## No Controller?
-
-A physical MIDI controller is optional. MultiFX can still be operated from the touchscreen.
+The bridge deliberately refuses to bind to an arbitrary first MIDI device. It looks for a recognized controller name. If your ALSA device name is unusual, set `MULTIFX_MIDI_DEVICE_HINT` in a systemd override for `pipedal-encoder.service`.

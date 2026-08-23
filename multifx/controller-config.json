@@ -1,4 +1,5 @@
 {
+  "schemaVersion": 1,
   "columns": 4,
   "rows": 2,
   "gap": 10,
@@ -21,33 +22,33 @@
     "marqueeEndPauseSeconds": 1.0
   },
   "colors": {
-    "pageBackground": "#0D0B12",
-    "pageText": "#F5F3FF",
-    "headerBackground": "#15121B",
-    "headerBorder": "#2B2535",
-    "headerShadow": "0 4px 22px rgba(0, 0, 0, 0.58)",
+    "pageBackground": "#121212",
+    "pageText": "#ffffff",
+    "headerBackground": "#1e1e1e",
+    "headerBorder": "#333333",
+    "headerShadow": "0 4px 20px rgba(0,0,0,0.5)",
     "bankTitleText": "#A770E4",
-    "bankNameText": "#F5F3FF",
-    "activePresetLabelText": "#A8A3B3",
-    "activePresetNameText": "#22D3EE",
-    "headerDivider": "#2B2535",
-    "switchBackground": "#18151E",
-    "switchBorder": "#34303D",
-    "switchLabelText": "#938D9E",
-    "switchValueText": "#F5F3FF",
-    "bankSwitchBackground": "#24143A",
+    "bankNameText": "#ffffff",
+    "activePresetLabelText": "#aaaaaa",
+    "activePresetNameText": "#22c55e",
+    "headerDivider": "#333333",
+    "switchBackground": "#1e1e1e",
+    "switchBorder": "#333333",
+    "switchLabelText": "#888888",
+    "switchValueText": "#ffffff",
+    "bankSwitchBackground": "#2a1b40",
     "bankSwitchBorder": "#A770E4",
-    "bankSwitchLabelText": "#D8B4FE",
-    "bankSwitchValueText": "#FFFFFF",
-    "activeSwitchBackground": "#083344",
-    "activeSwitchBorder": "#22D3EE",
-    "activeSwitchLabelText": "#A5F3FC",
-    "activeSwitchValueText": "#ECFEFF",
-    "activeSwitchShadow": "0 0 22px rgba(34, 211, 238, 0.38)",
-    "disabledSwitchOpacity": 0.45,
-    "configErrorBackground": "#3A171C",
-    "configErrorBorder": "#FB7185",
-    "configErrorText": "#FECDD3"
+    "bankSwitchLabelText": "#b99adf",
+    "bankSwitchValueText": "#ffffff",
+    "activeSwitchBackground": "#22c55e",
+    "activeSwitchBorder": "#4ade80",
+    "activeSwitchLabelText": "#d9ffe5",
+    "activeSwitchValueText": "#071a0c",
+    "activeSwitchShadow": "0 0 20px rgba(34,197,94,0.45)",
+    "disabledSwitchOpacity": 0.48,
+    "configErrorBackground": "#3b1111",
+    "configErrorBorder": "#ef4444",
+    "configErrorText": "#fecaca"
   },
   "switches": [
     {
@@ -104,7 +105,8 @@
       "hardwareSwitch": 4,
       "gpioPin": 16,
       "action": {
-        "type": "bankUp"
+        "type": "preset",
+        "presetIndex": 3
       },
       "longPressAction": {
         "type": "none",
@@ -119,8 +121,7 @@
       "hardwareSwitch": 5,
       "gpioPin": 1,
       "action": {
-        "type": "preset",
-        "presetIndex": 3
+        "type": "chainBypass"
       },
       "longPressAction": {
         "type": "none",
@@ -135,8 +136,7 @@
       "hardwareSwitch": 6,
       "gpioPin": 2,
       "action": {
-        "type": "preset",
-        "presetIndex": 4
+        "type": "snapshotMode"
       },
       "longPressAction": {
         "type": "none",
@@ -151,8 +151,7 @@
       "hardwareSwitch": 7,
       "gpioPin": 4,
       "action": {
-        "type": "preset",
-        "presetIndex": 5
+        "type": "bankUp"
       },
       "longPressAction": {
         "type": "none",
@@ -176,5 +175,172 @@
       "row": 2,
       "column": 4
     }
-  ]
+  ],
+  "performanceLayout": {
+    "mode": "grid",
+    "switches": {},
+    "unplacedSwitchIds": [],
+    "elements": {
+      "currentBank": {
+        "id": "currentBank",
+        "visible": true,
+        "rect": {
+          "x": 0,
+          "y": 0,
+          "width": 0.48,
+          "height": 0.18
+        },
+        "style": "panel",
+        "shape": "rounded",
+        "showLabel": true
+      },
+      "activePreset": {
+        "id": "activePreset",
+        "visible": true,
+        "rect": {
+          "x": 0.52,
+          "y": 0,
+          "width": 0.48,
+          "height": 0.18
+        },
+        "style": "panel",
+        "shape": "rounded",
+        "showLabel": true
+      },
+      "cpuUsage": {
+        "id": "cpuUsage",
+        "visible": false,
+        "rect": {
+          "x": 0.35,
+          "y": 0.35,
+          "width": 0.22,
+          "height": 0.14
+        },
+        "style": "compact",
+        "shape": "circle",
+        "showLabel": true
+      },
+      "xruns": {
+        "id": "xruns",
+        "visible": false,
+        "rect": {
+          "x": 0.35,
+          "y": 0.35,
+          "width": 0.22,
+          "height": 0.14
+        },
+        "style": "compact",
+        "shape": "hexagon",
+        "showLabel": true
+      },
+      "lastXrun": {
+        "id": "lastXrun",
+        "visible": false,
+        "rect": {
+          "x": 0.35,
+          "y": 0.35,
+          "width": 0.22,
+          "height": 0.14
+        },
+        "style": "compact",
+        "shape": "rounded",
+        "showLabel": true
+      },
+      "temperature": {
+        "id": "temperature",
+        "visible": false,
+        "rect": {
+          "x": 0.35,
+          "y": 0.35,
+          "width": 0.22,
+          "height": 0.14
+        },
+        "style": "compact",
+        "shape": "circle",
+        "showLabel": true
+      },
+      "cpuFrequency": {
+        "id": "cpuFrequency",
+        "visible": false,
+        "rect": {
+          "x": 0.35,
+          "y": 0.35,
+          "width": 0.22,
+          "height": 0.14
+        },
+        "style": "compact",
+        "shape": "rounded",
+        "showLabel": true
+      },
+      "cpuGovernor": {
+        "id": "cpuGovernor",
+        "visible": false,
+        "rect": {
+          "x": 0.35,
+          "y": 0.35,
+          "width": 0.22,
+          "height": 0.14
+        },
+        "style": "compact",
+        "shape": "rounded",
+        "showLabel": true
+      },
+      "audioStatus": {
+        "id": "audioStatus",
+        "visible": false,
+        "rect": {
+          "x": 0.35,
+          "y": 0.35,
+          "width": 0.22,
+          "height": 0.14
+        },
+        "style": "minimal",
+        "shape": "rounded",
+        "showLabel": true
+      },
+      "systemStatus": {
+        "id": "systemStatus",
+        "visible": false,
+        "rect": {
+          "x": 0.25,
+          "y": 0.25,
+          "width": 0.5,
+          "height": 0.24
+        },
+        "style": "panel",
+        "shape": "rounded",
+        "showLabel": true
+      },
+      "chainBypassStatus": {
+        "id": "chainBypassStatus",
+        "visible": false,
+        "rect": {
+          "x": 0.35,
+          "y": 0.35,
+          "width": 0.22,
+          "height": 0.14
+        },
+        "style": "compact",
+        "shape": "rounded",
+        "showLabel": true
+      },
+      "snapshotModeStatus": {
+        "id": "snapshotModeStatus",
+        "visible": false,
+        "rect": {
+          "x": 0.35,
+          "y": 0.35,
+          "width": 0.22,
+          "height": 0.14
+        },
+        "style": "compact",
+        "shape": "rounded",
+        "showLabel": true
+      }
+    }
+  },
+  "layoutDefaults": {
+    "grid": null,
+    "freeform": null
+  }
 }

@@ -4,219 +4,136 @@
 
 > **AI development notice**
 >
-> PiPedal MultiFX is coded entirely through collaboration with **ChatGPT by OpenAI**. The project owner defines, tests, and directs the features and behavior, while ChatGPT is used to design, write, review, document, and troubleshoot the project code.
->
-> This notice is included so users and contributors clearly understand how the project is developed.
+> PiPedal MultiFX is coded through collaboration with **ChatGPT by OpenAI**. The project owner defines, tests, and directs behavior while ChatGPT is used to design, write, review, document, and troubleshoot code.
 
-PiPedal MultiFX is an unofficial alternative interface for [PiPedal](https://github.com/rerdavies/pipedal), designed for Raspberry Pi pedalboards where fast preset access, touchscreen use, physical footswitch control, and live-performance visibility matter most.
+PiPedal MultiFX is an unofficial alternative interface for [PiPedal](https://github.com/rerdavies/pipedal), aimed at Raspberry Pi pedalboards where fast preset access, touchscreen use, physical footswitch control, and live-performance visibility matter most.
 
-> **PiPedal MultiFX does not replace the PiPedal audio engine.**  
-> MultiFX is a presentation and controller layer built around PiPedal. PiPedal remains responsible for audio processing, plugins, presets, snapshots, and the underlying pedalboard model.
-
-[![Latest Release](https://img.shields.io/github/v/release/MegaNoob75/PiPedal-MultiFX?display_name=tag&label=release)](https://github.com/MegaNoob75/PiPedal-MultiFX/releases/latest)
-[![License](https://img.shields.io/badge/license-see%20LICENSE.md-808080)](LICENSE.md)
+> **MultiFX does not replace the PiPedal audio engine.** PiPedal remains authoritative for audio processing, plugins, presets, banks, snapshots, and the underlying pedalboard model.
 
 ## Performance View
 
 ![PiPedal MultiFX Performance View](docs/images/performance-view.png)
 
-Performance View is the main live screen. It keeps the current bank, active preset, virtual preset page, hardware assignments, long-press functions, and state LEDs visible at a glance.
+Performance View shows the current real PiPedal bank, active preset, configured logical switches, and optional live status widgets. There is intentionally **no second preset-page system** inside a bank.
 
-Preset tiles can span multiple virtual pages inside one real PiPedal bank, so a small physical controller can access more presets without changing the underlying PiPedal bank structure.
+Each preset switch has one assignment for each PiPedal bank. If you need another related group of presets, create another bank—for example `Clean` and `Clean 2`. This keeps the live hierarchy identical to PiPedal's native bank model.
 
 ## Features
 
 ### Live Performance
 
-- Touchscreen-first **Performance View**
-- Real PiPedal banks and presets with MultiFX virtual preset pages
-- Drag-and-drop preset tile placement
-- Empty preset tiles for creating or assigning presets
-- Current bank and active preset dropdowns
-- Active preset LED state:
-  - **Green** — clean base preset
-  - **Flashing yellow** — unsaved base-preset change
-  - **Blue** — native PiPedal snapshot active
-  - **Red** — temporary chain bypass
-- Quick access to the original PiPedal interface
-- Responsive interface designed around **1024×600 and larger displays**
-
-### Snapshots
-
-- Native PiPedal snapshot support
-- Six snapshot slots per preset
-- Dedicated **Snapshot Mode** for live recall
-- Snapshot Mode keeps snapshot selection separate from base-preset editing
-- Dedicated **Snapshot Editor** with the preset chain locked
-- Create, edit, recall, rename, recolor, and delete snapshots
-- Snapshot changes are persisted without promoting snapshot sound into the base preset
-- Returning to Performance can leave the recalled snapshot active
-- In Snapshot Mode, normal Bank Up / Bank Down short presses act as a return to Performance instead of changing banks
+- Touchscreen-first Performance View
+- Real PiPedal banks and presets; no virtual preset pages
+- Preset assignments keyed by **bank + logical switch ID**
+- Duplicate preset assignments are supported
+- Empty preset switches can be assigned or used to create a preset
+- Grid and Freeform controller layouts
+- Configurable dashboard/status elements
+- Native CPU, XRun, temperature, frequency, governor and audio status
+- Temporary Chain Bypass
+- Native PiPedal Snapshot Mode
+- Responsive interface designed around 1024×600 and larger displays
 
 ### Controller
 
-- Up to **32 physical footswitch inputs**
-- MIDI CC switch protocol
-- Drag-and-drop visual controller layout
-- Configurable rows and columns
-- Assign hardware inputs independently from on-screen position
+- Up to **12 logical physical footswitches** in the current protocol
+- SW1..SW12 use neutral MIDI CC identities; musical actions are assigned in MultiFX
+- Optional runtime-configurable ESP32-S3 GPIO mapping
 - Short-press and long-press actions
-- Configurable long-press time
-- Preset Slot, Bank Up, Bank Down, Snapshot Mode, Chain Bypass, and Unused actions
-- Controller configuration preserved during normal MultiFX updates
+- Preset, Bank Up, Bank Down, Snapshot Mode, Chain Bypass and Unused actions
+- Controller layout/configuration shared between the floor unit and desktop browser
+- One strict current configuration schema; obsolete schemas are rejected rather than migrated
 
 ### Editing and Management
 
 - Bank / Preset Manager
-- Create, rename, delete, load, and reorder banks and presets
-- MultiFX Preset Editor
-- Effect editor using PiPedal plugin controls
-- Preset chain editing
-- Snapshot access directly from the Preset Editor
-- Original PiPedal system/settings screens remain accessible
+- Create, rename, delete, load and reorder banks/presets
+- Clone/download/upload native PiPedal banks
+- Cloning a bank also clones its Performance switch assignment pattern
+- MultiFX Preset Editor and effect editor
+- Snapshot Manager and Snapshot Editor
+- Original PiPedal screens remain available
 
-### Appearance and Device Settings
+### State model
 
-- Built-in Theme Manager
-- Large built-in theme library
-- Custom theme editing
-- Theme import/export
-- Per-device Performance layout
-- Match the physical pedal layout or use a larger virtual preset grid
-- MultiFX settings backup and restore
-- Reset MultiFX-only settings without altering PiPedal presets or audio configuration
-- Musical/controller state can remain shared while presentation/navigation settings stay local to each browser/device
+Shared musical/controller state:
 
-## Screenshots
+- Native bank/preset selection
+- Effect/control values
+- Native snapshot selection
+- MultiFX Snapshot Mode
+- Chain Bypass
+- Controller configuration
+- Per-bank Performance preset assignments
 
-### Snapshot Mode
+Local browser presentation/navigation:
 
-![PiPedal MultiFX Snapshot Mode](docs/images/snapshot-mode.png)
+- Performance View vs Original PiPedal View
+- MultiFX internal screen/menu/dialog navigation
+- Theme
+- Local focus/highlight state
 
-Snapshot Mode replaces the preset tiles with six native PiPedal snapshot slots while keeping the current bank and preset visible.
+Only durable user configuration is persisted by the MultiFX bridge. Temporary live modes are reset to neutral when the bridge restarts.
 
-### Snapshot Editor
+## Snapshots
 
-![PiPedal MultiFX Snapshot Editor](docs/images/snapshot-editor.png)
+MultiFX uses PiPedal's native six snapshot slots. Snapshot editing restores the saved base preset before persistence so snapshot-modified control values cannot accidentally become the base preset sound.
 
-Snapshot Editor edits snapshot sound only. The preset chain is locked so a snapshot cannot accidentally become a different pedalboard structure or replace the base preset.
+## Controller firmware
 
-### Bank / Preset Manager
+The canonical ESP32-S3 sketch is:
 
-![PiPedal MultiFX Bank and Preset Manager](docs/images/bank-preset-manager.png)
+```text
+multifx/esp32s3/PiPedal_MultiFX_Controller/PiPedal_MultiFX_Controller.ino
+```
 
-Manage real PiPedal banks and presets from the MultiFX shell.
+The current hardware mapping retains:
 
-### Preset Editor
+- Encoder A/B: GPIO 21 / GPIO 17
+- Encoder push: GPIO 18
+- Pots: GPIO 8 / 12 / 13 / 11
+- Footswitch GPIOs are configured at runtime from Controller Settings
 
-![PiPedal MultiFX Preset Editor](docs/images/preset-editor.png)
-
-Build and arrange the pedalboard while retaining a touchscreen-friendly MultiFX shell.
-
-### Effect Editor
-
-![PiPedal MultiFX Effect Editor](docs/images/effect-editor.png)
-
-Edit PiPedal plugin controls directly from the MultiFX interface.
-
-### Settings
-
-![PiPedal MultiFX Settings](docs/images/settings-hub.png)
-
-Settings are split into Controller, Theme, MultiFX-UI, and PiPedal / System areas.
-
-### Controller Settings
-
-![PiPedal MultiFX Controller Settings](docs/images/controller-settings.png)
-
-Arrange the on-screen controller to match the physical enclosure and configure hardware, short-press, and long-press actions.
-
-### Theme Manager
-
-![PiPedal MultiFX Theme Manager](docs/images/theme-manager.png)
-
-Preview built-in themes, customize colors, save custom themes, and import/export theme data.
-
-### MultiFX-UI Settings
-
-![PiPedal MultiFX UI Settings](docs/images/multifx-ui-settings.png)
-
-Back up MultiFX settings, choose a per-device Performance layout, review shared/local state behavior, or reset only MultiFX configuration.
+Protocol details are in `multifx/MULTIFX_CONTROLLER_PROTOCOL.txt`.
 
 ## Documentation
 
 - [Installation and Updates](docs/INSTALLATION.md)
-- [Snapshots and Snapshot Mode](docs/SNAPSHOTS.md)
+- [Snapshots and Snapshot Mode](docs/Snapshots.md)
 - [Controller Setup](docs/CONTROLLER_SETUP.md)
-- [Configuring the Controller Layout](docs/LAYOUT_CONFIGURATION.md)
-- [MultiFX-UI Settings and Backup / Restore](docs/MULTIFX_UI.md)
+- [Controller Layout](docs/LAYOUT_CONFIGURATION.md)
+- [MultiFX UI Settings / Backup](docs/MULTIFX_UI.md)
 - [Themes](docs/THEMES.md)
-
-## Recommended Hardware
-
-PiPedal MultiFX is primarily aimed at Raspberry Pi-based floor units.
-
-Recommended setup:
-
-- Raspberry Pi 5
-- Raspberry Pi OS
-- PiPedal
-- 7-inch or larger touchscreen
-- 1024×600 or higher display resolution
-- USB audio interface or compatible Raspberry Pi audio hardware
-- Optional USB MIDI foot controller
-
-A physical controller is not required; MultiFX can be used entirely from the touchscreen.
-
-The original PiPedal project supports additional platforms and hardware. See the [official PiPedal project](https://github.com/rerdavies/pipedal) for PiPedal's full system requirements and audio-engine documentation.
-
-## Installation
-
-For the easiest setup, download the latest Raspberry Pi package from:
-
-**[PiPedal MultiFX Releases](https://github.com/MegaNoob75/PiPedal-MultiFX/releases/latest)**
-
-Then follow the [Installation Guide](docs/INSTALLATION.md).
-
-The MultiFX installer adds the alternate frontend and controller services to an existing PiPedal installation. It preserves supported MultiFX configuration during updates and maintains a backup of the frontend that was present before MultiFX was first installed so the uninstaller can restore it.
-
-## Basic Use
-
-After installation:
-
-1. Open PiPedal MultiFX in the kiosk or browser.
-2. Use **Performance View** for normal live operation.
-3. Tap or trigger a preset tile to load a preset.
-4. Hold the configured Snapshot Mode switch, or enter Snapshot Mode through the configured action, to access the six native snapshot slots.
-5. Use **MFX → Settings** for controller, theme, per-device UI, and PiPedal/system configuration.
-6. Use **MFX → Banks / Presets** to manage banks and presets.
-7. Use the preset editor when you need to change the base pedalboard.
-8. Switch to the original PiPedal interface whenever you need native PiPedal screens that MultiFX does not replace.
-
-See the linked documentation above for detailed setup and behavior.
-
-## About PiPedal
-
-PiPedal MultiFX is built on top of the excellent open-source [PiPedal](https://github.com/rerdavies/pipedal) project by Robin Davies.
-
-PiPedal provides the low-latency audio engine, LV2 hosting, preset system, native snapshots, NAM support, device configuration, and the application model used by MultiFX.
-
-MultiFX intentionally uses PiPedal's native model and operations wherever possible instead of duplicating PiPedal functionality.
-
-This project is **not an official PiPedal project**.
 
 ## Development
 
-Development takes place on the `dev` branch. Stable tested versions are merged to `main`.
+Development takes place on `dev`. Tested working states are merged into `main`; release/checkpoint tags are created from known-good commits.
 
-Tagged checkpoints use names such as:
+For frontend development:
 
-```text
-multifx-v1.007
+```bash
+cd vite
+npm run build
 ```
 
-Release downloads are available from the GitHub [Releases](https://github.com/MegaNoob75/PiPedal-MultiFX/releases) page.
+## Configuration compatibility during development
+
+MultiFX currently uses a strict schema intentionally. An old controller configuration or old preset-tile/page store is **not migrated**. This avoids retaining compatibility code while the current design is being stabilized.
+
+The current assignment model is:
+
+```text
+PiPedal bank ID + logical switch ID -> PiPedal preset ID (or empty)
+```
+
+Layout geometry never changes that musical mapping.
+
+## About PiPedal
+
+PiPedal MultiFX is built on the open-source [PiPedal](https://github.com/rerdavies/pipedal) project by Robin Davies. MultiFX uses PiPedal's native model and operations wherever possible instead of duplicating audio/preset behavior.
+
+This project is **not an official PiPedal project**.
 
 ## License
 
-See [LICENSE.md](LICENSE.md) for the licenses that apply to this repository and the upstream PiPedal code on which it is based.
+See [LICENSE.md](LICENSE.md).

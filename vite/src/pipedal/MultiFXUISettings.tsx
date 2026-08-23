@@ -2,28 +2,23 @@ import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { MFX_COLORS } from "./MultiFXTheme";
 import {
-    applyPresetTileStoreFromRuntime
-} from "./MultiFXPresetTileMap";
+    clearPresetAssignmentCache,
+    replacePresetAssignments,
+    resetPresetAssignments
+} from "./MultiFXPresetAssignments";
 import {
     readMultiFXRuntimeState,
     updateMultiFXRuntimeState
 } from "./MultiFXRuntimeSync";
 
 const BACKUP_FORMAT = "pipedal-multifx-ui-backup";
-const BACKUP_VERSION = 3;
+const BACKUP_VERSION = 4;
 
 const THEME_STORAGE_KEY = "pipedal-multifx-theme-v1";
 const CUSTOM_THEMES_STORAGE_KEY =
     "pipedal-multifx-custom-themes-v1";
 const CONTROLLER_STORAGE_KEY =
-    "pipedal-multifx-controller-config-v1";
-const PRESET_TILE_STORAGE_KEY =
-    "pipedal-multifx-preset-tiles-v1";
-
-// Removed feature. Clear this key during restore/reset so an old browser does
-// not keep carrying obsolete per-device Performance layout state.
-const LEGACY_DEVICE_PREFERENCES_STORAGE_KEY =
-    "pipedal-multifx-device-preferences-v1";
+    "pipedal-multifx-controller-config-v2";
 
 const LOCAL_STORAGE_KEYS = [
     THEME_STORAGE_KEY,
@@ -34,7 +29,7 @@ type BackupSettings = Record<string, string | null>;
 
 type SharedBackupState = {
     controllerConfig?: unknown | null;
-    presetTileStore?: unknown;
+    presetAssignments?: unknown;
 };
 
 interface MultiFXBackupFile {
@@ -42,7 +37,7 @@ interface MultiFXBackupFile {
     version: number;
     createdAt: string;
     settings: BackupSettings;
-    sharedState?: SharedBackupState;
+    sharedState: SharedBackupState;
 }
 
 function readStoredJson(key: string): unknown | undefined {
@@ -87,38 +82,6 @@ function downloadJson(
     URL.revokeObjectURL(url);
 }
 
-function getLegacySharedState(
-    backup: MultiFXBackupFile
-): SharedBackupState {
-    const result: SharedBackupState = {};
-
-    const controllerRaw =
-        backup.settings[CONTROLLER_STORAGE_KEY];
-    if (typeof controllerRaw === "string") {
-        try {
-            result.controllerConfig =
-                JSON.parse(controllerRaw) as unknown;
-        } catch {
-            // Ignore malformed legacy cache data.
-        }
-    } else if (controllerRaw === null) {
-        result.controllerConfig = null;
-    }
-
-    const tilesRaw =
-        backup.settings[PRESET_TILE_STORAGE_KEY];
-    if (typeof tilesRaw === "string") {
-        try {
-            result.presetTileStore =
-                JSON.parse(tilesRaw) as unknown;
-        } catch {
-            // Ignore malformed legacy cache data.
-        }
-    }
-
-    return result;
-}
-
 export default function MultiFXUISettings() {
     const [message, setMessage] = useState("");
     const [resetConfirmOpen, setResetConfirmOpen] =
@@ -127,12 +90,6 @@ export default function MultiFXUISettings() {
     const reloadTimerRef = useRef<number | null>(null);
 
     useEffect(() => {
-        // Remove the retired per-device Performance layout cache once this
-        // cleaned settings view has run.
-        window.localStorage.removeItem(
-            LEGACY_DEVICE_PREFERENCES_STORAGE_KEY
-        );
-
         return () => {
             if (messageTimerRef.current !== null) {
                 window.clearTimeout(messageTimerRef.current);
@@ -182,11 +139,11 @@ export default function MultiFXUISettings() {
             let controllerConfig =
                 readStoredJson(CONTROLLER_STORAGE_KEY)
                     ?? null;
-            let presetTileStore =
-                readStoredJson(PRESET_TILE_STORAGE_KEY);
+            let presetAssignments: unknown = undefined;
 
             // Runtime state is authoritative for shared Performance/controller
-            // state. Fall back to browser cache only if the bridge is offline.
+            // state. A backup is explicit recovery data, so do not invent or
+            // migrate state from retired browser-only formats.
             try {
                 const runtime = await readMultiFXRuntimeState();
 
@@ -195,12 +152,14 @@ export default function MultiFXUISettings() {
                         runtime.controllerConfig;
                 }
 
-                if (runtime.presetTileStore !== undefined) {
-                    presetTileStore =
-                        runtime.presetTileStore;
+                if (runtime.presetAssignments !== undefined) {
+                    presetAssignments =
+                        runtime.presetAssignments;
                 }
-            } catch {
-                // Offline backup still includes the most recent local cache.
+            } catch (error) {
+                throw new Error(
+                    `The MultiFX runtime service is unavailable: ${String(error)}`
+                );
             }
 
             const backup: MultiFXBackupFile = {
@@ -210,7 +169,7 @@ export default function MultiFXUISettings() {
                 settings: localSettings,
                 sharedState: {
                     controllerConfig,
-                    presetTileStore
+                    presetAssignments
                 }
             };
 
@@ -255,17 +214,12 @@ export default function MultiFXUISettings() {
                 }
             }
 
-            window.localStorage.removeItem(
-                LEGACY_DEVICE_PREFERENCES_STORAGE_KEY
-            );
 
-            const sharedState =
-                value.sharedState
-                ?? getLegacySharedState(value);
+            const sharedState = value.sharedState;
 
             const patch: {
                 controllerConfig?: unknown | null;
-                presetTileStore?: unknown;
+                presetAssignments?: unknown;
             } = {};
 
             if (
@@ -285,20 +239,13 @@ export default function MultiFXUISettings() {
             if (
                 Object.prototype.hasOwnProperty.call(
                     sharedState,
-                    "presetTileStore"
+                    "presetAssignments"
                 )
+                && sharedState.presetAssignments !== undefined
             ) {
-                patch.presetTileStore =
-                    sharedState.presetTileStore;
-
-                if (
-                    sharedState.presetTileStore
-                    !== undefined
-                ) {
-                    applyPresetTileStoreFromRuntime(
-                        sharedState.presetTileStore
-                    );
-                }
+                await replacePresetAssignments(
+                    sharedState.presetAssignments
+                );
             }
 
             // The bridge is the authority. Restore shared state there before
@@ -342,27 +289,12 @@ export default function MultiFXUISettings() {
             window.localStorage.removeItem(
                 CONTROLLER_STORAGE_KEY
             );
-            window.localStorage.removeItem(
-                PRESET_TILE_STORAGE_KEY
-            );
-            window.localStorage.removeItem(
-                LEGACY_DEVICE_PREFERENCES_STORAGE_KEY
-            );
 
-            const emptyTileStore = {
-                version: 1 as const,
-                banks: {}
-            };
-
-            // Reset the shared authority, not just this browser's cache.
+            await resetPresetAssignments();
+            clearPresetAssignmentCache();
             await updateMultiFXRuntimeState({
-                controllerConfig: null,
-                presetTileStore: emptyTileStore
+                controllerConfig: null
             });
-
-            applyPresetTileStoreFromRuntime(
-                emptyTileStore
-            );
             window.dispatchEvent(
                 new Event(
                     "multifx-controller-config-changed"
@@ -414,7 +346,7 @@ export default function MultiFXUISettings() {
 
                     <div style={sectionDescriptionStyle}>
                         Save or restore MultiFX-only configuration,
-                        including the shared Performance tile map and
+                        including the shared Performance preset assignments and
                         controller layout. PiPedal presets, banks, audio,
                         MIDI, Wi-Fi and system settings are not included.
                     </div>
@@ -493,11 +425,11 @@ export default function MultiFXUISettings() {
                             value="SHARED"
                         />
                         <SyncRow
-                            label="Performance Tile Layout"
+                            label="Performance Preset Assignments"
                             value="SHARED"
                         />
                         <SyncRow
-                            label="Performance Page / Selection"
+                            label="Performance Switch Selection"
                             value="SHARED"
                         />
                         <SyncRow
@@ -531,7 +463,7 @@ export default function MultiFXUISettings() {
                     </div>
 
                     <div style={sectionDescriptionStyle}>
-                        Clear the shared Performance tile map,
+                        Clear the shared Performance preset assignments,
                         shared controller configuration, theme selection
                         and custom themes. Native PiPedal data is not
                         changed.
@@ -630,11 +562,7 @@ function isValidBackup(
 
     if (
         value.format !== BACKUP_FORMAT
-        || (
-            value.version !== 1
-            && value.version !== 2
-            && value.version !== BACKUP_VERSION
-        )
+        || value.version !== BACKUP_VERSION
         || !isRecord(value.settings)
     ) {
         return false;
@@ -655,8 +583,7 @@ function isValidBackup(
     }
 
     if (
-        value.sharedState !== undefined
-        && !isRecord(value.sharedState)
+        !isRecord(value.sharedState)
     ) {
         return false;
     }

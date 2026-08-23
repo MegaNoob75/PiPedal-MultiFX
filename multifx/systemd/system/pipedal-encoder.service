@@ -7,6 +7,9 @@ After=pipedal-ydotoold.service sound.target
 Type=simple
 User=root
 Environment=YDOTOOL_SOCKET=/tmp/.ydotool_socket
+# Optional if your controller's ALSA name does not contain Control Surface,
+# ESP32 or USB MIDI:
+# Environment=MULTIFX_MIDI_DEVICE_HINT=PiPedal Control Surface
 ExecStart=/usr/bin/python3 /usr/local/lib/pipedal-multifx/pipedal_encoder_bridge.py
 Restart=always
 RestartSec=2

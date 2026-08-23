@@ -26,8 +26,6 @@ import {
     saveControllerConfig
 } from "./ControllerConfig";
 import { MFX_COLORS, MFX_HEADER_HEIGHT } from "./MultiFXTheme";
-import { PiPedalModelFactory } from "./PiPedalModel";
-import { migratePresetSlotCountForBank } from "./MultiFXPresetTileMap";
 
 type ActionKind =
     | "none"
@@ -103,6 +101,31 @@ function saveLayoutSnapPixels(value: number) {
     }
 }
 
+const LAYOUT_SNAP_ENABLED_STORAGE_KEY =
+    "pipedal-multifx-layout-snap-enabled-v1";
+
+function loadLayoutSnapEnabled(): boolean {
+    try {
+        const raw = window.localStorage.getItem(
+            LAYOUT_SNAP_ENABLED_STORAGE_KEY
+        );
+        return raw === null ? true : raw !== "false";
+    } catch {
+        return true;
+    }
+}
+
+function saveLayoutSnapEnabled(value: boolean) {
+    try {
+        window.localStorage.setItem(
+            LAYOUT_SNAP_ENABLED_STORAGE_KEY,
+            value ? "true" : "false"
+        );
+    } catch {
+        // Browser storage is optional.
+    }
+}
+
 type DragTarget =
     | {
         kind: "element";
@@ -116,6 +139,71 @@ type DragState = DragTarget & {
     startX: number;
     startY: number;
     startRect: ControllerLayoutRect;
+    previewRect: ControllerLayoutRect;
+    moved: boolean;
+};
+
+type FreeformDragVisual = {
+    targetKey: string;
+    rect: ControllerLayoutRect;
+};
+
+type PlacementTarget =
+    | {
+        kind: "element";
+        id: ControllerLayoutElementId;
+    }
+    | {
+        kind: "switch";
+        id: string;
+    };
+
+type PlacementDragState = PlacementTarget & {
+    pointerId: number;
+    label: string;
+    preferredWidth: number;
+    preferredHeight: number;
+    minWidth: number;
+    minHeight: number;
+    previewRect: ControllerLayoutRect | null;
+    valid: boolean;
+};
+
+type PlacementDragVisual = PlacementTarget & {
+    label: string;
+    rect: ControllerLayoutRect;
+    valid: boolean;
+};
+
+type GridDragState = {
+    id: string;
+    label: string;
+    sublabel: string;
+    pointerId: number;
+    startX: number;
+    startY: number;
+    offsetX: number;
+    offsetY: number;
+    width: number;
+    height: number;
+    sourceRow: number;
+    sourceColumn: number;
+    moved: boolean;
+};
+
+type GridDragVisual = {
+    id: string;
+    label: string;
+    sublabel: string;
+    x: number;
+    y: number;
+    width: number;
+    height: number;
+};
+
+type GridDropCell = {
+    row: number;
+    column: number;
 };
 
 
@@ -194,21 +282,12 @@ function setConfigTargetRect(
         ...config,
         performanceLayout: {
             ...config.performanceLayout,
-            bankHeader:
-                elements.currentBank.rect,
-            presetPageHeader:
-                elements.presetPage.rect,
-            activePresetHeader:
-                elements.activePreset.rect,
             elements
         }
     };
 }
 
 function cloneConfig(config: ControllerLayoutConfig): ControllerLayoutConfig {
-    // JSON cloning drops properties whose value is undefined. gpioPin uses an
-    // explicit undefined runtime value for a deliberately disconnected switch,
-    // so preserve that distinction until ControllerConfig serializes it as null.
     return structuredClone(config);
 }
 
@@ -382,13 +461,6 @@ function normalizeControllerPresetSlots(
     });
 }
 
-function shortPresetSlotCount(
-    config: ControllerLayoutConfig
-): number {
-    return config.switches.filter(
-        (item) => item.action.type === "preset"
-    ).length;
-}
 
 function minimumRowsFor(
     switchCount: number,
@@ -493,11 +565,6 @@ function rectsOverlap(
 }
 
 
-type LayoutItemRect = {
-    id: string;
-    rect: ControllerLayoutRect;
-};
-
 function rectInsideBounds(rect: ControllerLayoutRect): boolean {
     return (
         rect.x >= 0
@@ -510,102 +577,416 @@ function rectInsideBounds(rect: ControllerLayoutRect): boolean {
 }
 
 
-function tryPlaceNewFreeformSwitch(
+function freeformOccupiedRects(
+    config: ControllerLayoutConfig,
+    exclude?: PlacementTarget
+): ControllerLayoutRect[] {
+    const layout = config.performanceLayout;
+
+    const elementRects = CONTROLLER_LAYOUT_ELEMENT_IDS
+        .filter(
+            (id) =>
+                layout.elements[id].visible
+                && !(
+                    exclude?.kind === "element"
+                    && exclude.id === id
+                )
+        )
+        .map((id) => layout.elements[id].rect);
+
+    const switchRects = config.switches
+        .filter(
+            (item) =>
+                !layout.unplacedSwitchIds.includes(item.id)
+                && !(
+                    exclude?.kind === "switch"
+                    && exclude.id === item.id
+                )
+        )
+        .map((item) => layout.switches[item.id])
+        .filter(
+            (rect): rect is ControllerLayoutRect =>
+                Boolean(rect)
+        );
+
+    return [...elementRects, ...switchRects];
+}
+
+function preferredFreeformSwitchSize(
     config: ControllerLayoutConfig,
     switchId: string
-): ControllerLayoutConfig | null {
+): {
+    width: number;
+    height: number;
+} {
     const layout = config.performanceLayout;
+    const existingRect = config.switches
+        .filter(
+            (item) =>
+                item.id !== switchId
+                && !layout.unplacedSwitchIds.includes(item.id)
+        )
+        .map((item) => layout.switches[item.id])
+        .find(
+            (rect): rect is ControllerLayoutRect =>
+                Boolean(rect)
+        );
+
+    if (existingRect) {
+        return {
+            width: Math.max(
+                MIN_FREEFORM_SWITCH_WIDTH,
+                existingRect.width
+            ),
+            height: Math.max(
+                MIN_FREEFORM_SWITCH_HEIGHT,
+                existingRect.height
+            )
+        };
+    }
+
     const visibleElementBottoms = CONTROLLER_LAYOUT_ELEMENT_IDS
         .map((id) => layout.elements[id])
         .filter((element) => element.visible)
-        .map((element) => element.rect.y + element.rect.height);
+        .map(
+            (element) =>
+                element.rect.y + element.rect.height
+        );
     const headerBottom = visibleElementBottoms.length > 0
         ? Math.max(...visibleElementBottoms)
         : 0;
+    const availableHeight = Math.max(
+        MIN_FREEFORM_SWITCH_HEIGHT,
+        1 - headerBottom
+    );
 
-    const existingRects: LayoutItemRect[] = [
-        ...CONTROLLER_LAYOUT_ELEMENT_IDS
-            .map((id) => layout.elements[id])
-            .filter((element) => element.visible)
-            .map((element) => ({
-                id: `element:${element.id}`,
-                rect: element.rect
-            })),
-        ...config.switches
-            .filter((item) => item.id !== switchId)
-            .map((item) => ({
-                id: item.id,
-                rect: layout.switches[item.id]
-            }))
-            .filter(
-                (entry): entry is LayoutItemRect =>
-                    Boolean(entry.rect)
-            )
-    ];
-
-    const existingSwitchRect = config.switches
-        .filter((item) => item.id !== switchId)
-        .map((item) => layout.switches[item.id])
-        .find((rect): rect is ControllerLayoutRect => Boolean(rect));
-
-    const width = Math.min(
-        1,
-        Math.max(
+    return {
+        width: Math.max(
             MIN_FREEFORM_SWITCH_WIDTH,
-            existingSwitchRect?.width
-                ?? (1 / Math.max(1, config.columns) - 0.012)
-        )
-    );
-    const height = Math.min(
-        Math.max(MIN_FREEFORM_SWITCH_HEIGHT, 1 - headerBottom),
-        Math.max(
+            1 / Math.max(1, config.columns) - 0.012
+        ),
+        height: Math.max(
             MIN_FREEFORM_SWITCH_HEIGHT,
-            existingSwitchRect?.height
-                ?? ((1 - headerBottom) / Math.max(1, config.rows) - 0.014)
+            availableHeight / Math.max(1, config.rows) - 0.014
         )
+    };
+}
+
+function placementSizeForTarget(
+    config: ControllerLayoutConfig,
+    target: PlacementTarget
+): {
+    preferredWidth: number;
+    preferredHeight: number;
+    minWidth: number;
+    minHeight: number;
+} {
+    if (target.kind === "element") {
+        const element =
+            config.performanceLayout.elements[target.id];
+        return {
+            preferredWidth: Math.max(
+                MIN_FREEFORM_HEADER_WIDTH,
+                element.rect.width
+            ),
+            preferredHeight: Math.max(
+                MIN_FREEFORM_HEADER_HEIGHT,
+                element.rect.height
+            ),
+            minWidth: MIN_FREEFORM_HEADER_WIDTH,
+            minHeight: MIN_FREEFORM_HEADER_HEIGHT
+        };
+    }
+
+    const preferred = preferredFreeformSwitchSize(
+        config,
+        target.id
+    );
+    return {
+        preferredWidth: preferred.width,
+        preferredHeight: preferred.height,
+        minWidth: MIN_FREEFORM_SWITCH_WIDTH,
+        minHeight: MIN_FREEFORM_SWITCH_HEIGHT
+    };
+}
+
+function adaptivePlacementSizes(
+    preferredWidth: number,
+    preferredHeight: number,
+    minWidth: number,
+    minHeight: number
+): Array<{ width: number; height: number }> {
+    const sizes: Array<{ width: number; height: number }> = [];
+    const seen = new Set<string>();
+
+    for (let step = 0; step <= 12; ++step) {
+        const scale = 1 - step * 0.075;
+        const width = Math.max(
+            minWidth,
+            preferredWidth * scale
+        );
+        const height = Math.max(
+            minHeight,
+            preferredHeight * scale
+        );
+        const key = `${width.toFixed(6)}:${height.toFixed(6)}`;
+        if (!seen.has(key)) {
+            seen.add(key);
+            sizes.push({ width, height });
+        }
+
+        if (
+            width <= minWidth + 0.000001
+            && height <= minHeight + 0.000001
+        ) {
+            break;
+        }
+    }
+
+    const minimumKey =
+        `${minWidth.toFixed(6)}:${minHeight.toFixed(6)}`;
+    if (!seen.has(minimumKey)) {
+        sizes.push({
+            width: minWidth,
+            height: minHeight
+        });
+    }
+
+    return sizes;
+}
+
+function centeredPlacementRect(
+    centerX: number,
+    centerY: number,
+    width: number,
+    height: number
+): ControllerLayoutRect {
+    return {
+        x: Math.min(
+            1 - width,
+            Math.max(0, centerX - width / 2)
+        ),
+        y: Math.min(
+            1 - height,
+            Math.max(0, centerY - height / 2)
+        ),
+        width,
+        height
+    };
+}
+
+function adaptivePlacementPreview(
+    config: ControllerLayoutConfig,
+    target: PlacementTarget,
+    centerX: number,
+    centerY: number
+): {
+    rect: ControllerLayoutRect;
+    valid: boolean;
+} {
+    const size = placementSizeForTarget(config, target);
+    const occupied = freeformOccupiedRects(
+        config,
+        target
+    );
+    const sizes = adaptivePlacementSizes(
+        size.preferredWidth,
+        size.preferredHeight,
+        size.minWidth,
+        size.minHeight
     );
 
-    const stepX = Math.max(0.01, width / 4);
-    const stepY = Math.max(0.01, height / 4);
+    for (const candidateSize of sizes) {
+        const rect = centeredPlacementRect(
+            centerX,
+            centerY,
+            candidateSize.width,
+            candidateSize.height
+        );
+        if (
+            rectInsideBounds(rect)
+            && occupied.every(
+                (other) => !rectsOverlap(rect, other)
+            )
+        ) {
+            return { rect, valid: true };
+        }
+    }
 
-    for (
-        let y = Math.max(0, headerBottom);
-        y <= 1 - height + 0.000001;
-        y += stepY
-    ) {
+    return {
+        rect: centeredPlacementRect(
+            centerX,
+            centerY,
+            size.minWidth,
+            size.minHeight
+        ),
+        valid: false
+    };
+}
+
+function findAdaptiveFreeformPlacement(
+    config: ControllerLayoutConfig,
+    target: PlacementTarget
+): ControllerLayoutRect | null {
+    const size = placementSizeForTarget(config, target);
+    const occupied = freeformOccupiedRects(
+        config,
+        target
+    );
+    const sizes = adaptivePlacementSizes(
+        size.preferredWidth,
+        size.preferredHeight,
+        size.minWidth,
+        size.minHeight
+    );
+
+    for (const candidateSize of sizes) {
+        const xCandidates = new Set<number>([
+            0,
+            Math.max(0, 1 - candidateSize.width)
+        ]);
+        const yCandidates = new Set<number>([
+            0,
+            Math.max(0, 1 - candidateSize.height)
+        ]);
+
+        for (const other of occupied) {
+            xCandidates.add(
+                Math.max(
+                    0,
+                    Math.min(
+                        1 - candidateSize.width,
+                        other.x - candidateSize.width
+                    )
+                )
+            );
+            xCandidates.add(
+                Math.max(
+                    0,
+                    Math.min(
+                        1 - candidateSize.width,
+                        other.x + other.width
+                    )
+                )
+            );
+            yCandidates.add(
+                Math.max(
+                    0,
+                    Math.min(
+                        1 - candidateSize.height,
+                        other.y - candidateSize.height
+                    )
+                )
+            );
+            yCandidates.add(
+                Math.max(
+                    0,
+                    Math.min(
+                        1 - candidateSize.height,
+                        other.y + other.height
+                    )
+                )
+            );
+        }
+
+        // Edge-derived candidates find tight gaps exactly. A light scan fills
+        // in open areas that are not aligned to another control edge.
+        const scanStepX = Math.max(
+            0.02,
+            Math.min(0.08, candidateSize.width / 3)
+        );
+        const scanStepY = Math.max(
+            0.02,
+            Math.min(0.08, candidateSize.height / 3)
+        );
         for (
             let x = 0;
-            x <= 1 - width + 0.000001;
-            x += stepX
+            x <= 1 - candidateSize.width + 0.000001;
+            x += scanStepX
         ) {
-            const candidate: ControllerLayoutRect = {
-                x: Math.min(1 - width, x),
-                y: Math.min(1 - height, y),
-                width,
-                height
-            };
+            xCandidates.add(
+                Math.min(1 - candidateSize.width, x)
+            );
+        }
+        for (
+            let y = 0;
+            y <= 1 - candidateSize.height + 0.000001;
+            y += scanStepY
+        ) {
+            yCandidates.add(
+                Math.min(1 - candidateSize.height, y)
+            );
+        }
 
-            if (
-                rectInsideBounds(candidate)
-                && existingRects.every(
-                    (entry) => !rectsOverlap(candidate, entry.rect)
-                )
-            ) {
-                return ensureControllerPerformanceLayout({
-                    ...config,
-                    performanceLayout: {
-                        ...layout,
-                        switches: {
-                            ...layout.switches,
-                            [switchId]: candidate
-                        }
-                    }
-                });
+        const sortedY = [...yCandidates].sort(
+            (left, right) => left - right
+        );
+        const sortedX = [...xCandidates].sort(
+            (left, right) => left - right
+        );
+
+        for (const y of sortedY) {
+            for (const x of sortedX) {
+                const rect: ControllerLayoutRect = {
+                    x,
+                    y,
+                    width: candidateSize.width,
+                    height: candidateSize.height
+                };
+                if (
+                    rectInsideBounds(rect)
+                    && occupied.every(
+                        (other) =>
+                            !rectsOverlap(rect, other)
+                    )
+                ) {
+                    return rect;
+                }
             }
         }
     }
 
     return null;
+}
+
+function applyFreeformPlacement(
+    config: ControllerLayoutConfig,
+    target: PlacementTarget,
+    rect: ControllerLayoutRect
+): ControllerLayoutConfig {
+    if (target.kind === "element") {
+        const currentElement =
+            config.performanceLayout.elements[target.id];
+        return ensureControllerPerformanceLayout({
+            ...config,
+            performanceLayout: {
+                ...config.performanceLayout,
+                elements: {
+                    ...config.performanceLayout.elements,
+                    [target.id]: {
+                        ...currentElement,
+                        visible: true,
+                        rect: { ...rect }
+                    }
+                }
+            }
+        });
+    }
+
+    return ensureControllerPerformanceLayout({
+        ...config,
+        performanceLayout: {
+            ...config.performanceLayout,
+            switches: {
+                ...config.performanceLayout.switches,
+                [target.id]: { ...rect }
+            },
+            unplacedSwitchIds:
+                config.performanceLayout.unplacedSwitchIds.filter(
+                    (id) => id !== target.id
+                )
+        }
+    });
 }
 
 function ensureValidFreeformLayout(
@@ -617,25 +998,6 @@ function ensureValidFreeformLayout(
     return ensureControllerPerformanceLayout(config);
 }
 
-
-function placeUnplacedSwitch(
-    config: ControllerLayoutConfig,
-    switchId: string
-): ControllerLayoutConfig | null {
-    const placed = tryPlaceNewFreeformSwitch(config, switchId);
-    if (!placed) return null;
-
-    return ensureControllerPerformanceLayout({
-        ...placed,
-        performanceLayout: {
-            ...placed.performanceLayout,
-            unplacedSwitchIds:
-                placed.performanceLayout.unplacedSwitchIds.filter(
-                    (id) => id !== switchId
-                )
-        }
-    });
-}
 
 function arrangeFreeformSwitchesFromGrid(
     config: ControllerLayoutConfig
@@ -732,34 +1094,17 @@ function captureFreeformLayoutDefault(
     config: ControllerLayoutConfig
 ) {
     return {
-        bankHeader: {
-            ...config.performanceLayout.bankHeader
-        },
-        presetPageHeader: {
-            ...config.performanceLayout.presetPageHeader
-        },
-        activePresetHeader: {
-            ...config.performanceLayout.activePresetHeader
-        },
         switches: Object.fromEntries(
-            Object.entries(
-                config.performanceLayout.switches
-            ).map(([id, rect]) => [
-                id,
-                { ...rect }
-            ])
+            Object.entries(config.performanceLayout.switches).map(
+                ([id, rect]) => [id, { ...rect }]
+            )
         ),
         unplacedSwitchIds: [
             ...config.performanceLayout.unplacedSwitchIds
         ],
-        elements: Object.fromEntries(
-            CONTROLLER_LAYOUT_ELEMENT_IDS.map((id) => [
-                id,
-                structuredClone(
-                    config.performanceLayout.elements[id]
-                )
-            ])
-        ) as ControllerLayoutConfig["performanceLayout"]["elements"]
+        elements: structuredClone(
+            config.performanceLayout.elements
+        )
     };
 }
 
@@ -816,15 +1161,6 @@ function applySavedFreeformDefault(
         performanceLayout: {
             ...config.performanceLayout,
             mode: "freeform",
-            bankHeader: {
-                ...saved.bankHeader
-            },
-            presetPageHeader: {
-                ...saved.presetPageHeader
-            },
-            activePresetHeader: {
-                ...saved.activePresetHeader
-            },
             switches: Object.fromEntries(
                 Object.entries(saved.switches).map(
                     ([id, rect]) => [
@@ -853,9 +1189,6 @@ function makeDefaultFreeformLayout(
         performanceLayout: {
             ...config.performanceLayout,
             mode: "freeform",
-            bankHeader: defaultElements.currentBank.rect,
-            presetPageHeader: defaultElements.presetPage.rect,
-            activePresetHeader: defaultElements.activePreset.rect,
             switches: {},
             unplacedSwitchIds: [
                 ...config.performanceLayout.unplacedSwitchIds
@@ -864,6 +1197,100 @@ function makeDefaultFreeformLayout(
         }
     });
 }
+
+
+function BufferedIntegerInput(props: {
+    value: number;
+    min: number;
+    max: number;
+    step?: number;
+    onValueChange: (value: number) => void;
+    style?: React.CSSProperties;
+}) {
+    const {
+        value,
+        min,
+        max,
+        step = 1,
+        onValueChange,
+        style
+    } = props;
+    const [text, setText] = useState(() => String(value));
+    const editingRef = useRef(false);
+
+    useEffect(() => {
+        if (!editingRef.current) {
+            setText(String(value));
+        }
+    }, [value]);
+
+    const updateText = (nextText: string) => {
+        setText(nextText);
+
+        if (nextText.trim() === "") return;
+
+        const numericValue = Number(nextText);
+        if (!Number.isFinite(numericValue)) return;
+
+        const normalized = Math.round(numericValue);
+        if (normalized < min || normalized > max) {
+            return;
+        }
+
+        onValueChange(normalized);
+    };
+
+    const finishEdit = () => {
+        editingRef.current = false;
+
+        if (text.trim() === "") {
+            setText(String(value));
+            return;
+        }
+
+        const numericValue = Number(text);
+        if (!Number.isFinite(numericValue)) {
+            setText(String(value));
+            return;
+        }
+
+        const normalized = Math.max(
+            min,
+            Math.min(max, Math.round(numericValue))
+        );
+
+        setText(String(normalized));
+        if (normalized !== value) {
+            onValueChange(normalized);
+        }
+    };
+
+    return (
+        <input
+            type="number"
+            min={min}
+            max={max}
+            step={step}
+            value={text}
+            onFocus={() => {
+                editingRef.current = true;
+            }}
+            onChange={(event) => updateText(event.target.value)}
+            onBlur={finishEdit}
+            onKeyDown={(event) => {
+                if (event.key === "Enter") {
+                    event.currentTarget.blur();
+                } else if (event.key === "Escape") {
+                    editingRef.current = false;
+                    setText(String(value));
+                    event.currentTarget.blur();
+                }
+            }}
+            style={style}
+        />
+    );
+}
+
 
 export default function MultiFXControllerSettings() {
     const [config, setConfig] = useState<ControllerLayoutConfig>(
@@ -874,9 +1301,6 @@ export default function MultiFXControllerSettings() {
     const [selectedId, setSelectedId] = useState("");
     const [message, setMessage] = useState("");
     const [layoutEditorOpen, setLayoutEditorOpen] = useState(false);
-    const savedPresetSlotCountRef = useRef(
-        shortPresetSlotCount(defaultControllerConfig)
-    );
 
     useEffect(() => {
         let cancelled = false;
@@ -884,8 +1308,6 @@ export default function MultiFXControllerSettings() {
             if (cancelled) return;
             const normalized =
                 normalizeControllerPresetSlots(result.config);
-            savedPresetSlotCountRef.current =
-                shortPresetSlotCount(normalized);
             setConfig(cloneConfig(normalized));
             setSelectedId(normalized.switches[0]?.id ?? "");
             if (result.error) setMessage(result.error);
@@ -906,7 +1328,7 @@ export default function MultiFXControllerSettings() {
             config.switches
                 .filter((item) => item.id !== selectedId)
                 .map((item) => item.gpioPin)
-                .filter((value): value is number => value !== undefined)
+                .filter((value): value is number => value !== null)
         ),
         [config.switches, selectedId]
     );
@@ -1042,7 +1464,7 @@ export default function MultiFXControllerSettings() {
         const usedHardware = new Set(
             config.switches
                 .map((item) => item.hardwareSwitch)
-                .filter((value): value is number => value !== undefined)
+                .filter((value): value is number => value !== null)
         );
 
         let hardwareSwitch = 1;
@@ -1099,7 +1521,7 @@ export default function MultiFXControllerSettings() {
             hardwareSwitch,
             // A new switch starts as a virtual/on-screen control. The user can
             // optionally bind it to an ESP32 GPIO later.
-            gpioPin: undefined,
+            gpioPin: null,
             action: { type: "none", text: "Unused" },
             longPressAction: { type: "none", text: "Unused" },
             row,
@@ -1195,7 +1617,7 @@ export default function MultiFXControllerSettings() {
 
             // Freeform coordinates are deliberate user geometry. Remove only
             // the deleted switch. Existing positions remain unchanged unless a
-            // legacy/broken layout is already invalid, in which case repair it.
+            // invalid layout is already invalid, in which case repair it.
             return ensureValidFreeformLayout(
                 ensureControllerPerformanceLayout({
                     ...current,
@@ -1219,32 +1641,6 @@ export default function MultiFXControllerSettings() {
         const normalized =
             normalizeControllerPresetSlots(config);
 
-        const oldPresetSlotCount =
-            savedPresetSlotCountRef.current;
-        const newPresetSlotCount =
-            shortPresetSlotCount(normalized);
-
-        if (oldPresetSlotCount !== newPresetSlotCount) {
-            try {
-                const model = PiPedalModelFactory.getInstance();
-                const bankId = model.banks.get().selectedBank;
-                const presetIds = model.presets.get().presets.map(
-                    (preset) => preset.instanceId
-                );
-
-                await migratePresetSlotCountForBank(
-                    bankId,
-                    presetIds,
-                    oldPresetSlotCount,
-                    newPresetSlotCount
-                );
-            } catch (error) {
-                setMessage(
-                    `Could not resize Performance preset slots: ${String(error)}`
-                );
-                return;
-            }
-        }
 
         const result = saveControllerConfig(normalized);
         if (result.error) {
@@ -1252,8 +1648,6 @@ export default function MultiFXControllerSettings() {
             return;
         }
 
-        savedPresetSlotCountRef.current =
-            shortPresetSlotCount(result.config);
         setConfig(cloneConfig(result.config));
         setMessage(
             "Saved. Switch actions, optional GPIO wiring and layout are shared with the MultiFX runtime."
@@ -1265,8 +1659,6 @@ export default function MultiFXControllerSettings() {
         const result = await loadControllerConfig();
         const normalized =
             normalizeControllerPresetSlots(result.config);
-        savedPresetSlotCountRef.current =
-            shortPresetSlotCount(normalized);
         setConfig(cloneConfig(normalized));
         setSelectedId(normalized.switches[0]?.id ?? "");
         setMessage("Restored controller-config.json / built-in defaults.");
@@ -1336,7 +1728,7 @@ export default function MultiFXControllerSettings() {
                                             && config.performanceLayout.unplacedSwitchIds.includes(item.id)
                                                 ? "UNPLACED • "
                                                 : ""}
-                                        {item.gpioPin === undefined
+                                        {item.gpioPin === null
                                             ? "GPIO: not connected"
                                             : `GPIO ${item.gpioPin}`}
                                     </span>
@@ -1392,7 +1784,7 @@ export default function MultiFXControllerSettings() {
                                 GPIO pin
                                 <select
                                     value={
-                                        selected.gpioPin === undefined
+                                        selected.gpioPin === null
                                             ? ""
                                             : String(selected.gpioPin)
                                     }
@@ -1401,7 +1793,7 @@ export default function MultiFXControllerSettings() {
                                         updateSelected({
                                             gpioPin:
                                                 value === ""
-                                                    ? undefined
+                                                    ? null
                                                     : Number(value)
                                         });
                                     }}
@@ -1453,23 +1845,15 @@ export default function MultiFXControllerSettings() {
                             <label style={fieldLabelStyle}>
                                 Long-press threshold
                                 <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
-                                    <input
-                                        type="number"
+                                    <BufferedIntegerInput
                                         min={MIN_LONG_PRESS_MS}
                                         max={MAX_LONG_PRESS_MS}
                                         step={50}
                                         value={config.longPressMs}
-                                        onChange={(event) =>
+                                        onValueChange={(value) =>
                                             setConfig((current) => ({
                                                 ...current,
-                                                longPressMs: Math.min(
-                                                    MAX_LONG_PRESS_MS,
-                                                    Math.max(
-                                                        MIN_LONG_PRESS_MS,
-                                                        Number(event.target.value)
-                                                        || current.longPressMs
-                                                    )
-                                                )
+                                                longPressMs: value
                                             }))
                                         }
                                         style={{ ...inputStyle, width: 110 }}
@@ -1517,14 +1901,22 @@ function PerformanceLayoutEditor(props: {
 }) {
     const canvasRef = useRef<HTMLDivElement>(null);
     const elementPaletteRef = useRef<HTMLDivElement>(null);
-    const paletteDragRef = useRef<{
-        id: ControllerLayoutElementId;
-        pointerId: number;
-    } | null>(null);
+    const placementDragRef =
+        useRef<PlacementDragState | null>(null);
     const dragRef = useRef<DragState | null>(null);
     const swapTargetRef = useRef<string | null>(null);
+    const gridDragRef = useRef<GridDragState | null>(null);
+    const suppressGridClickRef = useRef<string | null>(null);
     const [swapTargetId, setSwapTargetId] = useState<string | null>(null);
-    const [selectedId, setSelectedId] = useState<string>("bankHeader");
+    const [freeformDragVisual, setFreeformDragVisual] =
+        useState<FreeformDragVisual | null>(null);
+    const [placementDragVisual, setPlacementDragVisual] =
+        useState<PlacementDragVisual | null>(null);
+    const [gridDragVisual, setGridDragVisual] =
+        useState<GridDragVisual | null>(null);
+    const [gridDropCell, setGridDropCell] =
+        useState<GridDropCell | null>(null);
+    const [selectedId, setSelectedId] = useState<string>("element:currentBank");
     const [draft, setDraft] = useState<ControllerLayoutConfig>(() => {
         const base = ensureControllerPerformanceLayout(
             cloneConfig(props.controllerConfig)
@@ -1550,6 +1942,18 @@ function PerformanceLayoutEditor(props: {
     const [snapPixels, setSnapPixels] = useState(
         () => loadLayoutSnapPixels()
     );
+    const [snapEnabled, setSnapEnabled] = useState(
+        () => loadLayoutSnapEnabled()
+    );
+
+    useEffect(() => {
+        if (!layoutMessage) return;
+        const timer = window.setTimeout(
+            () => setLayoutMessage(""),
+            2800
+        );
+        return () => window.clearTimeout(timer);
+    }, [layoutMessage]);
 
     // Keep the editor preview tied to the exact controller layout that the
     // parent settings page currently owns. Add/remove operations happen in the
@@ -1619,126 +2023,60 @@ function PerformanceLayoutEditor(props: {
         };
 
         const finish = (event: PointerEvent) => {
-            const paletteDrag = paletteDragRef.current;
+            const placementDrag =
+                placementDragRef.current;
             if (
-                paletteDrag
-                && paletteDrag.pointerId === event.pointerId
+                placementDrag
+                && placementDrag.pointerId === event.pointerId
             ) {
+                const insideCanvas = pointInside(
+                    canvasRef.current,
+                    event.clientX,
+                    event.clientY
+                );
+
                 if (
-                    pointInside(
-                        canvasRef.current,
-                        event.clientX,
-                        event.clientY
-                    )
+                    insideCanvas
+                    && placementDrag.previewRect
+                    && placementDrag.valid
                 ) {
-                    setDraft((current) => {
-                        const canvas = canvasRef.current;
-                        if (!canvas) return current;
-                        const bounds = canvas.getBoundingClientRect();
-                        const currentElement =
-                            current.performanceLayout.elements[
-                                paletteDrag.id
-                            ];
-                        const width = currentElement.rect.width;
-                        const height = currentElement.rect.height;
-                        const rect: ControllerLayoutRect = {
-                            x: Math.min(
-                                1 - width,
-                                Math.max(
-                                    0,
-                                    (event.clientX - bounds.left)
-                                        / bounds.width
-                                        - width / 2
-                                )
-                            ),
-                            y: Math.min(
-                                1 - height,
-                                Math.max(
-                                    0,
-                                    (event.clientY - bounds.top)
-                                        / bounds.height
-                                        - height / 2
-                                )
-                            ),
-                            width,
-                            height
-                        };
-
-                        const occupied: ControllerLayoutRect[] = [
-                            ...CONTROLLER_LAYOUT_ELEMENT_IDS
-                                .filter(
-                                    (id) =>
-                                        id !== paletteDrag.id
-                                        && current.performanceLayout
-                                            .elements[id].visible
-                                )
-                                .map(
-                                    (id) =>
-                                        current.performanceLayout
-                                            .elements[id].rect
-                                ),
-                            ...current.switches
-                                .filter(
-                                    (item) =>
-                                        !current.performanceLayout
-                                            .unplacedSwitchIds
-                                            .includes(item.id)
-                                )
-                                .map(
-                                    (item) =>
-                                        current.performanceLayout
-                                            .switches[item.id]
-                                )
-                                .filter(
-                                    (value): value is ControllerLayoutRect =>
-                                        Boolean(value)
-                                )
-                        ];
-
-                        if (
-                            occupied.some(
-                                (other) => rectsOverlap(rect, other)
-                            )
-                        ) {
-                            setLayoutMessage(
-                                "That element cannot be placed there because it overlaps another item."
-                            );
-                            return current;
-                        }
-
-                        const elements = {
-                            ...current.performanceLayout.elements,
-                            [paletteDrag.id]: {
-                                ...currentElement,
-                                visible: true,
-                                rect
+                    const finalRect = {
+                        ...placementDrag.previewRect
+                    };
+                    const target: PlacementTarget =
+                        placementDrag.kind === "element"
+                            ? {
+                                kind: "element",
+                                id: placementDrag.id
                             }
-                        };
+                            : {
+                                kind: "switch",
+                                id: placementDrag.id
+                            };
 
-                        setSelectedId(
-                            `element:${paletteDrag.id}`
-                        );
-                        setLayoutMessage(
-                            `${CONTROLLER_LAYOUT_ELEMENT_LABELS[paletteDrag.id]} added.`
-                        );
-
-                        return ensureControllerPerformanceLayout({
-                            ...current,
-                            performanceLayout: {
-                                ...current.performanceLayout,
-                                bankHeader:
-                                    elements.currentBank.rect,
-                                presetPageHeader:
-                                    elements.presetPage.rect,
-                                activePresetHeader:
-                                    elements.activePreset.rect,
-                                elements
-                            }
-                        });
-                    });
+                    setDraft((current) =>
+                        applyFreeformPlacement(
+                            current,
+                            target,
+                            finalRect
+                        )
+                    );
+                    setSelectedId(
+                        target.kind === "element"
+                            ? `element:${target.id}`
+                            : target.id
+                    );
+                    setLayoutMessage(
+                        `${placementDrag.label} placed.`
+                    );
+                } else if (insideCanvas) {
+                    setLayoutMessage(
+                        "That space is too small even at the minimum size. Move or resize an existing item, then try again."
+                    );
                 }
 
-                paletteDragRef.current = null;
+                placementDragRef.current = null;
+                setPlacementDragVisual(null);
                 return;
             }
 
@@ -1775,12 +2113,6 @@ function PerformanceLayoutEditor(props: {
                         ...current,
                         performanceLayout: {
                             ...current.performanceLayout,
-                            bankHeader:
-                                elements.currentBank.rect,
-                            presetPageHeader:
-                                elements.presetPage.rect,
-                            activePresetHeader:
-                                elements.activePreset.rect,
                             elements
                         }
                     });
@@ -1836,18 +2168,41 @@ function PerformanceLayoutEditor(props: {
                         "Layout items swapped."
                     );
                 }
+            } else if (
+                drag
+                && drag.pointerId === event.pointerId
+                && drag.mode === "move"
+                && drag.moved
+            ) {
+                // Freeform move uses a ghost preview while dragging. Commit
+                // the final valid preview rectangle only when the pointer is
+                // released, leaving the source control faded in its original
+                // position during the drag just like Grid mode.
+                const finalRect = { ...drag.previewRect };
+                setDraft((current) =>
+                    ensureControllerPerformanceLayout(
+                        setConfigTargetRect(
+                            current,
+                            drag,
+                            finalRect
+                        )
+                    )
+                );
             }
 
             dragRef.current = null;
             swapTargetRef.current = null;
             setSwapTargetId(null);
+            setFreeformDragVisual(null);
         };
 
         const cancel = () => {
-            paletteDragRef.current = null;
+            placementDragRef.current = null;
+            setPlacementDragVisual(null);
             dragRef.current = null;
             swapTargetRef.current = null;
             setSwapTargetId(null);
+            setFreeformDragVisual(null);
         };
 
         window.addEventListener("pointerup", finish);
@@ -1864,18 +2219,33 @@ function PerformanceLayoutEditor(props: {
     );
 
 
-    const beginPaletteElementDrag = (
-        event: React.PointerEvent<HTMLButtonElement>,
-        id: ControllerLayoutElementId
+    const beginPlacementDrag = (
+        event: React.PointerEvent<HTMLElement>,
+        target: PlacementTarget,
+        label: string
     ) => {
         if (layout.mode !== "freeform") return;
+
         event.preventDefault();
         event.stopPropagation();
 
-        paletteDragRef.current = {
-            id,
-            pointerId: event.pointerId
+        const size = placementSizeForTarget(
+            draft,
+            target
+        );
+
+        placementDragRef.current = {
+            ...target,
+            pointerId: event.pointerId,
+            label,
+            preferredWidth: size.preferredWidth,
+            preferredHeight: size.preferredHeight,
+            minWidth: size.minWidth,
+            minHeight: size.minHeight,
+            previewRect: null,
+            valid: false
         };
+        setPlacementDragVisual(null);
 
         try {
             event.currentTarget.setPointerCapture(
@@ -1886,32 +2256,166 @@ function PerformanceLayoutEditor(props: {
         }
 
         setLayoutMessage(
-            `Drag ${CONTROLLER_LAYOUT_ELEMENT_LABELS[id]} onto the layout.`
+            `Drag ${label} onto the layout. The ghost will shrink if needed; green means it fits.`
         );
     };
 
-    const placeSwitch = (switchId: string) => {
+    const movePlacementDrag = (
+        event: React.PointerEvent<HTMLElement>
+    ) => {
+        const placementDrag =
+            placementDragRef.current;
+        const canvas = canvasRef.current;
+        if (
+            !placementDrag
+            || placementDrag.pointerId !== event.pointerId
+            || !canvas
+        ) {
+            return;
+        }
+
+        event.preventDefault();
+
+        const bounds = canvas.getBoundingClientRect();
+        if (
+            bounds.width <= 0
+            || bounds.height <= 0
+        ) {
+            return;
+        }
+
+        const insideCanvas =
+            event.clientX >= bounds.left
+            && event.clientX <= bounds.right
+            && event.clientY >= bounds.top
+            && event.clientY <= bounds.bottom;
+
+        if (!insideCanvas) {
+            placementDrag.previewRect = null;
+            placementDrag.valid = false;
+            setPlacementDragVisual(null);
+            return;
+        }
+
+        const target: PlacementTarget =
+            placementDrag.kind === "element"
+                ? {
+                    kind: "element",
+                    id: placementDrag.id
+                }
+                : {
+                    kind: "switch",
+                    id: placementDrag.id
+                };
+
+        let centerX =
+            (event.clientX - bounds.left) / bounds.width;
+        let centerY =
+            (event.clientY - bounds.top) / bounds.height;
+
+        if (snapEnabled) {
+            const snapX =
+                Math.max(1, snapPixels) / bounds.width;
+            const snapY =
+                Math.max(1, snapPixels) / bounds.height;
+            centerX =
+                Math.round(centerX / snapX) * snapX;
+            centerY =
+                Math.round(centerY / snapY) * snapY;
+        }
+
+        const preview = adaptivePlacementPreview(
+            draft,
+            target,
+            Math.max(0, Math.min(1, centerX)),
+            Math.max(0, Math.min(1, centerY))
+        );
+
+        placementDrag.previewRect = {
+            ...preview.rect
+        };
+        placementDrag.valid = preview.valid;
+
+        setPlacementDragVisual({
+            ...target,
+            label: placementDrag.label,
+            rect: { ...preview.rect },
+            valid: preview.valid
+        });
+    };
+
+    const placeTargetAutomatically = (
+        target: PlacementTarget,
+        label: string
+    ) => {
         setDraft((current) => {
-            const placed = placeUnplacedSwitch(
+            const rect = findAdaptiveFreeformPlacement(
                 current,
-                switchId
+                target
             );
 
-            if (!placed) {
+            if (!rect) {
                 setLayoutMessage(
-                    "No open space is large enough. Resize or move existing controls, then try PLACE again."
+                    "No open space is large enough even at the minimum size. Drag the item onto the layout to see the required space, or resize/move an existing item."
                 );
                 return current;
             }
 
-            setLayoutMessage("");
-            setSelectedId(switchId);
-            return placed;
+            setSelectedId(
+                target.kind === "element"
+                    ? `element:${target.id}`
+                    : target.id
+            );
+            setLayoutMessage(
+                `${label} placed. Resize it if you want a different fit.`
+            );
+            return applyFreeformPlacement(
+                current,
+                target,
+                rect
+            );
         });
     };
 
+    const placeSwitch = (switchId: string) => {
+        const item = draft.switches.find(
+            (candidate) => candidate.id === switchId
+        );
+        placeTargetAutomatically(
+            {
+                kind: "switch",
+                id: switchId
+            },
+            item?.label ?? switchId
+        );
+    };
+
+    const placeElement = (
+        id: ControllerLayoutElementId
+    ) => {
+        placeTargetAutomatically(
+            {
+                kind: "element",
+                id
+            },
+            CONTROLLER_LAYOUT_ELEMENT_LABELS[id]
+        );
+    };
+
     const setMode = (mode: "grid" | "freeform") => {
+        // Clicking the already-active mode must never rebuild the layout.
+        // In particular, re-clicking FREEFORM used to call
+        // arrangeFreeformSwitchesFromGrid(), which resized/repositioned every
+        // control and silently placed previously-unplaced switches.
+        if (mode === draft.performanceLayout.mode) {
+            return;
+        }
+
         saveLastLayoutEditorMode(mode);
+        gridDragRef.current = null;
+        suppressGridClickRef.current = null;
+        setGridDragVisual(null);
+        setGridDropCell(null);
         setDraft((current) => {
             if (mode === "freeform") {
                 return arrangeFreeformSwitchesFromGrid(current);
@@ -1985,12 +2489,6 @@ function PerformanceLayoutEditor(props: {
                 ...current,
                 performanceLayout: {
                     ...current.performanceLayout,
-                    bankHeader:
-                        elements.currentBank.rect,
-                    presetPageHeader:
-                        elements.presetPage.rect,
-                    activePresetHeader:
-                        elements.activePreset.rect,
                     elements
                 }
             });
@@ -1998,22 +2496,31 @@ function PerformanceLayoutEditor(props: {
     };
 
 
-    const moveGridSwitch = (row: number, column: number) => {
-        if (!selectedId || selectedId.startsWith("element:")) return;
-
+    const moveGridSwitchById = (
+        switchId: string,
+        row: number,
+        column: number
+    ) => {
         setDraft((current) => {
             const selected = current.switches.find(
-                (item) => item.id === selectedId
+                (item) => item.id === switchId
             );
             if (!selected) return current;
+
+            const oldRow = selected.row ?? 1;
+            const oldColumn = selected.column ?? 1;
+            if (
+                oldRow === row
+                && oldColumn === column
+            ) {
+                return current;
+            }
 
             const target = current.switches.find(
                 (item) =>
                     (item.row ?? 1) === row
                     && (item.column ?? 1) === column
             );
-            const oldRow = selected.row ?? 1;
-            const oldColumn = selected.column ?? 1;
 
             return ensureControllerPerformanceLayout({
                 ...current,
@@ -2032,6 +2539,219 @@ function PerformanceLayoutEditor(props: {
                 })
             });
         });
+    };
+
+    const moveGridSwitch = (row: number, column: number) => {
+        if (!selectedId || selectedId.startsWith("element:")) return;
+        moveGridSwitchById(selectedId, row, column);
+    };
+
+    const gridCellAtPoint = (
+        clientX: number,
+        clientY: number
+    ): GridDropCell | null => {
+        const element = document.elementFromPoint(
+            clientX,
+            clientY
+        );
+        const cell = element?.closest<HTMLElement>(
+            "[data-grid-row][data-grid-column]"
+        );
+
+        if (
+            !cell
+            || !canvasRef.current
+            || !canvasRef.current.contains(cell)
+        ) {
+            return null;
+        }
+
+        const row = Number(cell.dataset.gridRow);
+        const column = Number(cell.dataset.gridColumn);
+        if (
+            !Number.isInteger(row)
+            || !Number.isInteger(column)
+        ) {
+            return null;
+        }
+
+        return { row, column };
+    };
+
+    const beginGridDrag = (
+        event: React.PointerEvent<HTMLButtonElement>,
+        item: ControllerSwitchConfig
+    ) => {
+        if (layout.mode !== "grid") return;
+        if (
+            event.pointerType === "mouse"
+            && event.button !== 0
+        ) {
+            return;
+        }
+
+        const bounds =
+            event.currentTarget.getBoundingClientRect();
+
+        gridDragRef.current = {
+            id: item.id,
+            label: item.label,
+            sublabel: actionLabel(item.action),
+            pointerId: event.pointerId,
+            startX: event.clientX,
+            startY: event.clientY,
+            offsetX: event.clientX - bounds.left,
+            offsetY: event.clientY - bounds.top,
+            width: bounds.width,
+            height: bounds.height,
+            sourceRow: item.row ?? 1,
+            sourceColumn: item.column ?? 1,
+            moved: false
+        };
+
+        try {
+            event.currentTarget.setPointerCapture(
+                event.pointerId
+            );
+        } catch {
+            // Pointer capture is optional.
+        }
+    };
+
+    const moveGridDrag = (
+        event: React.PointerEvent<HTMLButtonElement>
+    ) => {
+        const drag = gridDragRef.current;
+        if (
+            !drag
+            || drag.pointerId !== event.pointerId
+        ) {
+            return;
+        }
+
+        const distance = Math.hypot(
+            event.clientX - drag.startX,
+            event.clientY - drag.startY
+        );
+
+        if (!drag.moved && distance < 5) {
+            return;
+        }
+
+        if (!drag.moved) {
+            drag.moved = true;
+            setSelectedId(drag.id);
+        }
+
+        event.preventDefault();
+
+        setGridDragVisual({
+            id: drag.id,
+            label: drag.label,
+            sublabel: drag.sublabel,
+            x: event.clientX - drag.offsetX,
+            y: event.clientY - drag.offsetY,
+            width: drag.width,
+            height: drag.height
+        });
+        setGridDropCell(
+            gridCellAtPoint(
+                event.clientX,
+                event.clientY
+            )
+        );
+    };
+
+    const finishGridDrag = (
+        event: React.PointerEvent<HTMLButtonElement>
+    ) => {
+        const drag = gridDragRef.current;
+        if (
+            !drag
+            || drag.pointerId !== event.pointerId
+        ) {
+            return;
+        }
+
+        if (drag.moved) {
+            event.preventDefault();
+
+            const target = gridCellAtPoint(
+                event.clientX,
+                event.clientY
+            );
+
+            // Pointer-up on a button is followed by a click. Consume that
+            // synthetic click so it cannot run the older tap-to-move path.
+            suppressGridClickRef.current = drag.id;
+            window.setTimeout(() => {
+                if (
+                    suppressGridClickRef.current
+                    === drag.id
+                ) {
+                    suppressGridClickRef.current = null;
+                }
+            }, 0);
+
+            if (
+                target
+                && (
+                    target.row !== drag.sourceRow
+                    || target.column !== drag.sourceColumn
+                )
+            ) {
+                moveGridSwitchById(
+                    drag.id,
+                    target.row,
+                    target.column
+                );
+                setSelectedId(drag.id);
+                setLayoutMessage(
+                    "Grid switch moved. Dropping onto another switch swaps their cells."
+                );
+            }
+        }
+
+        gridDragRef.current = null;
+        setGridDragVisual(null);
+        setGridDropCell(null);
+    };
+
+    const cancelGridDrag = (
+        event: React.PointerEvent<HTMLButtonElement>
+    ) => {
+        const drag = gridDragRef.current;
+        if (
+            drag
+            && drag.pointerId === event.pointerId
+        ) {
+            gridDragRef.current = null;
+            setGridDragVisual(null);
+            setGridDropCell(null);
+        }
+    };
+
+    const handleGridSwitchClick = (
+        item: ControllerSwitchConfig,
+        row: number,
+        column: number
+    ) => {
+        if (
+            suppressGridClickRef.current === item.id
+        ) {
+            suppressGridClickRef.current = null;
+            return;
+        }
+
+        if (
+            selectedId
+            && !selectedId.startsWith("element:")
+            && selectedId !== item.id
+        ) {
+            moveGridSwitch(row, column);
+        } else {
+            setSelectedId(item.id);
+        }
     };
 
     const getRect = (
@@ -2061,12 +2781,6 @@ function PerformanceLayoutEditor(props: {
                     ...current,
                     performanceLayout: {
                         ...current.performanceLayout,
-                        bankHeader:
-                            elements.currentBank.rect,
-                        presetPageHeader:
-                            elements.presetPage.rect,
-                        activePresetHeader:
-                            elements.activePreset.rect,
                         elements
                     }
                 };
@@ -2110,8 +2824,11 @@ function PerformanceLayoutEditor(props: {
             pointerId: event.pointerId,
             startX: event.clientX,
             startY: event.clientY,
-            startRect: { ...rect }
+            startRect: { ...rect },
+            previewRect: { ...rect },
+            moved: false
         };
+        setFreeformDragVisual(null);
     };
 
     const moveDrag = (event: React.PointerEvent<HTMLDivElement>) => {
@@ -2121,6 +2838,15 @@ function PerformanceLayoutEditor(props: {
 
         const bounds = canvas.getBoundingClientRect();
         if (bounds.width <= 0 || bounds.height <= 0) return;
+
+        if (drag.mode === "move" && !drag.moved) {
+            const distance = Math.hypot(
+                event.clientX - drag.startX,
+                event.clientY - drag.startY
+            );
+            if (distance < 4) return;
+            drag.moved = true;
+        }
 
         const dx = (event.clientX - drag.startX) / bounds.width;
         const dy = (event.clientY - drag.startY) / bounds.height;
@@ -2141,7 +2867,7 @@ function PerformanceLayoutEditor(props: {
             value: number,
             step: number
         ): number => {
-            if (!layout.snapToGrid || step <= 0) {
+            if (!snapEnabled || step <= 0) {
                 return value;
             }
             return Math.round(value / step) * step;
@@ -2265,6 +2991,11 @@ function PerformanceLayoutEditor(props: {
             }
 
             if (nextSwapTarget) {
+                drag.previewRect = { ...next };
+                setFreeformDragVisual({
+                    targetKey: layoutTargetKey(drag),
+                    rect: { ...next }
+                });
                 return;
             }
         } else if (
@@ -2277,7 +3008,7 @@ function PerformanceLayoutEditor(props: {
         // Canvas edges are always magnetic snap points. Other item edges are
         // snap points too: matching left/right/top/bottom edges aids alignment,
         // while opposite edges make clean edge-to-edge placement easy.
-        if (drag.mode === "move" && layout.snapToGrid) {
+        if (drag.mode === "move" && snapEnabled) {
             const xCandidates = [
                 0,
                 1 - next.width
@@ -2336,7 +3067,7 @@ function PerformanceLayoutEditor(props: {
             next.y = bestY;
         }
 
-        if (drag.mode === "resize" && layout.snapToGrid) {
+        if (drag.mode === "resize" && snapEnabled) {
             const rightCandidates = [
                 1,
                 ...otherRects.flatMap(({ rect }) => [
@@ -2392,6 +3123,15 @@ function PerformanceLayoutEditor(props: {
                 rectsOverlap(next, rect)
             )
         ) {
+            return;
+        }
+
+        if (drag.mode === "move") {
+            drag.previewRect = { ...next };
+            setFreeformDragVisual({
+                targetKey: layoutTargetKey(drag),
+                rect: { ...next }
+            });
             return;
         }
 
@@ -2497,6 +3237,20 @@ function PerformanceLayoutEditor(props: {
         byPosition.set(`${item.row ?? 1}:${item.column ?? 1}`, item);
     });
 
+    const freeformGhostTarget = freeformDragVisual
+        ? parseLayoutTargetKey(freeformDragVisual.targetKey)
+        : undefined;
+    const freeformGhostElement =
+        freeformGhostTarget?.kind === "element"
+            ? layout.elements[freeformGhostTarget.id]
+            : undefined;
+    const freeformGhostSwitch =
+        freeformGhostTarget?.kind === "switch"
+            ? draft.switches.find(
+                (item) => item.id === freeformGhostTarget.id
+            )
+            : undefined;
+
     return (
         <div style={layoutOverlayStyle}>
             <div style={layoutEditorShellStyle}>
@@ -2576,7 +3330,7 @@ function PerformanceLayoutEditor(props: {
                                         marginTop: 5,
                                         marginBottom: 8
                                     }}>
-                                        Drag an unused element onto the canvas. Drag a placed element back here to remove it.
+                                        Drag an unused element onto the canvas or use PLACE. New items shrink to fit available space; existing items never move automatically. Drag a placed element back here to remove it.
                                     </div>
 
                                     <div style={{
@@ -2589,27 +3343,34 @@ function PerformanceLayoutEditor(props: {
                                                 const element =
                                                     layout.elements[id];
                                                 return (
-                                                    <button
+                                                    <div
                                                         key={id}
+                                                        style={{
+                                                            display: "flex",
+                                                            alignItems: "stretch",
+                                                            gap: 5
+                                                        }}
+                                                    >
+                                                    <button
                                                         type="button"
                                                         onPointerDown={
                                                             element.visible
                                                                 ? undefined
                                                                 : (event) =>
-                                                                    beginPaletteElementDrag(
+                                                                    beginPlacementDrag(
                                                                         event,
-                                                                        id
+                                                                        {
+                                                                            kind: "element",
+                                                                            id
+                                                                        },
+                                                                        CONTROLLER_LAYOUT_ELEMENT_LABELS[id]
                                                                     )
                                                         }
-                                                        onPointerMove={(event) => {
-                                                            if (
-                                                                paletteDragRef.current
-                                                                    ?.pointerId
-                                                                === event.pointerId
-                                                            ) {
-                                                                event.preventDefault();
-                                                            }
-                                                        }}
+                                                        onPointerMove={
+                                                            element.visible
+                                                                ? undefined
+                                                                : movePlacementDrag
+                                                        }
                                                         onClick={() => {
                                                             if (
                                                                 element.visible
@@ -2643,6 +3404,23 @@ function PerformanceLayoutEditor(props: {
                                                             ]
                                                         }
                                                     </button>
+                                                    {!element.visible && (
+                                                        <button
+                                                            type="button"
+                                                            onClick={() =>
+                                                                placeElement(id)
+                                                            }
+                                                            style={{
+                                                                ...secondaryButtonStyle,
+                                                                flex: "0 0 auto",
+                                                                padding: "5px 7px",
+                                                                fontSize: "0.62rem"
+                                                            }}
+                                                        >
+                                                            PLACE
+                                                        </button>
+                                                    )}
+                                                    </div>
                                                 );
                                             }
                                         )}
@@ -2655,17 +3433,16 @@ function PerformanceLayoutEditor(props: {
                             <>
                                 <label style={fieldLabelStyle}>
                                     Columns
-                                    <input
-                                        type="number"
+                                    <BufferedIntegerInput
                                         min={minimumColumnsFor(
                                             draft.switches.length,
                                             draft.rows
                                         )}
                                         max={MAX_CONTROLLER_COLUMNS}
                                         value={draft.columns}
-                                        onChange={(event) =>
+                                        onValueChange={(value) =>
                                             updateGridDimensions(
-                                                Number(event.target.value) || 1,
+                                                value,
                                                 draft.rows
                                             )
                                         }
@@ -2675,18 +3452,17 @@ function PerformanceLayoutEditor(props: {
 
                                 <label style={fieldLabelStyle}>
                                     Rows
-                                    <input
-                                        type="number"
+                                    <BufferedIntegerInput
                                         min={minimumRowsFor(
                                             draft.switches.length,
                                             draft.columns
                                         )}
                                         max={MAX_CONTROLLER_ROWS}
                                         value={draft.rows}
-                                        onChange={(event) =>
+                                        onValueChange={(value) =>
                                             updateGridDimensions(
                                                 draft.columns,
-                                                Number(event.target.value) || 1
+                                                value
                                             )
                                         }
                                         style={inputStyle}
@@ -2694,7 +3470,7 @@ function PerformanceLayoutEditor(props: {
                                 </label>
 
                                 <div style={noteStyle}>
-                                    Tap a switch, then tap another cell to move or swap it.
+                                    Drag a switch to another cell to move or swap it. Tap-to-select/move remains available as a fallback.
                                 </div>
 
                                 <button
@@ -2725,39 +3501,24 @@ function PerformanceLayoutEditor(props: {
                                 <label style={checkboxLabelStyle}>
                                     <input
                                         type="checkbox"
-                                        checked={layout.snapToGrid}
-                                        onChange={(event) =>
-                                            setDraft((current) => ({
-                                                ...current,
-                                                performanceLayout: {
-                                                    ...current.performanceLayout,
-                                                    snapToGrid: event.target.checked
-                                                }
-                                            }))
-                                        }
+                                        checked={snapEnabled}
+                                        onChange={(event) => {
+                                            const enabled = event.target.checked;
+                                            setSnapEnabled(enabled);
+                                            saveLayoutSnapEnabled(enabled);
+                                        }}
                                     />
                                     Snap to guides
                                 </label>
 
                                 <label style={fieldLabelStyle}>
                                     Snap size (pixels)
-                                    <input
-                                        type="number"
+                                    <BufferedIntegerInput
                                         min={MIN_LAYOUT_SNAP_PIXELS}
                                         max={MAX_LAYOUT_SNAP_PIXELS}
                                         step={1}
                                         value={snapPixels}
-                                        onChange={(event) => {
-                                            const value = Math.max(
-                                                MIN_LAYOUT_SNAP_PIXELS,
-                                                Math.min(
-                                                    MAX_LAYOUT_SNAP_PIXELS,
-                                                    Math.round(
-                                                        Number(event.target.value)
-                                                        || DEFAULT_LAYOUT_SNAP_PIXELS
-                                                    )
-                                                )
-                                            );
+                                        onValueChange={(value) => {
                                             setSnapPixels(value);
                                             saveLayoutSnapPixels(value);
                                         }}
@@ -2767,6 +3528,9 @@ function PerformanceLayoutEditor(props: {
 
                                 <div style={{ ...sectionTitleStyle, marginTop: 16 }}>
                                     UNPLACED CONTROLS
+                                </div>
+                                <div style={{ ...helpStyle, marginTop: 5 }}>
+                                    Drag a control onto the layout to preview its fit. The ghost shrinks automatically when needed; green fits, red is too small. PLACE searches for an open spot and shrinks the new control only as much as needed.
                                 </div>
                                 {unplacedSwitches.length === 0 ? (
                                     <div style={helpStyle}>
@@ -2792,14 +3556,46 @@ function PerformanceLayoutEditor(props: {
                                                     background: MFX_COLORS.panelAlt
                                                 }}
                                             >
-                                                <span style={{
-                                                    flex: "1 1 auto",
-                                                    minWidth: 0,
-                                                    fontSize: "0.72rem",
-                                                    fontWeight: 850
-                                                }}>
+                                                <button
+                                                    type="button"
+                                                    onPointerDown={(event) =>
+                                                        beginPlacementDrag(
+                                                            event,
+                                                            {
+                                                                kind: "switch",
+                                                                id: item.id
+                                                            },
+                                                            item.label
+                                                        )
+                                                    }
+                                                    onPointerMove={movePlacementDrag}
+                                                    style={{
+                                                        ...secondaryButtonStyle,
+                                                        flex: "1 1 auto",
+                                                        minWidth: 0,
+                                                        textAlign: "left",
+                                                        padding: "7px 8px",
+                                                        fontSize: "0.72rem",
+                                                        fontWeight: 850,
+                                                        cursor: "grab",
+                                                        touchAction: "none",
+                                                        userSelect: "none",
+                                                        WebkitUserSelect: "none"
+                                                    }}
+                                                >
                                                     {item.label}
-                                                </span>
+                                                    <span
+                                                        style={{
+                                                            display: "block",
+                                                            marginTop: 2,
+                                                            color: MFX_COLORS.muted,
+                                                            fontSize: "0.58rem",
+                                                            fontWeight: 750
+                                                        }}
+                                                    >
+                                                        DRAG ONTO LAYOUT
+                                                    </span>
+                                                </button>
                                                 <button
                                                     type="button"
                                                     onClick={() =>
@@ -2951,8 +3747,8 @@ function PerformanceLayoutEditor(props: {
                     <div style={layoutPreviewPanelStyle}>
                         <div style={layoutPreviewTitleStyle}>
                             {layout.mode === "freeform"
-                                ? "Drag controls • resize from the lower-right corner"
-                                : "Select a tile, then choose its grid cell"}
+                                ? "Drag controls • resize from lower-right • drag unplaced items in from the left"
+                                : "Drag a tile to move/swap it • tap-to-move also works"}
                         </div>
 
                         <div
@@ -2961,11 +3757,11 @@ function PerformanceLayoutEditor(props: {
                             style={{
                                 ...layoutCanvasStyle,
                                 backgroundImage:
-                                    layout.mode === "freeform" && layout.snapToGrid
+                                    layout.mode === "freeform" && snapEnabled
                                         ? "linear-gradient(to right, rgba(255,255,255,0.055) 1px, transparent 1px), linear-gradient(to bottom, rgba(255,255,255,0.055) 1px, transparent 1px)"
                                         : "none",
                                 backgroundSize:
-                                    layout.mode === "freeform" && layout.snapToGrid
+                                    layout.mode === "freeform" && snapEnabled
                                         ? `${snapPixels}px ${snapPixels}px`
                                         : undefined
                             }}
@@ -2989,41 +3785,82 @@ function PerformanceLayoutEditor(props: {
                                             const row = Math.floor(index / draft.columns) + 1;
                                             const column = (index % draft.columns) + 1;
                                             const item = byPosition.get(`${row}:${column}`);
+                                            const dropTarget =
+                                                gridDropCell?.row === row
+                                                && gridDropCell?.column === column;
 
                                             if (!item) {
                                                 return (
                                                     <button
                                                         key={`${row}:${column}`}
                                                         type="button"
+                                                        data-grid-row={row}
+                                                        data-grid-column={column}
                                                         onClick={() => moveGridSwitch(row, column)}
-                                                        style={layoutPreviewEmptyStyle}
+                                                        style={{
+                                                            ...layoutPreviewEmptyStyle,
+                                                            border: dropTarget
+                                                                ? "2px solid #22c55e"
+                                                                : layoutPreviewEmptyStyle.border,
+                                                            background: dropTarget
+                                                                ? "rgba(34,197,94,0.12)"
+                                                                : layoutPreviewEmptyStyle.background
+                                                        }}
                                                     >
-                                                        {selectedId ? "MOVE HERE" : "+"}
+                                                        {dropTarget
+                                                            ? "DROP HERE"
+                                                            : selectedId
+                                                                ? "MOVE HERE"
+                                                                : "+"}
                                                     </button>
                                                 );
                                             }
 
                                             const active = selectedId === item.id;
+                                            const dragging =
+                                                gridDragVisual?.id === item.id;
+
                                             return (
                                                 <button
                                                     key={item.id}
                                                     type="button"
-                                                    onClick={() => {
-                                                        if (
-                                                            selectedId
-                                                            && !selectedId.startsWith("element:")
-                                                            && selectedId !== item.id
-                                                        ) {
-                                                            moveGridSwitch(row, column);
-                                                        } else {
-                                                            setSelectedId(item.id);
-                                                        }
-                                                    }}
+                                                    data-grid-row={row}
+                                                    data-grid-column={column}
+                                                    onPointerDown={(event) =>
+                                                        beginGridDrag(
+                                                            event,
+                                                            item
+                                                        )
+                                                    }
+                                                    onPointerMove={moveGridDrag}
+                                                    onPointerUp={finishGridDrag}
+                                                    onPointerCancel={cancelGridDrag}
+                                                    onClick={() =>
+                                                        handleGridSwitchClick(
+                                                            item,
+                                                            row,
+                                                            column
+                                                        )
+                                                    }
                                                     style={{
                                                         ...layoutPreviewSwitchStyle,
-                                                        borderColor: active
-                                                            ? MFX_COLORS.cyan
-                                                            : MFX_COLORS.border
+                                                        borderColor: dropTarget
+                                                            ? "#22c55e"
+                                                            : active
+                                                                ? MFX_COLORS.cyan
+                                                                : MFX_COLORS.border,
+                                                        boxShadow: dropTarget
+                                                            ? "0 0 0 2px rgba(34,197,94,0.25)"
+                                                            : "none",
+                                                        opacity: dragging
+                                                            ? 0.26
+                                                            : 1,
+                                                        cursor: dragging
+                                                            ? "grabbing"
+                                                            : "grab",
+                                                        touchAction: "none",
+                                                        userSelect: "none",
+                                                        WebkitUserSelect: "none"
                                                     }}
                                                 >
                                                     <strong>{item.label}</strong>
@@ -3031,6 +3868,34 @@ function PerformanceLayoutEditor(props: {
                                                 </button>
                                             );
                                         }
+                                    )}
+
+                                    {gridDragVisual && (
+                                        <div
+                                            aria-hidden="true"
+                                            style={{
+                                                ...layoutPreviewSwitchStyle,
+                                                position: "fixed",
+                                                zIndex: 40000,
+                                                left: gridDragVisual.x,
+                                                top: gridDragVisual.y,
+                                                width: gridDragVisual.width,
+                                                height: gridDragVisual.height,
+                                                pointerEvents: "none",
+                                                opacity: 0.76,
+                                                boxSizing: "border-box",
+                                                borderColor: MFX_COLORS.cyan,
+                                                boxShadow: "0 10px 28px rgba(0,0,0,0.42)",
+                                                cursor: "grabbing"
+                                            }}
+                                        >
+                                            <strong>
+                                                {gridDragVisual.label}
+                                            </strong>
+                                            <span>
+                                                {gridDragVisual.sublabel}
+                                            </span>
+                                        </div>
                                     )}
                                 </div>
                             ) : (
@@ -3062,6 +3927,11 @@ function PerformanceLayoutEditor(props: {
                                                     }
                                                     swapTarget={
                                                         swapTargetId
+                                                            === `element:${id}`
+                                                    }
+                                                    dragging={
+                                                        freeformDragVisual
+                                                            ?.targetKey
                                                             === `element:${id}`
                                                     }
                                                     kind="element"
@@ -3116,12 +3986,91 @@ function PerformanceLayoutEditor(props: {
                                                     swapTargetId
                                                         === `switch:${item.id}`
                                                 }
+                                                dragging={
+                                                    freeformDragVisual
+                                                        ?.targetKey
+                                                        === `switch:${item.id}`
+                                                }
                                                 kind="switch"
                                                 onSelect={() => setSelectedId(item.id)}
                                                 onBeginDrag={beginDrag}
                                             />
                                         );
                                     })}
+
+                                    {freeformDragVisual
+                                        && freeformGhostTarget?.kind === "element"
+                                        && freeformGhostElement && (
+                                            <LayoutPreviewItem
+                                                id={`ghost-element:${freeformGhostTarget.id}`}
+                                                label={
+                                                    CONTROLLER_LAYOUT_ELEMENT_LABELS[
+                                                        freeformGhostTarget.id
+                                                    ]
+                                                }
+                                                sublabel={freeformGhostElement.style}
+                                                rect={freeformDragVisual.rect}
+                                                selected={false}
+                                                kind="element"
+                                                shape={freeformGhostElement.shape}
+                                                visualStyle={freeformGhostElement.style}
+                                                ghost
+                                            />
+                                        )}
+
+                                    {freeformDragVisual
+                                        && freeformGhostTarget?.kind === "switch"
+                                        && freeformGhostSwitch && (
+                                            <LayoutPreviewItem
+                                                id={`ghost-switch:${freeformGhostSwitch.id}`}
+                                                label={freeformGhostSwitch.label}
+                                                sublabel={actionLabel(
+                                                    freeformGhostSwitch.action
+                                                )}
+                                                rect={freeformDragVisual.rect}
+                                                selected={false}
+                                                kind="switch"
+                                                ghost
+                                            />
+                                        )}
+
+
+                                    {placementDragVisual && (
+                                        <LayoutPreviewItem
+                                            id={`placement-ghost:${placementDragVisual.kind}:${placementDragVisual.id}`}
+                                            label={placementDragVisual.label}
+                                            sublabel={`${
+                                                placementDragVisual.valid
+                                                    ? "DROP TO PLACE"
+                                                    : "NEEDS MORE SPACE"
+                                            } • ${Math.round(
+                                                placementDragVisual.rect.width * 100
+                                            )}% × ${Math.round(
+                                                placementDragVisual.rect.height * 100
+                                            )}%`}
+                                            rect={placementDragVisual.rect}
+                                            selected={false}
+                                            kind={placementDragVisual.kind}
+                                            shape={
+                                                placementDragVisual.kind === "element"
+                                                    ? layout.elements[
+                                                        placementDragVisual.id
+                                                    ].shape
+                                                    : undefined
+                                            }
+                                            visualStyle={
+                                                placementDragVisual.kind === "element"
+                                                    ? layout.elements[
+                                                        placementDragVisual.id
+                                                    ].style
+                                                    : undefined
+                                            }
+                                            ghost
+                                            ghostValid={
+                                                placementDragVisual.valid
+                                            }
+                                        />
+                                    )}
                                 </>
                             )}
                         </div>
@@ -3139,11 +4088,14 @@ function LayoutPreviewItem(props: {
     rect: ControllerLayoutRect;
     selected: boolean;
     swapTarget?: boolean;
+    dragging?: boolean;
+    ghost?: boolean;
+    ghostValid?: boolean;
     kind: "element" | "switch";
     shape?: ControllerLayoutElementShape;
     visualStyle?: ControllerLayoutElementStyle;
-    onSelect: () => void;
-    onBeginDrag: (
+    onSelect?: () => void;
+    onBeginDrag?: (
         event: React.PointerEvent<HTMLElement>,
         target: DragTarget
     ) => void;
@@ -3172,11 +4124,18 @@ function LayoutPreviewItem(props: {
         props.kind === "element"
         && visualStyle === "minimal";
 
-    const borderColor = props.swapTarget
-        ? "#22c55e"
-        : props.selected
-            ? MFX_COLORS.cyan
-            : MFX_COLORS.border;
+    const borderColor =
+        props.ghost && props.ghostValid !== undefined
+            ? (
+                props.ghostValid
+                    ? "#22c55e"
+                    : "#ef4444"
+            )
+            : props.swapTarget
+                ? "#22c55e"
+                : props.selected
+                    ? MFX_COLORS.cyan
+                    : MFX_COLORS.border;
 
     const renderShape = () => {
         if (isMinimal) return null;
@@ -3212,6 +4171,10 @@ function LayoutPreviewItem(props: {
                         strokeWidth={
                             props.selected
                             || props.swapTarget
+                            || (
+                                props.ghost
+                                && props.ghostValid !== undefined
+                            )
                                 ? 3
                                 : 2
                         }
@@ -3234,6 +4197,10 @@ function LayoutPreviewItem(props: {
                     border: `${
                         props.selected
                         || props.swapTarget
+                        || (
+                            props.ghost
+                            && props.ghostValid !== undefined
+                        )
                             ? 3
                             : 2
                     }px solid ${borderColor}`,
@@ -3255,12 +4222,15 @@ function LayoutPreviewItem(props: {
         <div
             role="button"
             tabIndex={0}
-            onClick={props.onSelect}
-            onPointerDown={(event) =>
-                props.onBeginDrag(event, {
-                    ...baseTarget,
-                    mode: "move"
-                })
+            onClick={props.ghost ? undefined : props.onSelect}
+            onPointerDown={
+                props.ghost || !props.onBeginDrag
+                    ? undefined
+                    : (event) =>
+                        props.onBeginDrag?.(event, {
+                            ...baseTarget,
+                            mode: "move"
+                        })
             }
             style={{
                 position: "absolute",
@@ -3270,6 +4240,22 @@ function LayoutPreviewItem(props: {
                 height: `${props.rect.height * 100}%`,
                 boxSizing: "border-box",
                 color: MFX_COLORS.text,
+                opacity: props.ghost
+                    ? 0.76
+                    : props.dragging
+                        ? 0.26
+                        : 1,
+                zIndex: props.ghost ? 100 : 1,
+                pointerEvents: props.ghost ? "none" : undefined,
+                filter: props.ghost
+                    ? (
+                        props.ghostValid === true
+                            ? "drop-shadow(0 0 10px rgba(34,197,94,0.48)) drop-shadow(0 10px 18px rgba(0,0,0,0.42))"
+                            : props.ghostValid === false
+                                ? "drop-shadow(0 0 10px rgba(239,68,68,0.48)) drop-shadow(0 10px 18px rgba(0,0,0,0.42))"
+                                : "drop-shadow(0 10px 18px rgba(0,0,0,0.42))"
+                    )
+                    : undefined,
                 display: "flex",
                 flexDirection: "column",
                 alignItems:
@@ -3277,20 +4263,26 @@ function LayoutPreviewItem(props: {
                         ? "center"
                         : "flex-start",
                 justifyContent: "center",
-                cursor: "move",
+                cursor: props.ghost
+                    ? "grabbing"
+                    : props.dragging
+                        ? "grabbing"
+                        : "move",
                 touchAction: "none",
                 userSelect: "none",
                 WebkitUserSelect: "none",
                 overflow: "visible",
                 outline:
                     isMinimal
-                    && (props.selected
-                        || props.swapTarget)
-                        ? `2px dashed ${
-                            props.swapTarget
-                                ? "#22c55e"
-                                : MFX_COLORS.cyan
-                        }`
+                    && (
+                        props.selected
+                        || props.swapTarget
+                        || (
+                            props.ghost
+                            && props.ghostValid !== undefined
+                        )
+                    )
+                        ? `2px dashed ${borderColor}`
                         : "none",
                 outlineOffset: -2
             }}
@@ -3358,18 +4350,20 @@ function LayoutPreviewItem(props: {
                 )}
             </div>
 
-            <div
-                aria-label="Resize"
-                onPointerDown={(event) => {
-                    event.preventDefault();
-                    event.stopPropagation();
-                    props.onBeginDrag(event, {
-                        ...baseTarget,
-                        mode: "resize"
-                    });
-                }}
-                style={resizeHandleStyle}
-            />
+            {!props.ghost && props.onBeginDrag && (
+                <div
+                    aria-label="Resize"
+                    onPointerDown={(event) => {
+                        event.preventDefault();
+                        event.stopPropagation();
+                        props.onBeginDrag?.(event, {
+                            ...baseTarget,
+                            mode: "resize"
+                        });
+                    }}
+                    style={resizeHandleStyle}
+                />
+            )}
         </div>
     );
 }

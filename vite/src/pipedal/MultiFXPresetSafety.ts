@@ -1,0 +1,168 @@
+/*
+ * Safety gates for transitions from temporary Performance state into a BASE
+ * preset editor/save path. PiPedal remains the musical-state authority.
+ */
+
+import { PiPedalModel, State } from "./PiPedalModel";
+import {
+    readMultiFXRuntimeState,
+    updateMultiFXRuntimeState
+} from "./MultiFXRuntimeSync";
+
+export async function waitForCleanBasePreset(
+    model: PiPedalModel,
+    presetId: number
+): Promise<void> {
+    return new Promise<void>((resolve, reject) => {
+        let settled = false;
+        const cleanup = () => {
+            model.presets.removeOnChangedHandler(check);
+            model.selectedSnapshot.removeOnChangedHandler(check);
+            model.presetChanged.removeOnChangedHandler(check);
+            model.state.removeOnChangedHandler(onState);
+        };
+        const finish = () => {
+            if (settled) return;
+            settled = true;
+            cleanup();
+            resolve();
+        };
+        const fail = (message: string) => {
+            if (settled) return;
+            settled = true;
+            cleanup();
+            reject(new Error(message));
+        };
+        function check() {
+            if (
+                model.presets.get().selectedInstanceId === presetId
+                && model.selectedSnapshot.get() < 0
+                && !model.presetChanged.get()
+            ) {
+                finish();
+            }
+        }
+        function onState(state: State) {
+            if (state === State.Error) {
+                fail("PiPedal disconnected while restoring the base preset.");
+            }
+        }
+        model.presets.addOnChangedHandler(check);
+        model.selectedSnapshot.addOnChangedHandler(check);
+        model.presetChanged.addOnChangedHandler(check);
+        model.state.addOnChangedHandler(onState);
+        check();
+    });
+}
+
+export async function loadCleanBasePreset(
+    model: PiPedalModel,
+    presetId: number
+): Promise<void> {
+    model.loadPreset(presetId);
+    await waitForCleanBasePreset(model, presetId);
+}
+
+
+async function waitForEnabledStates(
+    model: PiPedalModel,
+    expected: Record<string, boolean>
+): Promise<void> {
+    return new Promise<void>((resolve, reject) => {
+        let settled = false;
+        const cleanup = () => {
+            model.pedalboard.removeOnChangedHandler(check);
+            model.state.removeOnChangedHandler(onState);
+        };
+        const finish = () => {
+            if (settled) return;
+            settled = true;
+            cleanup();
+            resolve();
+        };
+        const fail = (message: string) => {
+            if (settled) return;
+            settled = true;
+            cleanup();
+            reject(new Error(message));
+        };
+        function check() {
+            const live = new Map(
+                model.pedalboard.get().items
+                    .filter((item) => !item.isEmpty() && !item.isSyntheticItem())
+                    .map((item) => [String(item.instanceId), item.isEnabled])
+            );
+            if (Object.entries(expected).every(([id, enabled]) => live.get(id) === enabled)) {
+                finish();
+            }
+        }
+        function onState(state: State) {
+            if (state === State.Error) fail("PiPedal disconnected while restoring Chain Bypass.");
+        }
+        model.pedalboard.addOnChangedHandler(check);
+        model.state.addOnChangedHandler(onState);
+        check();
+    });
+}
+
+/**
+ * Restore Chain Bypass without losing pre-existing dirty base edits.
+ *
+ * A clean base is restored with a native preset reload. If the base was dirty
+ * before bypass, only the enabled flags changed by bypass are restored because
+ * reloading would discard the user's unsaved edits.
+ */
+export async function restoreChainBypassForSafeWrite(
+    model: PiPedalModel
+): Promise<void> {
+    const runtime = await readMultiFXRuntimeState();
+    if (!runtime.chainBypassed) return;
+
+    const currentPresetId = model.presets.get().selectedInstanceId;
+    const samePreset = runtime.chainBypassPresetId === currentPresetId;
+
+    if (samePreset && !runtime.chainBypassWasPresetChanged) {
+        await loadCleanBasePreset(model, currentPresetId);
+    } else if (samePreset) {
+        const enabled = runtime.chainBypassEnabledStates;
+        for (const item of model.pedalboard.get().items) {
+            if (item.isEmpty() || item.isSyntheticItem()) continue;
+            const prior = enabled[String(item.instanceId)];
+            if (prior !== undefined && prior !== item.isEnabled) {
+                model.setPedalboardItemEnabled(item.instanceId, prior);
+            }
+        }
+        await waitForEnabledStates(model, enabled);
+    }
+
+    await updateMultiFXRuntimeState({
+        chainBypassed: false,
+        chainBypassPresetId: null,
+        chainBypassWasPresetChanged: false,
+        chainBypassEnabledStates: {}
+    });
+}
+
+/** Restore all temporary Performance state before exposing a base preset write. */
+export async function prepareBasePresetForWrite(
+    model: PiPedalModel,
+    targetPresetId: number
+): Promise<void> {
+    await restoreChainBypassForSafeWrite(model);
+
+    if (
+        model.selectedSnapshot.get() >= 0
+        || model.presets.get().selectedInstanceId !== targetPresetId
+    ) {
+        await loadCleanBasePreset(model, targetPresetId);
+    }
+
+    await updateMultiFXRuntimeState({
+        snapshotMode: false,
+        snapshotPresetId: null,
+        chainBypassed: false,
+        chainBypassPresetId: null,
+        chainBypassWasPresetChanged: false,
+        chainBypassEnabledStates: {}
+    });
+}

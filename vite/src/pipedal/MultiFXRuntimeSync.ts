@@ -1,12 +1,16 @@
-export type MultiFXMainView = "performance" | "default";
+/*
+ * PiPedal-MultiFX shared runtime transport.
+ *
+ * One singleton poller owns the bridge connection. Components subscribe to the
+ * same normalized snapshot instead of running independent GET loops. Persistent
+ * shared state is limited to controllerConfig and presetAssignments; Snapshot
+ * Mode / Chain Bypass are transient runtime state and reset with the bridge.
+ */
 
 export type MultiFXRuntimeState = {
     version: number;
     revision: number;
-
-    // The top-level operating view is shared. Nested MultiFX routes, menus,
-    // dialogs and theme choices remain browser-local.
-    mainView: MultiFXMainView;
+    instanceId: string;
 
     snapshotMode: boolean;
     snapshotPresetId: number | null;
@@ -15,71 +19,75 @@ export type MultiFXRuntimeState = {
     chainBypassWasPresetChanged: boolean;
     chainBypassEnabledStates: Record<string, boolean>;
 
-    // Shared hardware-controller configuration. Undefined means the runtime
-    // service has not been initialized with a controller config yet. null
-    // means use the shipped controller-config.json/defaults.
     controllerConfig?: unknown | null;
-
-    // Shared MultiFX Performance View tile map. The concrete shape is owned by
-    // MultiFXPresetTileMap so this runtime transport stays decoupled from the
-    // presentation/storage implementation.
-    presetTileStore?: unknown;
-
+    presetAssignments?: unknown;
 };
 
-export type MultiFXRuntimeStatePatch =
-    Partial<Omit<MultiFXRuntimeState, "version" | "revision">>;
+export type MultiFXPresetAssignmentUpdate = {
+    bankId: number;
+    switchId: string;
+    presetId: number | null;
+};
 
-export const MULTIFX_RUNTIME_POLL_MS = 200;
+export type MultiFXRuntimeStatePatch = Partial<Pick<
+    MultiFXRuntimeState,
+    | "snapshotMode"
+    | "snapshotPresetId"
+    | "chainBypassed"
+    | "chainBypassPresetId"
+    | "chainBypassWasPresetChanged"
+    | "chainBypassEnabledStates"
+    | "controllerConfig"
+>> & {
+    presetAssignmentUpdate?: MultiFXPresetAssignmentUpdate;
+    presetAssignmentSwap?: { bankId: number; leftSwitchId: string; rightSwitchId: string };
+    replacePresetAssignments?: unknown;
+    resetPresetAssignments?: boolean;
+    deletePresetAssignmentsBank?: number;
+    deletePresetAssignmentsPreset?: { bankId: number; presetId: number };
+};
+
+export const MULTIFX_RUNTIME_POLL_MS = 250;
+export const MULTIFX_RUNTIME_STATE_CHANGED_EVENT =
+    "multifx-runtime-state-changed";
 
 function runtimeStateUrl(): string {
     const hostname = window.location.hostname.includes(":")
         ? `[${window.location.hostname}]`
         : window.location.hostname;
-
     return `http://${hostname}:8877/multifx-state`;
 }
 
+function numberOrNull(value: unknown): number | null {
+    return typeof value === "number" && Number.isFinite(value)
+        ? value
+        : null;
+}
+
 function normalizeRuntimeState(value: unknown): MultiFXRuntimeState {
-    const source =
-        value && typeof value === "object"
-            ? value as Record<string, unknown>
-            : {};
+    const source = value && typeof value === "object"
+        ? value as Record<string, unknown>
+        : {};
 
     const enabledStates: Record<string, boolean> = {};
-    const rawEnabledStates = source.chainBypassEnabledStates;
-
-    if (rawEnabledStates && typeof rawEnabledStates === "object") {
+    const rawEnabled = source.chainBypassEnabledStates;
+    if (rawEnabled && typeof rawEnabled === "object") {
         for (const [key, enabled] of Object.entries(
-            rawEnabledStates as Record<string, unknown>
+            rawEnabled as Record<string, unknown>
         )) {
-            const instanceId = Number(key);
-            if (Number.isFinite(instanceId)) {
-                enabledStates[String(instanceId)] = Boolean(enabled);
+            if (Number.isFinite(Number(key))) {
+                enabledStates[String(Number(key))] = Boolean(enabled);
             }
         }
     }
 
-    const numberOrNull = (input: unknown): number | null => {
-        return typeof input === "number" && Number.isFinite(input)
-            ? input
-            : null;
-    };
-
-
     return {
-        version:
-            typeof source.version === "number"
-                ? source.version
-                : 1,
-        revision:
-            typeof source.revision === "number"
-                ? source.revision
-                : 0,
-        mainView:
-            source.mainView === "default"
-                ? "default"
-                : "performance",
+        version: typeof source.version === "number" ? source.version : 0,
+        revision: typeof source.revision === "number" ? source.revision : 0,
+        instanceId:
+            typeof source.instanceId === "string" && source.instanceId
+                ? source.instanceId
+                : "unknown",
         snapshotMode: Boolean(source.snapshotMode),
         snapshotPresetId: numberOrNull(source.snapshotPresetId),
         chainBypassed: Boolean(source.chainBypassed),
@@ -87,95 +95,179 @@ function normalizeRuntimeState(value: unknown): MultiFXRuntimeState {
         chainBypassWasPresetChanged:
             Boolean(source.chainBypassWasPresetChanged),
         chainBypassEnabledStates: enabledStates,
-        controllerConfig:
-            Object.prototype.hasOwnProperty.call(
-                source,
-                "controllerConfig"
-            )
-                ? source.controllerConfig
-                : undefined,
-        presetTileStore:
-            Object.prototype.hasOwnProperty.call(
-                source,
-                "presetTileStore"
-            )
-                ? source.presetTileStore
-                : undefined
+        controllerConfig: Object.prototype.hasOwnProperty.call(
+            source,
+            "controllerConfig"
+        ) ? source.controllerConfig : undefined,
+        presetAssignments: Object.prototype.hasOwnProperty.call(
+            source,
+            "presetAssignments"
+        ) ? source.presetAssignments : undefined
     };
 }
 
-export async function readMultiFXRuntimeState(
+async function fetchRuntimeState(
+    method: "GET" | "POST",
+    body?: MultiFXRuntimeStatePatch,
     signal?: AbortSignal
 ): Promise<MultiFXRuntimeState> {
     const response = await fetch(runtimeStateUrl(), {
-        method: "GET",
+        method,
         cache: "no-store",
+        headers: method === "POST"
+            ? { "Content-Type": "application/json" }
+            : undefined,
+        body: body === undefined ? undefined : JSON.stringify(body),
         signal
     });
 
     if (!response.ok) {
         throw new Error(
-            `MultiFX runtime state read failed: HTTP ${response.status}`
+            `MultiFX runtime ${method} failed: HTTP ${response.status}`
         );
     }
 
     return normalizeRuntimeState(await response.json());
+}
+
+let latestState: MultiFXRuntimeState | null = null;
+let pollStarted = false;
+let stopped = false;
+let pollTimer: number | null = null;
+let inFlight = false;
+let pendingWrites = 0;
+let writeQueue: Promise<void> = Promise.resolve();
+const listeners = new Set<(state: MultiFXRuntimeState) => void>();
+
+function publishState(state: MultiFXRuntimeState) {
+    const previousKey = latestState
+        ? `${latestState.instanceId}:${latestState.revision}`
+        : "";
+    const nextKey = `${state.instanceId}:${state.revision}`;
+    latestState = state;
+
+    if (nextKey === previousKey) return;
+
+    for (const listener of listeners) {
+        try {
+            listener(state);
+        } catch {
+            // One UI subscriber must never stop synchronization for others.
+        }
+    }
+
+    window.dispatchEvent(
+        new CustomEvent(MULTIFX_RUNTIME_STATE_CHANGED_EVENT, {
+            detail: state
+        })
+    );
+}
+
+async function pollOnce() {
+    if (stopped || inFlight || pendingWrites > 0) return;
+    inFlight = true;
+    try {
+        publishState(await fetchRuntimeState("GET"));
+    } catch {
+        // The bridge may start after Chromium; retry quietly.
+    } finally {
+        inFlight = false;
+    }
+}
+
+function schedulePoll() {
+    if (stopped) return;
+    pollTimer = window.setTimeout(async () => {
+        await pollOnce();
+        schedulePoll();
+    }, MULTIFX_RUNTIME_POLL_MS);
+}
+
+export function startMultiFXRuntimeSync() {
+    if (pollStarted || typeof window === "undefined") return;
+    pollStarted = true;
+    stopped = false;
+    void pollOnce();
+    schedulePoll();
+}
+
+export function stopMultiFXRuntimeSyncForTests() {
+    stopped = true;
+    if (pollTimer !== null) {
+        window.clearTimeout(pollTimer);
+        pollTimer = null;
+    }
+}
+
+export function getLatestMultiFXRuntimeState(): MultiFXRuntimeState | null {
+    return latestState;
+}
+
+export function subscribeMultiFXRuntimeState(
+    listener: (state: MultiFXRuntimeState) => void,
+    emitCurrent = true
+): () => void {
+    startMultiFXRuntimeSync();
+    listeners.add(listener);
+    if (emitCurrent && latestState) listener(latestState);
+    return () => listeners.delete(listener);
+}
+
+export async function readMultiFXRuntimeState(
+    signal?: AbortSignal
+): Promise<MultiFXRuntimeState> {
+    const state = await fetchRuntimeState("GET", undefined, signal);
+    publishState(state);
+    return state;
 }
 
 export async function updateMultiFXRuntimeState(
     patch: MultiFXRuntimeStatePatch,
     signal?: AbortSignal
 ): Promise<MultiFXRuntimeState> {
-    const response = await fetch(runtimeStateUrl(), {
-        method: "POST",
-        cache: "no-store",
-        headers: {
-            "Content-Type": "application/json"
-        },
-        body: JSON.stringify(patch),
-        signal
+    pendingWrites += 1;
+
+    let resolveResult!: (state: MultiFXRuntimeState) => void;
+    let rejectResult!: (reason?: unknown) => void;
+    const resultPromise = new Promise<MultiFXRuntimeState>((resolve, reject) => {
+        resolveResult = resolve;
+        rejectResult = reject;
     });
 
-    if (!response.ok) {
-        throw new Error(
-            `MultiFX runtime state update failed: HTTP ${response.status}`
-        );
-    }
+    writeQueue = writeQueue
+        .catch(() => undefined)
+        .then(async () => {
+            try {
+                const state = await fetchRuntimeState("POST", patch, signal);
+                publishState(state);
+                resolveResult(state);
+            } catch (error) {
+                rejectResult(error);
+            } finally {
+                pendingWrites = Math.max(0, pendingWrites - 1);
+            }
+        });
 
-    return normalizeRuntimeState(await response.json());
+    return resultPromise;
 }
 
-
-const CONTROLLER_STORAGE_KEY =
-    "pipedal-multifx-controller-config-v1";
-const CONTROLLER_CHANGED_EVENT =
-    "multifx-controller-config-changed";
-const CONTROLLER_SYNC_POLL_MS = 500;
-
+/* Controller configuration sync is centralized here too. */
+const CONTROLLER_STORAGE_KEY = "pipedal-multifx-controller-config-v2";
+const CONTROLLER_CHANGED_EVENT = "multifx-controller-config-changed";
+let applyingRemoteController = false;
 let controllerSyncStarted = false;
-let applyingRemoteControllerConfig = false;
-let lastControllerRuntimeRevision = -1;
 
 function readLocalControllerConfig(): unknown | null {
-    const stored = window.localStorage.getItem(
-        CONTROLLER_STORAGE_KEY
-    );
-
-    if (!stored) {
-        return null;
-    }
-
+    const raw = window.localStorage.getItem(CONTROLLER_STORAGE_KEY);
+    if (!raw) return null;
     try {
-        return JSON.parse(stored) as unknown;
+        return JSON.parse(raw) as unknown;
     } catch {
         return null;
     }
 }
 
-function controllerValuesEqual(
-    left: unknown,
-    right: unknown
-): boolean {
+function sameJson(left: unknown, right: unknown): boolean {
     try {
         return JSON.stringify(left) === JSON.stringify(right);
     } catch {
@@ -183,13 +275,11 @@ function controllerValuesEqual(
     }
 }
 
-function applySharedControllerConfig(value: unknown | null) {
+function applyRemoteControllerConfig(value: unknown | null) {
     const current = readLocalControllerConfig();
-    if (controllerValuesEqual(current, value)) {
-        return;
-    }
+    if (sameJson(current, value)) return;
 
-    applyingRemoteControllerConfig = true;
+    applyingRemoteController = true;
     try {
         if (value === null) {
             window.localStorage.removeItem(CONTROLLER_STORAGE_KEY);
@@ -199,74 +289,31 @@ function applySharedControllerConfig(value: unknown | null) {
                 JSON.stringify(value, null, 2)
             );
         }
-
         window.dispatchEvent(new Event(CONTROLLER_CHANGED_EVENT));
     } finally {
-        applyingRemoteControllerConfig = false;
+        applyingRemoteController = false;
     }
 }
 
-function startControllerConfigRuntimeSync() {
-    if (
-        controllerSyncStarted
-        || typeof window === "undefined"
-    ) {
-        return;
-    }
-
+function startControllerSync() {
+    if (controllerSyncStarted || typeof window === "undefined") return;
     controllerSyncStarted = true;
 
-    const publishLocalControllerConfig = () => {
-        if (applyingRemoteControllerConfig) {
-            return;
-        }
-
+    window.addEventListener(CONTROLLER_CHANGED_EVENT, () => {
+        if (applyingRemoteController) return;
         void updateMultiFXRuntimeState({
             controllerConfig: readLocalControllerConfig()
-        }).catch(() => {
-            // The frontend continues to work if the companion bridge has not
-            // been upgraded yet; sync resumes automatically when available.
-        });
-    };
+        }).catch(() => undefined);
+    });
 
-    window.addEventListener(
-        CONTROLLER_CHANGED_EVENT,
-        publishLocalControllerConfig
-    );
-
-    const poll = async () => {
-        try {
-            const state = await readMultiFXRuntimeState();
-
-            if (state.revision !== lastControllerRuntimeRevision) {
-                lastControllerRuntimeRevision = state.revision;
-
-                if (state.controllerConfig !== undefined) {
-                    applySharedControllerConfig(
-                        state.controllerConfig ?? null
-                    );
-                } else {
-                    // First upgraded client seeds the shared service from its
-                    // existing controller override. If there is no override,
-                    // leave the service uninitialized so the shipped config is
-                    // still used normally.
-                    const local = window.localStorage.getItem(
-                        CONTROLLER_STORAGE_KEY
-                    );
-                    if (local) {
-                        publishLocalControllerConfig();
-                    }
-                }
-            }
-        } catch {
-            // Runtime sync is optional at boot and may come online after the
-            // browser. Keep retrying silently.
-        } finally {
-            window.setTimeout(poll, CONTROLLER_SYNC_POLL_MS);
+    subscribeMultiFXRuntimeState((state) => {
+        if (state.controllerConfig !== undefined) {
+            applyRemoteControllerConfig(state.controllerConfig ?? null);
         }
-    };
-
-    void poll();
+    });
 }
 
-startControllerConfigRuntimeSync();
+if (typeof window !== "undefined") {
+    startMultiFXRuntimeSync();
+    startControllerSync();
+}
