@@ -51,6 +51,10 @@ enum CapabilityFlag : uint8_t {
     CAP_DIGITAL = 0x01,
     CAP_ANALOG = 0x02,
     CAP_OUTPUT = 0x04,
+    // Learn-only mode: identify the two digital phases of one encoder.
+    CAP_ENCODER = 0x08,
+    // Learn-only mode: identify an encoder's optional push input.
+    CAP_ENCODER_PUSH = 0x10,
 };
 
 enum InputStateFlag : uint8_t {
@@ -172,4 +176,3 @@ struct SourceDescriptor {
 };
 
 } // namespace mfx
-

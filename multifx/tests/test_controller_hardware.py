@@ -7,6 +7,7 @@ import pathlib
 import sys
 import types
 import unittest
+from unittest import mock
 
 
 MULTIFX_DIR = pathlib.Path(__file__).resolve().parents[1]
@@ -96,6 +97,85 @@ class ControllerHardwareConfigTests(unittest.TestCase):
             switch_record[8:11],
             [bridge.SOURCE_MUX, 1, 6],
         )
+
+    def test_analog_learn_is_sent_to_protocol_v3_controller(self):
+        """Portable-hardware firmware retains the v2 Learn command envelope."""
+        original_state = bridge._deepcopy(bridge.state)
+        original_token = bridge.next_controller_learn_token
+        sent = []
+        try:
+            bridge.state["controllerHardware"] = {
+                "connected": True,
+                "protocolVersion": bridge.HARDWARE_PROTOCOL_VERSION,
+                "boardId": "test",
+                "boardName": "Test controller",
+                "drivers": [],
+                "limits": {"modules": 0, "analogControls": 16, "encoders": 0},
+                "inputs": [{
+                    "type": "gpio",
+                    "channel": 8,
+                    "moduleId": None,
+                    "label": "GPIO 8",
+                    "capabilities": ["digital", "analog"],
+                    "reserved": False,
+                }],
+                "apply": {"status": "idle", "message": "", "token": None},
+            }
+            with mock.patch.object(
+                bridge,
+                "send_controller_sysex",
+                side_effect=lambda message, _label: sent.append(message) or True,
+            ):
+                result = bridge.update_state({
+                    "controllerLearnStart": {
+                        "capability": "analog",
+                        "hardwareSwitch": 1,
+                    }
+                })
+            self.assertEqual(result["controllerLearn"]["status"], "waiting")
+            self.assertEqual(result["controllerLearn"]["capability"], "analog")
+            self.assertEqual(sent[0][-2:], [bridge.CAPABILITY_ANALOG, 1])
+        finally:
+            bridge.state.clear()
+            bridge.state.update(original_state)
+            bridge.next_controller_learn_token = original_token
+
+    def test_encoder_learn_decodes_both_phase_inputs(self):
+        """Encoder rotation Learn must preserve both returned descriptors."""
+        original_state = bridge._deepcopy(bridge.state)
+        try:
+            bridge.state["controllerLearn"] = {
+                "status": "waiting",
+                "token": 9,
+                "capability": "encoder",
+                "input": None,
+                "message": "",
+            }
+            descriptor_a = [
+                bridge.SOURCE_GPIO, 0, 17,
+                bridge.CAPABILITY_DIGITAL,
+                bridge.INPUT_AVAILABLE,
+                bridge.USAGE_NONE, 0,
+            ]
+            descriptor_b = [
+                bridge.SOURCE_GPIO, 0, 18,
+                bridge.CAPABILITY_DIGITAL,
+                bridge.INPUT_AVAILABLE,
+                bridge.USAGE_NONE, 0,
+            ]
+            message = list(bridge.MFX_SYSEX_PREFIX) + [
+                bridge.CONTROLLER_PROTOCOL_VERSION,
+                bridge.CMD_LEARN_RESULT,
+                9,
+                bridge.LEARN_STATUS_LEARNED,
+            ] + descriptor_a + descriptor_b
+            self.assertTrue(bridge._handle_learn_result(message))
+            learned = bridge.state["controllerLearn"]
+            self.assertEqual(learned["input"]["channel"], 17)
+            self.assertEqual(learned["secondaryInput"]["channel"], 18)
+        finally:
+            bridge.state.clear()
+            bridge.state.update(original_state)
 
 
 if __name__ == "__main__":

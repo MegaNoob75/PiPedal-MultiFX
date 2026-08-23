@@ -17,7 +17,12 @@
 namespace mfx {
 
 using SendControlChange = void (*)(uint8_t cc, uint8_t value);
-using SendLearnResult = void (*)(uint8_t token, uint8_t status, const SourceAddress &source);
+using SendLearnResult = void (*)(
+    uint8_t token,
+    uint8_t status,
+    const SourceAddress &source,
+    const SourceAddress &secondarySource
+);
 
 class ControllerHardware {
 public:
@@ -54,8 +59,8 @@ public:
     /** Keep legacy v1 bridge compatibility by replacing direct switch sources. */
     bool applyLegacySwitchPins(const uint8_t pins[MAX_SWITCHES]);
 
-    /** Enter transient digital Learn without modifying persistent configuration. */
-    void startLearn(uint8_t token, uint8_t requestedCapabilities, uint8_t targetSwitch);
+    /** Enter transient digital/analog Learn without modifying persistent configuration. */
+    void startLearn(uint8_t token, uint8_t requestedCapabilities, uint8_t targetIndex);
 
     /** Cancel the matching Learn session, leaving live configuration untouched. */
     void cancelLearn(uint8_t token);
@@ -93,6 +98,13 @@ private:
 
     struct LearnCandidate {
         SourceAddress source;
+        uint16_t analogBaseline = 0;
+        uint16_t analogLast = 0;
+        uint16_t analogTravel = 0;
+        int8_t analogDirection = 0;
+        uint8_t analogConfirmations = 0;
+        uint8_t encoderTransitions = 0;
+        bool encoderLevel = true;
         bool rawPressed = false;
         bool stablePressed = false;
         bool armed = false;
@@ -102,7 +114,8 @@ private:
     struct LearnRuntime {
         bool active = false;
         uint8_t token = 0;
-        uint8_t targetSwitch = 0;
+        uint8_t capability = 0;
+        uint8_t targetIndex = 0;
         uint8_t candidateCount = 0;
         uint32_t startedAt = 0;
         LearnCandidate candidates[64];
@@ -193,14 +206,18 @@ private:
     /** Sample/filter one analog control per interval to keep the main loop responsive. */
     void updateAnalogControls();
 
-    /** Build learnable direct/module digital candidates from the live topology. */
+    /** Build capability-compatible Learn candidates from the live topology. */
     void prepareLearnCandidates();
 
-    /** Debounce candidates and finish Learn without producing normal switch MIDI. */
+    /** Detect a button press or sustained analog movement and finish Learn. */
     void updateLearn();
 
     /** Leave Learn, restore source modes, and emit its correlated result. */
-    void finishLearn(uint8_t status, const SourceAddress &source);
+    void finishLearn(
+        uint8_t status,
+        const SourceAddress &source,
+        const SourceAddress &secondarySource = SourceAddress{}
+    );
 
     /** Return one-based logical switch using a source, or zero when unassigned. */
     uint8_t assignedSwitch(const SourceAddress &source) const;

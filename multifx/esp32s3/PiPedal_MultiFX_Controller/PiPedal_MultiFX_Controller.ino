@@ -8,7 +8,7 @@
  *
  * Protocol compatibility:
  *   v1  direct-GPIO logical switch map (retained for older bridges)
- *   v2  capability discovery and transient digital Learn
+ *   v2  capability discovery and transient digital/analog Learn
  *   v3  board/driver catalog and atomic portable hardware configuration
  */
 
@@ -54,9 +54,14 @@ mfx::SourceDescriptor describeOrEmpty(const mfx::SourceAddress &source) {
 }
 
 /** Return a correlated v2 Learn status without persisting the learned source. */
-void sendLearnResult(uint8_t token, uint8_t status, const mfx::SourceAddress &source) {
+void sendLearnResult(
+    uint8_t token,
+    uint8_t status,
+    const mfx::SourceAddress &source,
+    const mfx::SourceAddress &secondarySource
+) {
     constexpr size_t MESSAGE_SIZE = 1 + 4 + 1 + 1 + 1 + 1
-        + SOURCE_DESCRIPTOR_SIZE + 1;
+        + 2 * SOURCE_DESCRIPTOR_SIZE + 1;
     uint8_t message[MESSAGE_SIZE] = {};
     size_t offset = 0;
     message[offset++] = 0xF0;
@@ -67,6 +72,9 @@ void sendLearnResult(uint8_t token, uint8_t status, const mfx::SourceAddress &so
     message[offset++] = status;
     const mfx::SourceDescriptor descriptor = describeOrEmpty(source);
     writeDescriptor(&message[offset], descriptor);
+    offset += SOURCE_DESCRIPTOR_SIZE;
+    const mfx::SourceDescriptor secondaryDescriptor = describeOrEmpty(secondarySource);
+    writeDescriptor(&message[offset], secondaryDescriptor);
     offset += SOURCE_DESCRIPTOR_SIZE;
     message[offset++] = 0xF7;
     midi.sendSysEx(message);

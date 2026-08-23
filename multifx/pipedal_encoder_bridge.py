@@ -55,6 +55,7 @@ ENCODER_CC = 30
 PUSH_CC = 31
 FIRST_SWITCH_CC = 40
 MAX_FOOTSWITCHES = 12
+MAX_ANALOG_CONTROLS = 16
 LAST_SWITCH_CC = FIRST_SWITCH_CC + MAX_FOOTSWITCHES - 1
 
 YDOTOOL = "/usr/bin/ydotool"
@@ -101,6 +102,8 @@ CMD_CONFIG_RESULT = 0x26
 
 CAPABILITY_DIGITAL = 0x01
 CAPABILITY_ANALOG = 0x02
+CAPABILITY_ENCODER = 0x08
+CAPABILITY_ENCODER_PUSH = 0x10
 SOURCE_GPIO = 0x00
 SOURCE_MUX = 0x01
 SOURCE_EXTERNAL_ADC = 0x02
@@ -676,6 +679,7 @@ def update_state(patch):
     controller_changed = False
     controller_command = None
     controller_command_kind = None
+    controller_command_capability = None
     release_switches_for_learn = False
 
     with state_lock:
@@ -706,42 +710,62 @@ def update_state(patch):
 
         if "controllerLearnStart" in patch:
             op = patch["controllerLearnStart"]
-            if not isinstance(op, dict) or op.get("capability") != "digital":
-                raise ValueError("Phase 1 Learn requires capability 'digital'")
-            hardware_switch = op.get("hardwareSwitch")
-            if not isinstance(hardware_switch, int) or isinstance(hardware_switch, bool) or not 1 <= hardware_switch <= MAX_FOOTSWITCHES:
-                raise ValueError("controllerLearnStart.hardwareSwitch is invalid")
+            capability = op.get("capability") if isinstance(op, dict) else None
+            if capability not in {"digital", "analog", "encoder", "encoderPush"}:
+                raise ValueError("Learn capability is invalid")
+            target_index = op.get("hardwareSwitch")
+            maximum_target = (
+                MAX_FOOTSWITCHES if capability == "digital"
+                else 4 if capability in {"encoder", "encoderPush"}
+                else MAX_ANALOG_CONTROLS
+            )
+            if not isinstance(target_index, int) or isinstance(target_index, bool) or not 1 <= target_index <= maximum_target:
+                raise ValueError("controllerLearnStart target index is invalid")
             hardware = state["controllerHardware"]
             if not hardware["connected"]:
                 raise ValueError("controller is not connected")
-            if hardware["protocolVersion"] != CONTROLLER_PROTOCOL_VERSION:
+            # Hardware protocol v3 retains the v2 Learn command envelope.
+            if (hardware["protocolVersion"] or 0) < CONTROLLER_PROTOCOL_VERSION:
                 raise ValueError("connected controller does not support Learn")
             candidates = [
                 item for item in hardware["inputs"]
-                if "digital" in item.get("capabilities", [])
+                if ("digital" if capability in {"encoder", "encoderPush"} else capability)
+                in item.get("capabilities", [])
                 and not item.get("reserved", False)
             ]
             if not candidates:
-                raise ValueError("controller reported no learnable digital inputs")
+                raise ValueError(f"controller reported no learnable {capability} inputs")
 
             next_controller_learn_token = (next_controller_learn_token % 126) + 1
             token = next_controller_learn_token
             state["controllerLearn"] = {
                 "status": "waiting",
                 "token": token,
-                "capability": "digital",
+                "capability": capability,
                 "input": None,
-                "message": "Waiting for switch press…",
+                "message": (
+                    "Waiting for switch press…"
+                    if capability == "digital"
+                    else "Turn the encoder through several clicks…"
+                    if capability == "encoder"
+                    else "Press the encoder push button…"
+                    if capability == "encoderPush"
+                    else "Move the pot, slider, or expression control steadily…"
+                ),
             }
             controller_command = list(MFX_SYSEX_PREFIX) + [
                 CONTROLLER_PROTOCOL_VERSION,
                 CMD_LEARN_START,
                 token,
-                CAPABILITY_DIGITAL,
-                hardware_switch,
+                CAPABILITY_DIGITAL if capability == "digital"
+                else CAPABILITY_ENCODER if capability == "encoder"
+                else CAPABILITY_ENCODER_PUSH if capability == "encoderPush"
+                else CAPABILITY_ANALOG,
+                target_index,
             ]
             controller_command_kind = "start"
-            release_switches_for_learn = True
+            controller_command_capability = capability
+            release_switches_for_learn = capability == "digital"
 
         if "controllerLearnCancel" in patch:
             op = patch["controllerLearnCancel"]
@@ -750,6 +774,7 @@ def update_state(patch):
                 raise ValueError("controllerLearnCancel.token is invalid")
             current_learn = state["controllerLearn"]
             if current_learn.get("token") == token:
+                controller_command_capability = current_learn.get("capability")
                 if current_learn.get("status") == "waiting":
                     controller_command = list(MFX_SYSEX_PREFIX) + [
                         CONTROLLER_PROTOCOL_VERSION,
@@ -852,7 +877,7 @@ def update_state(patch):
                     state["controllerLearn"] = {
                         "status": "error",
                         "token": token,
-                        "capability": "digital",
+                        "capability": controller_command_capability,
                         "input": None,
                         "message": "Could not send Cancel. The controller will leave Learn when its timeout expires.",
                     }
@@ -1181,11 +1206,21 @@ def _handle_capability_report(data):
 
 
 def _handle_learn_result(data):
-    if len(data) != 8 + SOURCE_DESCRIPTOR_SIZE:
+    if len(data) not in {
+        8 + SOURCE_DESCRIPTOR_SIZE,
+        8 + 2 * SOURCE_DESCRIPTOR_SIZE,
+    }:
         return False
     token = data[6]
     result_code = data[7]
-    descriptor = controller_input_descriptor(data[8:])
+    if len(data) == 8 + 2 * SOURCE_DESCRIPTOR_SIZE:
+        descriptor = controller_input_descriptor(data[8:8 + SOURCE_DESCRIPTOR_SIZE])
+        secondary_descriptor = controller_input_descriptor(
+            data[8 + SOURCE_DESCRIPTOR_SIZE:8 + 2 * SOURCE_DESCRIPTOR_SIZE]
+        )
+    else:
+        descriptor = controller_input_descriptor(data[8:])
+        secondary_descriptor = None
     statuses = {
         LEARN_STATUS_LEARNED: "learned",
         LEARN_STATUS_TIMEOUT: "timeout",
@@ -1205,7 +1240,7 @@ def _handle_learn_result(data):
         usage = descriptor.get("assignedTo") or "another controller function"
         message = f"{descriptor['label']} is already assigned to {usage}."
     elif status == "timeout":
-        message = "Learn timed out. No switch press was detected."
+        message = "Learn timed out. No matching input activity was detected."
     elif status == "cancelled":
         message = "Learn cancelled."
     else:
@@ -1220,6 +1255,7 @@ def _handle_learn_result(data):
             "token": token,
             "capability": current.get("capability"),
             "input": descriptor,
+            "secondaryInput": secondary_descriptor,
             "message": message,
         }
         state["revision"] += 1

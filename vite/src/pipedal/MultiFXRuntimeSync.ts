@@ -8,6 +8,10 @@
  */
 
 export type MultiFXControllerInputCapability = "digital" | "analog";
+export type MultiFXControllerLearnCapability =
+    | MultiFXControllerInputCapability
+    | "encoder"
+    | "encoderPush";
 
 export type MultiFXControllerInput = {
     id: string;
@@ -55,8 +59,9 @@ export type MultiFXControllerHardware = {
 export type MultiFXControllerLearn = {
     status: "idle" | "waiting" | "learned" | "timeout" | "cancelled" | "conflict" | "error";
     token: number | null;
-    capability: MultiFXControllerInputCapability | null;
+    capability: MultiFXControllerLearnCapability | null;
     input: MultiFXControllerInput | null;
+    secondaryInput: MultiFXControllerInput | null;
     message: string;
 };
 
@@ -101,7 +106,7 @@ export type MultiFXRuntimeStatePatch = Partial<Pick<
     deletePresetAssignmentsBank?: number;
     deletePresetAssignmentsPreset?: { bankId: number; presetId: number };
     controllerLearnStart?: {
-        capability: MultiFXControllerInputCapability;
+        capability: MultiFXControllerLearnCapability;
         hardwareSwitch: number;
     };
     controllerLearnCancel?: { token: number };
@@ -269,6 +274,8 @@ function normalizeControllerLearn(value: unknown): MultiFXControllerLearn {
         : "idle";
     const capability = source.capability === "digital"
         || source.capability === "analog"
+        || source.capability === "encoder"
+        || source.capability === "encoderPush"
         ? source.capability
         : null;
 
@@ -280,6 +287,7 @@ function normalizeControllerLearn(value: unknown): MultiFXControllerLearn {
             : null,
         capability,
         input: normalizeControllerInput(source.input),
+        secondaryInput: normalizeControllerInput(source.secondaryInput),
         message: typeof source.message === "string" ? source.message : ""
     };
 }

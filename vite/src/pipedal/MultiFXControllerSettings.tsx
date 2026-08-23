@@ -1363,6 +1363,7 @@ export default function MultiFXControllerSettings({
                 token: null,
                 capability: null,
                 input: null,
+                secondaryInput: null,
                 message: ""
             }
         );

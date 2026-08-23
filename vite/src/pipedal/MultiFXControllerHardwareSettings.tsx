@@ -57,8 +57,9 @@ type SourceOption = {
 
 type HardwareLearnSession = {
     token: number;
-    switchIndex: number;
-    switchId: string;
+    kind: "switch" | "analog" | "encoderRotation" | "encoderPush";
+    targetIndex: number;
+    targetId: string;
 };
 
 /** Convert a firmware-reported source back into the durable JSON source form. */
@@ -183,6 +184,7 @@ export default function MultiFXControllerHardwareSettings({
             token: null,
             capability: null,
             input: null,
+            secondaryInput: null,
             message: ""
         }
     );
@@ -207,7 +209,7 @@ export default function MultiFXControllerHardwareSettings({
         }
     }, []);
 
-    /** Stop a transient digital Learn session without changing the draft. */
+    /** Stop a transient digital or analog Learn session without changing the draft. */
     const cancelLearn = useCallback(async (
         session: HardwareLearnSession | null = learnSession,
         feedback = "Learn cancelled."
@@ -229,28 +231,55 @@ export default function MultiFXControllerHardwareSettings({
         }
     }, [learnSession]);
 
-    /** Ask the controller to identify the next pressed digital switch/button. */
-    const startLearn = async (switchIndex: number) => {
-        const target = controllerDraft.switches[switchIndex];
+    /** Ask the controller to identify an activated input of the requested kind. */
+    const startLearn = async (
+        kind: HardwareLearnSession["kind"],
+        targetIndex: number
+    ) => {
+        const target = kind === "switch"
+            ? controllerDraft.switches[targetIndex]
+            : kind === "analog"
+                ? draft.analogControls[targetIndex]
+                : draft.encoders[targetIndex];
         if (!target) return;
         if (learnSession) await cancelLearn(learnSession, "");
         setLearnFeedback(`Waiting to start Learn for ${target.label}…`);
         try {
             const runtime = await updateMultiFXRuntimeState({
                 controllerLearnStart: {
-                    capability: "digital",
-                    hardwareSwitch: target.hardwareSwitch
+                    capability: kind === "analog"
+                        ? "analog"
+                        : kind === "encoderRotation"
+                            ? "encoder"
+                            : kind === "encoderPush" ? "encoderPush" : "digital",
+                    hardwareSwitch: kind === "switch"
+                        ? controllerDraft.switches[targetIndex].hardwareSwitch
+                        : targetIndex + 1
                 }
             });
             const token = runtime.controllerLearn.token;
-            if (runtime.controllerLearn.status !== "waiting" || token === null) {
+            if (token === null) {
                 setLearnFeedback(runtime.controllerLearn.message || "Learn could not start.");
                 return;
             }
-            const session = { token, switchIndex, switchId: target.id };
+            const session = { token, kind, targetIndex, targetId: target.id };
             learnSessionRef.current = session;
             setLearnSession(session);
-            setLearnFeedback(`Waiting for the physical button for ${target.label}…`);
+            // A fast controller can finish Learn before the POST response
+            // returns. Publish that completed response into the same result
+            // handler instead of mistaking it for a failed start.
+            setControllerLearn(runtime.controllerLearn);
+            if (runtime.controllerLearn.status === "waiting") {
+                setLearnFeedback(
+                    kind === "switch" || kind === "encoderPush"
+                        ? `Waiting for the physical button for ${target.label}…`
+                        : kind === "encoderRotation"
+                            ? `Turn ${target.label} through several clicks…`
+                            : `Move ${target.label} steadily through part of its range…`
+                );
+            } else {
+                setLearnFeedback(runtime.controllerLearn.message || "Processing learned input…");
+            }
         } catch (error) {
             setLearnFeedback(error instanceof Error ? error.message : "Learn could not start.");
         }
@@ -264,26 +293,153 @@ export default function MultiFXControllerHardwareSettings({
             const learnedSource = controllerLearn.input
                 ? sourceFromReportedInput(controllerLearn.input)
                 : null;
-            if (!learnedSource) {
+            const secondaryLearnedSource = controllerLearn.secondaryInput
+                ? sourceFromReportedInput(controllerLearn.secondaryInput)
+                : null;
+            const currentEncoderIndex = draft.encoders.findIndex(
+                (item) => item.id === learnSession.targetId
+            );
+
+            if (learnSession.kind === "encoderRotation") {
+                if (!learnedSource || !secondaryLearnedSource
+                    || currentEncoderIndex < 0) {
+                    setLearnFeedback("Encoder Learn did not return two valid phase inputs. No change was made.");
+                } else {
+                    const learnedIds = new Set([
+                        controllerInputSourceId(learnedSource),
+                        controllerInputSourceId(secondaryLearnedSource)
+                    ]);
+                    let conflictLabel: string | null = null;
+                    switchInputs.forEach((source, index) => {
+                        if (learnedIds.has(controllerInputSourceId(source))) {
+                            conflictLabel ??= controllerDraft.switches[index]?.label ?? "a switch";
+                        }
+                    });
+                    draft.encoders.forEach((encoder, index) => {
+                        const sources = index === currentEncoderIndex
+                            ? [encoder.buttonInput]
+                            : [encoder.aInput, encoder.bInput, encoder.buttonInput];
+                        if (sources.some((source) => learnedIds.has(controllerInputSourceId(source)))) {
+                            conflictLabel ??= encoder.label;
+                        }
+                    });
+                    if (conflictLabel) {
+                        setLearnFeedback(
+                            `One of those encoder inputs is already assigned to ${conflictLabel}. Remove or disconnect the old assignment, then try again; you do not need to save first.`
+                        );
+                    } else {
+                        setDraft((current) => ({
+                            ...current,
+                            templateId: "custom",
+                            encoders: current.encoders.map((encoder) =>
+                                encoder.id === learnSession.targetId
+                                    ? {
+                                        ...encoder,
+                                        aInput: learnedSource,
+                                        bInput: secondaryLearnedSource
+                                    }
+                                    : encoder
+                            )
+                        }));
+                        setStatus("Unsaved changes.");
+                        setLearnFeedback(
+                            `${controllerLearn.input?.label ?? "Input A"} and ${controllerLearn.secondaryInput?.label ?? "Input B"} learned for ${draft.encoders[currentEncoderIndex]?.label ?? "encoder"}. Test direction, then Save & Apply.`
+                        );
+                    }
+                }
+            } else if (learnSession.kind === "encoderPush") {
+                if (!learnedSource || currentEncoderIndex < 0) {
+                    setLearnFeedback("Encoder push Learn did not return a valid input. No change was made.");
+                } else {
+                    const learnedId = controllerInputSourceId(learnedSource);
+                    let conflictLabel: string | null = null;
+                    switchInputs.forEach((source, index) => {
+                        if (controllerInputSourceId(source) === learnedId) {
+                            conflictLabel ??= controllerDraft.switches[index]?.label ?? "a switch";
+                        }
+                    });
+                    draft.encoders.forEach((encoder, index) => {
+                        const sources = index === currentEncoderIndex
+                            ? [encoder.aInput, encoder.bInput]
+                            : [encoder.aInput, encoder.bInput, encoder.buttonInput];
+                        if (sources.some((source) => controllerInputSourceId(source) === learnedId)) {
+                            conflictLabel ??= encoder.label;
+                        }
+                    });
+                    if (conflictLabel) {
+                        setLearnFeedback(
+                            `That push input is already assigned to ${conflictLabel}. Remove or disconnect the old assignment, then try again; you do not need to save first.`
+                        );
+                    } else {
+                        setDraft((current) => ({
+                            ...current,
+                            templateId: "custom",
+                            encoders: current.encoders.map((encoder) =>
+                                encoder.id === learnSession.targetId
+                                    ? { ...encoder, buttonInput: learnedSource }
+                                    : encoder
+                            )
+                        }));
+                        setStatus("Unsaved changes.");
+                        setLearnFeedback(
+                            `${controllerLearn.input?.label ?? "Input"} learned as the push button for ${draft.encoders[currentEncoderIndex]?.label ?? "encoder"}. Save & Apply to keep it.`
+                        );
+                    }
+                }
+            } else if (!learnedSource) {
                 setLearnFeedback("The learned input did not have a recognized source address.");
             } else {
                 const learnedId = controllerInputSourceId(learnedSource);
-                const conflictIndex = switchInputs.findIndex((source, index) =>
-                    index !== learnSession.switchIndex
-                    && controllerInputSourceId(source) === learnedId
+                const currentSwitchIndex = controllerDraft.switches.findIndex(
+                    (item) => item.id === learnSession.targetId
                 );
-                if (conflictIndex >= 0) {
-                    setLearnFeedback(
-                        `That input is already assigned to ${controllerDraft.switches[conflictIndex]?.label ?? "another switch"}.`
-                    );
+                const currentAnalogIndex = draft.analogControls.findIndex(
+                    (item) => item.id === learnSession.targetId
+                );
+                const currentTargetIndex = learnSession.kind === "switch"
+                    ? currentSwitchIndex
+                    : currentAnalogIndex;
+                if (currentTargetIndex < 0) {
+                    setLearnFeedback("The target control was removed before Learn completed. No change was made.");
                 } else {
-                    setSwitchInputs((current) => current.map((source, index) =>
-                        index === learnSession.switchIndex ? learnedSource : source
-                    ));
-                    setStatus("Unsaved changes.");
-                    setLearnFeedback(
-                        `${controllerLearn.input?.label ?? "Input"} learned for ${controllerDraft.switches[learnSession.switchIndex]?.label ?? "switch"}. Save & Apply to keep it.`
+                    const conflictIndex = learnSession.kind === "switch"
+                    ? switchInputs.findIndex((source, index) =>
+                        index !== currentTargetIndex
+                        && controllerInputSourceId(source) === learnedId
+                    )
+                    : draft.analogControls.findIndex((control, index) =>
+                        index !== currentTargetIndex
+                        && controllerInputSourceId(control.input) === learnedId
                     );
+                    if (conflictIndex >= 0) {
+                        setLearnFeedback(
+                            `That input is already assigned to ${learnSession.kind === "switch"
+                                ? controllerDraft.switches[conflictIndex]?.label ?? "another switch"
+                                : draft.analogControls[conflictIndex]?.label ?? "another analog control"}. Set the old assignment to Not connected, then try Learn again. You do not need to save first.`
+                        );
+                    } else if (learnSession.kind === "switch") {
+                        setSwitchInputs((current) => current.map((source, index) =>
+                            index === currentTargetIndex ? learnedSource : source
+                        ));
+                        setStatus("Unsaved changes.");
+                        setLearnFeedback(
+                            `${controllerLearn.input?.label ?? "Input"} learned for ${controllerDraft.switches[currentTargetIndex]?.label ?? "switch"}. Save & Apply to keep it.`
+                        );
+                    } else {
+                        setDraft((current) => ({
+                            ...current,
+                            templateId: "custom",
+                            analogControls: current.analogControls.map((control) =>
+                                control.id === learnSession.targetId
+                                    ? { ...control, input: learnedSource }
+                                    : control
+                            )
+                        }));
+                        setStatus("Unsaved changes.");
+                        setLearnFeedback(
+                            `${controllerLearn.input?.label ?? "Input"} learned for ${draft.analogControls[currentTargetIndex]?.label ?? "analog control"}. Save & Apply to keep it.`
+                        );
+                    }
                 }
             }
         } else {
@@ -296,7 +452,7 @@ export default function MultiFXControllerHardwareSettings({
         void updateMultiFXRuntimeState({
             controllerLearnCancel: { token: completed.token }
         }).catch(() => undefined);
-    }, [controllerLearn, learnSession, switchInputs, controllerDraft.switches]);
+    }, [controllerLearn, learnSession, switchInputs, controllerDraft.switches, draft.analogControls, draft.encoders]);
 
     const allCurrentSources = useMemo(() => [
         ...switchInputs,
@@ -553,11 +709,13 @@ export default function MultiFXControllerHardwareSettings({
                             />
                             <button
                                 type="button"
-                                onClick={() => learnSession?.switchId === item.id
+                                onClick={() => learnSession?.kind === "switch" && learnSession.targetId === item.id
                                     ? void cancelLearn(learnSession)
-                                    : void startLearn(index)}
+                                    : void startLearn("switch", index)}
                                 disabled={saving || (
-                                    learnSession !== null && learnSession.switchId !== item.id
+                                    learnSession !== null && (
+                                        learnSession.kind !== "switch" || learnSession.targetId !== item.id
+                                    )
                                 ) || (
                                     learnSession === null && (
                                         !reportedHardware.connected
@@ -567,14 +725,13 @@ export default function MultiFXControllerHardwareSettings({
                                 )}
                                 style={learnButtonStyle}
                             >
-                                {learnSession?.switchId === item.id ? "CANCEL" : "LEARN"}
+                                {learnSession?.kind === "switch" && learnSession.targetId === item.id ? "CANCEL" : "LEARN"}
                             </button>
                         </div>
                     ))}
                 </div>
                 <div style={helpStyle}>
-                    Learn currently detects digital switches and buttons only. Pots, sliders,
-                    and expression inputs still require manual selection.
+                    Press Learn, then press the matching physical switch or button.
                 </div>
                 {learnFeedback && <div style={statusStyle}>{learnFeedback}</div>}
             </section>
@@ -631,7 +788,7 @@ export default function MultiFXControllerHardwareSettings({
                 <div style={sectionTitleRowStyle}>
                     <div>
                         <div style={sectionHeadingStyle}>POTS, SLIDERS & EXPRESSION</div>
-                        <div style={helpStyle}>Calibration uses the firmware's normalized 0..4095 range for every ADC driver.</div>
+                        <div style={helpStyle}>Press Learn, wait one second, then move any physical control steadily. To swap assignments safely, set the affected controls to Not connected first; you can relearn them immediately without saving between changes.</div>
                     </div>
                     <button
                         type="button"
@@ -654,16 +811,41 @@ export default function MultiFXControllerHardwareSettings({
                                 style={nameInputStyle}
                                 aria-label="Analog control name"
                             />
-                            <button
-                                type="button"
-                                onClick={() => updateDraft({
-                                    ...draft,
-                                    analogControls: draft.analogControls.filter((_, itemIndex) => itemIndex !== index)
-                                })}
-                                style={dangerButtonStyle}
-                            >
-                                REMOVE
-                            </button>
+                            <div style={addRowStyle}>
+                                <button
+                                    type="button"
+                                    onClick={() => learnSession?.kind === "analog"
+                                        && learnSession.targetId === control.id
+                                        ? void cancelLearn(learnSession)
+                                        : void startLearn("analog", index)}
+                                    disabled={saving || (
+                                        learnSession !== null && (
+                                            learnSession.kind !== "analog"
+                                            || learnSession.targetId !== control.id
+                                        )
+                                    ) || (
+                                        learnSession === null && (
+                                            !reportedHardware.connected
+                                            || (reportedHardware.protocolVersion ?? 0) < 2
+                                            || analogOptions.length === 0
+                                        )
+                                    )}
+                                    style={learnButtonStyle}
+                                >
+                                    {learnSession?.kind === "analog"
+                                        && learnSession.targetId === control.id ? "CANCEL" : "LEARN"}
+                                </button>
+                                <button
+                                    type="button"
+                                    onClick={() => updateDraft({
+                                        ...draft,
+                                        analogControls: draft.analogControls.filter((_, itemIndex) => itemIndex !== index)
+                                    })}
+                                    style={dangerButtonStyle}
+                                >
+                                    REMOVE
+                                </button>
+                            </div>
                         </div>
                         <div style={responsiveFieldsStyle}>
                             <SourceSelect
@@ -717,12 +899,58 @@ export default function MultiFXControllerHardwareSettings({
                             <input value={encoder.label}
                                 onChange={(event) => replaceEncoder(index, { ...encoder, label: event.target.value })}
                                 style={nameInputStyle} aria-label="Encoder name" />
-                            <button type="button"
-                                onClick={() => updateDraft({
-                                    ...draft,
-                                    encoders: draft.encoders.filter((_, itemIndex) => itemIndex !== index)
-                                })}
-                                style={dangerButtonStyle}>REMOVE</button>
+                            <div style={addRowStyle}>
+                                <button type="button"
+                                    onClick={() => learnSession?.kind === "encoderRotation"
+                                        && learnSession.targetId === encoder.id
+                                        ? void cancelLearn(learnSession)
+                                        : void startLearn("encoderRotation", index)}
+                                    disabled={saving || (
+                                        learnSession !== null && (
+                                            learnSession.kind !== "encoderRotation"
+                                            || learnSession.targetId !== encoder.id
+                                        )
+                                    ) || (
+                                        learnSession === null && (
+                                            !reportedHardware.connected
+                                            || (reportedHardware.protocolVersion ?? 0) < 2
+                                            || digitalOptions.length < 2
+                                        )
+                                    )}
+                                    style={learnButtonStyle}>
+                                    {learnSession?.kind === "encoderRotation"
+                                        && learnSession.targetId === encoder.id
+                                        ? "CANCEL" : "LEARN ROTATION"}
+                                </button>
+                                <button type="button"
+                                    onClick={() => learnSession?.kind === "encoderPush"
+                                        && learnSession.targetId === encoder.id
+                                        ? void cancelLearn(learnSession)
+                                        : void startLearn("encoderPush", index)}
+                                    disabled={saving || (
+                                        learnSession !== null && (
+                                            learnSession.kind !== "encoderPush"
+                                            || learnSession.targetId !== encoder.id
+                                        )
+                                    ) || (
+                                        learnSession === null && (
+                                            !reportedHardware.connected
+                                            || (reportedHardware.protocolVersion ?? 0) < 2
+                                            || digitalOptions.length === 0
+                                        )
+                                    )}
+                                    style={learnButtonStyle}>
+                                    {learnSession?.kind === "encoderPush"
+                                        && learnSession.targetId === encoder.id
+                                        ? "CANCEL" : "LEARN PUSH"}
+                                </button>
+                                <button type="button"
+                                    onClick={() => updateDraft({
+                                        ...draft,
+                                        encoders: draft.encoders.filter((_, itemIndex) => itemIndex !== index)
+                                    })}
+                                    style={dangerButtonStyle}>REMOVE</button>
+                            </div>
                         </div>
                         <div style={responsiveFieldsStyle}>
                             <SourceSelect label="A input" value={encoder.aInput} options={digitalOptions}

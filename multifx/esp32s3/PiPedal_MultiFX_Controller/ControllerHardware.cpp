@@ -15,6 +15,11 @@ namespace {
 
 constexpr uint32_t DEBOUNCE_MS = 25;
 constexpr uint32_t LEARN_TIMEOUT_MS = 30000;
+constexpr uint32_t ANALOG_LEARN_BASELINE_MS = 750;
+constexpr uint16_t ANALOG_LEARN_MIN_TRAVEL = 192;
+constexpr uint16_t ANALOG_LEARN_MIN_STEP = 6;
+constexpr uint16_t ANALOG_LEARN_MAX_SAMPLE_SPREAD = 48;
+constexpr uint8_t ANALOG_LEARN_CONFIRMATIONS = 4;
 constexpr uint32_t MODULE_REFRESH_US = 1000;
 constexpr uint32_t ANALOG_SAMPLE_US = 1000;
 constexpr uint16_t ANALOG_SEND_DEADBAND = 8;
@@ -125,7 +130,10 @@ void ControllerHardware::begin(
 
 void ControllerHardware::update() {
     refreshDigitalModules();
-    updateEncoders();
+    if (!learn_.active || (learn_.capability != CAP_ENCODER
+        && learn_.capability != CAP_ENCODER_PUSH)) {
+        updateEncoders();
+    }
     updateAnalogControls();
     if (learn_.active) updateLearn();
     else updateSwitches();
@@ -868,18 +876,29 @@ bool ControllerHardware::describeSource(
 void ControllerHardware::startLearn(
     uint8_t token,
     uint8_t requestedCapabilities,
-    uint8_t targetSwitch
+    uint8_t targetIndex
 ) {
     if (learn_.active) finishLearn(LEARN_CANCELLED, SourceAddress{});
-    if (token == 0 || token >= 127 || !(requestedCapabilities & CAP_DIGITAL)
-        || targetSwitch < 1 || targetSwitch > MAX_SWITCHES) {
-        if (sendLearn_) sendLearn_(token, LEARN_ERROR, SourceAddress{});
+    const bool digital = requestedCapabilities == CAP_DIGITAL;
+    const bool analog = requestedCapabilities == CAP_ANALOG;
+    const bool encoder = requestedCapabilities == CAP_ENCODER;
+    const bool encoderPush = requestedCapabilities == CAP_ENCODER_PUSH;
+    const uint8_t maximumTarget = analog
+        ? MAX_ANALOG_CONTROLS
+        : (encoder || encoderPush) ? MAX_ENCODERS : MAX_SWITCHES;
+    if (token == 0 || token >= 127
+        || (!digital && !analog && !encoder && !encoderPush)
+        || targetIndex < 1 || targetIndex > maximumTarget) {
+        if (sendLearn_) {
+            sendLearn_(token, LEARN_ERROR, SourceAddress{}, SourceAddress{});
+        }
         return;
     }
     memset(&learn_, 0, sizeof(learn_));
     learn_.active = true;
     learn_.token = token;
-    learn_.targetSwitch = targetSwitch;
+    learn_.capability = requestedCapabilities;
+    learn_.targetIndex = targetIndex;
     learn_.startedAt = millis();
     prepareLearnCandidates();
     if (learn_.candidateCount == 0) finishLearn(LEARN_ERROR, SourceAddress{});
@@ -895,19 +914,47 @@ void ControllerHardware::prepareLearnCandidates() {
     auto addCandidate = [&](const SourceAddress &source) {
         if (learn_.candidateCount >= 64) return;
         SourceDescriptor descriptor;
+        const uint8_t requiredCapability = (
+            learn_.capability == CAP_ENCODER
+            || learn_.capability == CAP_ENCODER_PUSH
+        )
+            ? CAP_DIGITAL
+            : learn_.capability;
         if (!describeSource(source, descriptor)
-            || !(descriptor.capabilities & CAP_DIGITAL)
+            || !(descriptor.capabilities & requiredCapability)
             || (descriptor.state & INPUT_RESERVED)
-            || descriptor.usage == USAGE_POT
-            || descriptor.usage == USAGE_ENCODER
-            || descriptor.usage == USAGE_ENCODER_PUSH
+            || (descriptor.usage == USAGE_ENCODER
+                && learn_.capability != CAP_ENCODER)
+            || (descriptor.usage == USAGE_ENCODER_PUSH
+                && learn_.capability != CAP_ENCODER
+                && learn_.capability != CAP_ENCODER_PUSH)
             || descriptor.usage == USAGE_SYSTEM) return;
-        beginDigitalSource(source, true);
+        if (learn_.capability != CAP_ANALOG
+            && learn_.capability != CAP_ENCODER
+            && descriptor.usage == USAGE_POT) return;
+        if (learn_.capability == CAP_ANALOG && descriptor.usage == USAGE_SWITCH) return;
+        if (learn_.capability == CAP_DIGITAL
+            || learn_.capability == CAP_ENCODER
+            || learn_.capability == CAP_ENCODER_PUSH) {
+            beginDigitalSource(source, true);
+        }
         LearnCandidate &candidate = learn_.candidates[learn_.candidateCount++];
         candidate.source = source;
-        candidate.rawPressed = !readDigitalSource(source);
-        candidate.stablePressed = candidate.rawPressed;
-        candidate.armed = !candidate.rawPressed;
+        if (learn_.capability == CAP_ANALOG) {
+            // Discard the first conversion after selecting a source; the ADC
+            // sample capacitor can still contain the previous channel's value.
+            (void)readAnalogSource(source);
+            delayMicroseconds(20);
+            const uint16_t baseline = readAnalogSource(source);
+            candidate.analogBaseline = baseline;
+            candidate.analogLast = baseline;
+        } else if (learn_.capability == CAP_ENCODER) {
+            candidate.encoderLevel = readDigitalSource(source);
+        } else {
+            candidate.rawPressed = !readDigitalSource(source);
+            candidate.stablePressed = candidate.rawPressed;
+            candidate.armed = !candidate.rawPressed;
+        }
         candidate.rawChangedAt = learn_.startedAt;
     };
 
@@ -916,7 +963,13 @@ void ControllerHardware::prepareLearnCandidates() {
     }
     for (uint8_t moduleIndex = 0; moduleIndex < active_.moduleCount; ++moduleIndex) {
         const ModuleConfig &module = active_.modules[moduleIndex];
-        if (!driverSupports(module.driver, CAP_DIGITAL)) continue;
+        const uint8_t requiredCapability = (
+            learn_.capability == CAP_ENCODER
+            || learn_.capability == CAP_ENCODER_PUSH
+        )
+            ? CAP_DIGITAL
+            : learn_.capability;
+        if (!driverSupports(module.driver, requiredCapability)) continue;
         const uint8_t sourceType = sourceTypeForDriver(module.driver);
         for (uint8_t channel = 0; channel < moduleChannelCount(module.driver); ++channel) {
             addCandidate({sourceType, static_cast<uint8_t>(moduleIndex + 1), channel});
@@ -932,6 +985,79 @@ void ControllerHardware::updateLearn() {
     }
     for (uint8_t index = 0; index < learn_.candidateCount; ++index) {
         LearnCandidate &candidate = learn_.candidates[index];
+        if (learn_.capability == CAP_ENCODER) {
+            const bool level = readDigitalSource(candidate.source);
+            if (level != candidate.encoderLevel) {
+                candidate.encoderLevel = level;
+                if (candidate.encoderTransitions < 255) {
+                    ++candidate.encoderTransitions;
+                }
+            }
+            continue;
+        }
+        if (learn_.capability == CAP_ANALOG) {
+            (void)readAnalogSource(candidate.source);
+            delayMicroseconds(20);
+            const uint16_t firstValue = readAnalogSource(candidate.source);
+            delayMicroseconds(20);
+            const uint16_t secondValue = readAnalogSource(candidate.source);
+            const uint16_t sampleSpread = firstValue > secondValue
+                ? firstValue - secondValue
+                : secondValue - firstValue;
+            if (sampleSpread > ANALOG_LEARN_MAX_SAMPLE_SPREAD) {
+                // Floating/unconnected ADC inputs commonly disagree even in
+                // back-to-back reads. Never treat that instability as motion.
+                candidate.analogTravel = 0;
+                candidate.analogDirection = 0;
+                candidate.analogConfirmations = 0;
+                continue;
+            }
+            const uint16_t value = static_cast<uint16_t>(
+                (static_cast<uint32_t>(firstValue) + secondValue) / 2U
+            );
+
+            if (static_cast<uint32_t>(now - learn_.startedAt) < ANALOG_LEARN_BASELINE_MS) {
+                candidate.analogBaseline = value;
+                candidate.analogLast = value;
+                candidate.analogTravel = 0;
+                candidate.analogDirection = 0;
+                candidate.analogConfirmations = 0;
+                continue;
+            }
+
+            const int32_t delta = static_cast<int32_t>(value)
+                - static_cast<int32_t>(candidate.analogLast);
+            candidate.analogLast = value;
+            const uint16_t step = static_cast<uint16_t>(delta < 0 ? -delta : delta);
+            if (step < ANALOG_LEARN_MIN_STEP) continue;
+            const int8_t direction = delta > 0 ? 1 : -1;
+            if (candidate.analogDirection != direction) {
+                candidate.analogDirection = direction;
+                candidate.analogTravel = step;
+                candidate.analogConfirmations = 1;
+            } else {
+                const uint32_t accumulated =
+                    static_cast<uint32_t>(candidate.analogTravel) + step;
+                candidate.analogTravel = static_cast<uint16_t>(
+                    accumulated > 4095U ? 4095U : accumulated
+                );
+                if (candidate.analogConfirmations < 255) {
+                    ++candidate.analogConfirmations;
+                }
+            }
+            const uint16_t displacement = value > candidate.analogBaseline
+                ? value - candidate.analogBaseline
+                : candidate.analogBaseline - value;
+            if (candidate.analogConfirmations < ANALOG_LEARN_CONFIRMATIONS
+                || candidate.analogTravel < ANALOG_LEARN_MIN_TRAVEL
+                || displacement < ANALOG_LEARN_MIN_TRAVEL) continue;
+
+            // The browser owns the editable analog draft. Its control order
+            // may differ from the last configuration applied to firmware, so
+            // it performs analog ownership/conflict checks on the result.
+            finishLearn(LEARNED, candidate.source);
+            return;
+        }
         const bool pressed = !readDigitalSource(candidate.source);
         if (pressed != candidate.rawPressed) {
             candidate.rawPressed = pressed;
@@ -945,16 +1071,38 @@ void ControllerHardware::updateLearn() {
             continue;
         }
         if (!candidate.armed) continue;
-        const uint8_t switchNumber = assignedSwitch(candidate.source);
-        const bool conflict = switchNumber != 0 && switchNumber != learn_.targetSwitch;
-        finishLearn(conflict ? LEARN_CONFLICT : LEARNED, candidate.source);
+        // The browser owns the current editable input draft. It may have
+        // disconnected or reordered controls without applying them yet, so it
+        // performs ownership checks against that newer state.
+        finishLearn(LEARNED, candidate.source);
         return;
+    }
+
+    if (learn_.capability == CAP_ENCODER) {
+        int16_t first = -1;
+        int16_t second = -1;
+        for (uint8_t index = 0; index < learn_.candidateCount; ++index) {
+            if (learn_.candidates[index].encoderTransitions < 4) continue;
+            if (first < 0) first = index;
+            else {
+                second = index;
+                break;
+            }
+        }
+        if (first >= 0 && second >= 0) {
+            finishLearn(
+                LEARNED,
+                learn_.candidates[first].source,
+                learn_.candidates[second].source
+            );
+        }
     }
 }
 
 void ControllerHardware::finishLearn(
     uint8_t status,
-    const SourceAddress &source
+    const SourceAddress &source,
+    const SourceAddress &secondarySource
 ) {
     if (!learn_.active) return;
     const uint8_t token = learn_.token;
@@ -962,7 +1110,7 @@ void ControllerHardware::finishLearn(
     // Reinitialize live sources so mux signal modes and switch debounce state
     // cannot inherit a transient Learn sample.
     activateConfig(active_);
-    if (sendLearn_) sendLearn_(token, status, source);
+    if (sendLearn_) sendLearn_(token, status, source, secondarySource);
 }
 
 } // namespace mfx
