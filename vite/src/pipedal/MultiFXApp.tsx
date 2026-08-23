@@ -411,12 +411,88 @@ interface MultiFXMenuProps {
 }
 
 function MultiFXMenu(props: MultiFXMenuProps) {
+    const menuRef = useRef<HTMLDivElement>(null);
+
+    useEffect(() => {
+        const getButtons = (): HTMLButtonElement[] => {
+            const menu = menuRef.current;
+            if (!menu) return [];
+            return Array.from(
+                menu.querySelectorAll<HTMLButtonElement>("button:not(:disabled)")
+            );
+        };
+
+        const focusInitialButton = () => {
+            const buttons = getButtons();
+            if (buttons.length === 0) return;
+            const activeIndex = buttons.findIndex(
+                (button) => button.getAttribute("aria-current") === "page"
+            );
+            buttons[activeIndex >= 0 ? activeIndex : 0]
+                ?.focus({ preventScroll: true });
+        };
+
+        const frame = window.requestAnimationFrame(focusInitialButton);
+
+        const handleKeyDown = (event: KeyboardEvent) => {
+            if (
+                event.key !== "ArrowDown"
+                && event.key !== "ArrowUp"
+                && event.key !== "Enter"
+                && event.key !== " "
+                && event.key !== "Escape"
+            ) {
+                return;
+            }
+
+            const buttons = getButtons();
+            if (buttons.length === 0) return;
+
+            event.preventDefault();
+            event.stopPropagation();
+
+            if (event.key === "Escape") {
+                props.onClose();
+                return;
+            }
+
+            const focusedIndex = buttons.findIndex(
+                (button) => button === document.activeElement
+            );
+            const currentIndex = focusedIndex >= 0 ? focusedIndex : 0;
+
+            if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+                const direction = event.key === "ArrowDown" ? 1 : -1;
+                const nextIndex =
+                    (currentIndex + direction + buttons.length) % buttons.length;
+                buttons[nextIndex]?.focus({ preventScroll: true });
+                buttons[nextIndex]?.scrollIntoView({
+                    block: "nearest",
+                    behavior: "smooth"
+                });
+                return;
+            }
+
+            buttons[currentIndex]?.click();
+        };
+
+        window.addEventListener("keydown", handleKeyDown, true);
+        return () => {
+            window.cancelAnimationFrame(frame);
+            window.removeEventListener("keydown", handleKeyDown, true);
+        };
+    }, [props.onClose]);
+
     const settingsActive = ["settings", "controller", "theme", "multiFXUI", "systemSettings"]
         .includes(props.currentView);
     return (
         <>
             <div onClick={props.onClose} style={menuBackdropStyle} />
-            <div style={menuStyle}>
+            <div
+                ref={menuRef}
+                data-mfx-shell-menu="true"
+                style={menuStyle}
+            >
                 <div style={menuBrandStyle}>
                     <FxAmplifierIcon style={{ width: 30, height: 30, fill: "currentColor" }} />
                     <div><b>PiPedal</b><div style={{ color: MFX_COLORS.purpleLight, fontWeight: 900 }}>MULTIFX</div></div>
@@ -448,7 +524,11 @@ function ShellMenuButton({ label, subtitle, active = false, onClick }: {
     label: string; subtitle: string; active?: boolean; onClick: () => void;
 }) {
     return (
-        <button type="button" onClick={onClick} style={{
+        <button
+            type="button"
+            aria-current={active ? "page" : undefined}
+            onClick={onClick}
+            style={{
             display: "block", width: "100%", minHeight: 54, marginBottom: 5,
             padding: "7px 11px", borderRadius: 9,
             border: active ? `2px solid ${MFX_COLORS.cyan}` : `1px solid ${MFX_COLORS.border}`,

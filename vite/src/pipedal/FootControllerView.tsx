@@ -1165,6 +1165,20 @@ export default function FootControllerView({
 
     useEffect(() => {
         const handleKeyDown = (event: KeyboardEvent) => {
+            const shellMenuOpen =
+                document.querySelector("[data-mfx-shell-menu='true']") !== null;
+            if (
+                shellMenuOpen
+                && (
+                    event.key === "ArrowUp"
+                    || event.key === "ArrowDown"
+                    || event.key === "Enter"
+                    || event.key === "Escape"
+                )
+            ) {
+                return;
+            }
+
             const target = event.target as HTMLElement | null;
             if (target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement) return;
             const physicalSwitchNumber = getPhysicalSwitchNumber(event.key);
@@ -1278,8 +1292,8 @@ export default function FootControllerView({
             window.removeEventListener("keyup", handleKeyUp, true);
         };
     }, [
-        bankMenuOpen, presetMenuOpen, presetOptionsOpen, presetOptionIndex,
-        selectedPresetSlot, presetSlotCount,
+        bankMenuOpen, presetMenuOpen, presetOptionsOpen, presetOptionIndex, menuIndex,
+        selectedPresetSlot, presetSlotCount, presetAssignmentsBySlot,
         controllerConfig, banks, presets, chainBypassed, snapshotMode,
         snapshotPedalboard, selectedSnapshot, model
     ]);
