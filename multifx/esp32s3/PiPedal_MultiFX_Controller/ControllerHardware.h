@@ -74,6 +74,15 @@ public:
     /** Describe capabilities, assignment, caution, and usage for one source. */
     bool describeSource(const SourceAddress &source, SourceDescriptor &descriptor) const;
 
+    /** Probe identifiable devices on one I2C bus, then restore active modules. */
+    uint8_t scanI2cDevices(
+        uint8_t sdaPin,
+        uint8_t sclPin,
+        uint8_t addresses[],
+        uint8_t families[],
+        uint8_t capacity
+    );
+
 private:
     struct SwitchRuntime {
         bool rawPressed = false;

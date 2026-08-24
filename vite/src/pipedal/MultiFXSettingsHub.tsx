@@ -1,4 +1,8 @@
-import { MFX_COLORS } from "./MultiFXTheme";
+import {
+    MFX_COLORS,
+    MFX_SURFACES,
+    multiFXSurfaceBackground
+} from "./MultiFXTheme";
 
 interface MultiFXSettingsHubProps {
     onController: () => void;
@@ -78,9 +82,10 @@ function SettingsCard({
                 minHeight: "calc(118px * var(--mfx-ui-scale, 1))",
                 padding: "calc(16px * var(--mfx-ui-scale, 1))",
                 borderRadius: 14,
-                border: `1px solid ${MFX_COLORS.border}`,
-                background: MFX_COLORS.panel,
-                color: MFX_COLORS.text,
+                border: "1px solid transparent",
+                background: multiFXSurfaceBackground("panel"),
+                color: MFX_SURFACES.panel.text,
+                boxShadow: MFX_SURFACES.panel.shadow,
                 textAlign: "left",
                 font: "inherit",
                 cursor: "pointer"
@@ -88,7 +93,7 @@ function SettingsCard({
         >
             <div
                 style={{
-                    color: MFX_COLORS.purpleLight,
+                    color: MFX_SURFACES.panel.accent,
                     fontSize: "1.1rem",
                     fontWeight: 900,
                     letterSpacing: "0.04em"
@@ -99,7 +104,7 @@ function SettingsCard({
             <div
                 style={{
                     marginTop: 8,
-                    color: MFX_COLORS.muted,
+                    color: MFX_SURFACES.panel.label,
                     lineHeight: 1.4
                 }}
             >
@@ -115,8 +120,8 @@ const screenStyle: React.CSSProperties = {
     display: "flex",
     flexDirection: "column",
     overflow: "hidden",
-    background: MFX_COLORS.background,
-    color: MFX_COLORS.text
+    background: MFX_SURFACES.page.background,
+    color: MFX_SURFACES.page.text
 };
 
 const headerStyle: React.CSSProperties = {
@@ -126,17 +131,19 @@ const headerStyle: React.CSSProperties = {
     padding: "calc(6px * var(--mfx-ui-scale, 1)) calc(70px * var(--mfx-ui-scale, 1)) calc(6px * var(--mfx-ui-scale, 1)) calc(78px * var(--mfx-ui-scale, 1))",
     boxSizing: "border-box",
     borderBottom: `1px solid ${MFX_COLORS.border}`,
-    background: MFX_COLORS.panel
+    background: MFX_SURFACES.header.background,
+    color: MFX_SURFACES.header.text,
+    boxShadow: MFX_SURFACES.header.shadow
 };
 
 const titleStyle: React.CSSProperties = {
-    color: MFX_COLORS.purpleLight,
+    color: MFX_SURFACES.header.accent,
     fontWeight: 900,
     letterSpacing: "0.05em"
 };
 
 const subtitleStyle: React.CSSProperties = {
     marginTop: 2,
-    color: MFX_COLORS.muted,
+    color: MFX_SURFACES.header.label,
     fontSize: "0.72rem"
 };

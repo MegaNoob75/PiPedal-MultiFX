@@ -1,7 +1,109 @@
+export type MultiFXPaintKind = "solid" | "linear" | "radial" | "conic";
+
+export interface MultiFXThemePaint {
+    kind: MultiFXPaintKind;
+    colors: string[];
+    angle: number;
+}
+
+export interface MultiFXThemeSurface {
+    background: MultiFXThemePaint;
+    border: MultiFXThemePaint;
+    text: string;
+    label: string;
+    accent: string;
+    shadow: string;
+}
+
+export interface MultiFXThemeControlState {
+    background: MultiFXThemePaint;
+    border: MultiFXThemePaint;
+    label: string;
+    value: string;
+    indicator: string;
+    shadow: string;
+}
+
+export interface MultiFXThemeControlRole {
+    normal: MultiFXThemeControlState;
+    active: MultiFXThemeControlState;
+}
+
+export type MultiFXSwitchVisualStyle =
+    | "tiles"
+    | "footswitch"
+    | "arcade"
+    | "glass"
+    | "minimal";
+export type MultiFXSwitchShape =
+    | "rounded"
+    | "square"
+    | "pill"
+    | "bevel"
+    | "hexagon";
+export type MultiFXAnalogVisualStyle =
+    | "modern"
+    | "vintage"
+    | "neon"
+    | "minimal";
+export type MultiFXIndicatorStyle =
+    | "dot"
+    | "ring"
+    | "halo"
+    | "bar"
+    | "none";
+export type MultiFXIndicatorAnimation =
+    | "none"
+    | "pulse"
+    | "breathe"
+    | "spin"
+    | "chase";
+
+export interface MultiFXThemeAppearance {
+    surfaces: {
+        page: MultiFXThemeSurface;
+        header: MultiFXThemeSurface;
+        panel: MultiFXThemeSurface;
+        popup: MultiFXThemeSurface;
+        toast: MultiFXThemeSurface;
+        menu: MultiFXThemeSurface;
+    };
+    roles: {
+        preset: MultiFXThemeControlRole;
+        navigation: MultiFXThemeControlRole;
+        utility: MultiFXThemeControlRole;
+        snapshot: MultiFXThemeControlRole;
+        bypass: MultiFXThemeControlRole;
+        danger: MultiFXThemeControlRole;
+    };
+    controls: {
+        switchStyle: MultiFXSwitchVisualStyle;
+        switchShape: MultiFXSwitchShape;
+        analogStyle: MultiFXAnalogVisualStyle;
+        indicatorStyle: MultiFXIndicatorStyle;
+        indicatorAnimation: MultiFXIndicatorAnimation;
+        indicatorInactive: string;
+        indicatorActive: string;
+        indicatorChanged: string;
+        animationSeconds: number;
+        borderWidth: number;
+        cornerRadius: number;
+        glowStrength: number;
+        disabledOpacity: number;
+        glassBlur: number;
+        glassHighlight: number;
+    };
+    motion: {
+        enabled: boolean;
+        respectReducedMotion: boolean;
+        feedbackDurationMs: number;
+    };
+}
+
 export interface MultiFXThemeDefinition {
     name: string;
     author: string;
-    version: number;
+    version: 3;
     colors: {
         background: string;
         panel: string;
@@ -17,9 +119,17 @@ export interface MultiFXThemeDefinition {
         border: string;
         danger: string;
     };
+    appearance: MultiFXThemeAppearance;
 }
 
-export const BUILT_IN_THEMES: MultiFXThemeDefinition[] = [
+interface MultiFXThemePaletteDefinition {
+    name: string;
+    author: string;
+    version: number;
+    colors: MultiFXThemeDefinition["colors"];
+}
+
+const BUILT_IN_THEME_PALETTES: MultiFXThemePaletteDefinition[] = [
     {
         name: "MultiFX Purple",
         author: "PiPedal MultiFX",
@@ -2364,8 +2474,569 @@ export const BUILT_IN_THEMES: MultiFXThemeDefinition[] = [
     },
 ];
 
-const THEME_STORAGE_KEY = "pipedal-multifx-theme-v1";
-const CUSTOM_THEMES_STORAGE_KEY = "pipedal-multifx-custom-themes-v1";
+function solid(color: string): MultiFXThemePaint {
+    return { kind: "solid", colors: [color], angle: 0 };
+}
+
+function gradient(
+    first: string,
+    second: string,
+    angle = 135,
+    third?: string
+): MultiFXThemePaint {
+    return {
+        kind: "linear",
+        colors: third ? [first, second, third] : [first, second],
+        angle
+    };
+}
+
+function radial(
+    first: string,
+    second: string,
+    third?: string
+): MultiFXThemePaint {
+    return {
+        kind: "radial",
+        colors: third ? [first, second, third] : [first, second],
+        angle: 0
+    };
+}
+
+function conic(
+    first: string,
+    second: string,
+    third?: string,
+    angle = 0
+): MultiFXThemePaint {
+    return {
+        kind: "conic",
+        colors: third ? [first, second, third] : [first, second],
+        angle
+    };
+}
+
+function surface(
+    background: MultiFXThemePaint,
+    border: MultiFXThemePaint,
+    text: string,
+    label: string,
+    accent: string,
+    shadow: string
+): MultiFXThemeSurface {
+    return { background, border, text, label, accent, shadow };
+}
+
+function controlState(
+    background: MultiFXThemePaint,
+    border: MultiFXThemePaint,
+    label: string,
+    value: string,
+    indicator: string,
+    shadow = "none"
+): MultiFXThemeControlState {
+    return { background, border, label, value, indicator, shadow };
+}
+
+type BuiltInThemeProfile =
+    | "modern"
+    | "stompbox"
+    | "glass"
+    | "arcade"
+    | "studio"
+    | "minimal";
+
+const STOMPBOX_THEME_NAMES = new Set([
+    "Boutique Blue", "British Stack", "Brownface", "Copper", "Goldtop",
+    "Orange Crush", "Royal Gold", "Silverface", "Surf Green", "Tube Glow",
+    "Vintage Cream"
+]);
+
+const STUDIO_THEME_NAMES = new Set([
+    "Blue Steel", "Graphite", "Gunmetal", "Slate Purple", "Studio Dark",
+    "Studio Warm"
+]);
+
+const TERMINAL_THEME_NAMES = new Set([
+    "Blackout", "High Contrast", "Night Vision", "Terminal Amber",
+    "Terminal Green"
+]);
+
+function stableNameBucket(name: string): number {
+    let hash = 0;
+    for (const character of name) {
+        hash = ((hash * 31) + character.charCodeAt(0)) >>> 0;
+    }
+    return hash;
+}
+
+function paletteLuminance(color: string): number {
+    const values = [1, 3, 5].map((start) =>
+        Number.parseInt(color.slice(start, start + 2), 16) / 255
+    );
+    const [r, g, b] = values.map((value) =>
+        value <= 0.04045
+            ? value / 12.92
+            : Math.pow((value + 0.055) / 1.055, 2.4)
+    );
+    return 0.2126 * r + 0.7152 * g + 0.0722 * b;
+}
+
+function paletteContrastRatio(foreground: string, background: string): number {
+    const light = Math.max(
+        paletteLuminance(foreground),
+        paletteLuminance(background)
+    );
+    const dark = Math.min(
+        paletteLuminance(foreground),
+        paletteLuminance(background)
+    );
+    return (light + 0.05) / (dark + 0.05);
+}
+
+/** Preserve a palette's intended foreground when it is readable, otherwise
+ * choose its normal text, black or white—whichever has the best contrast. */
+function readablePaletteText(
+    foreground: string,
+    background: string,
+    normalText: string
+): string {
+    if (paletteContrastRatio(foreground, background) >= 4.5) {
+        return foreground;
+    }
+    return [normalText, "#000000", "#FFFFFF"].reduce((best, candidate) =>
+        paletteContrastRatio(candidate, background)
+            > paletteContrastRatio(best, background)
+            ? candidate
+            : best
+    );
+}
+
+/**
+ * Assign every built-in palette to a coordinated visual family. Named amp,
+ * studio and terminal themes stay deliberately grouped; the remaining large
+ * color catalog is distributed deterministically so it contains real surface,
+ * tile, indicator and analog-style combinations instead of palette swaps.
+ */
+function getBuiltInThemeProfile(
+    palette: MultiFXThemePaletteDefinition
+): BuiltInThemeProfile {
+    if (STOMPBOX_THEME_NAMES.has(palette.name)) return "stompbox";
+    if (STUDIO_THEME_NAMES.has(palette.name)) return "studio";
+    if (TERMINAL_THEME_NAMES.has(palette.name)) return "minimal";
+    if (paletteLuminance(palette.colors.background) >= 0.55) return "glass";
+
+    const rotatingProfiles: BuiltInThemeProfile[] = [
+        "modern", "stompbox", "glass", "arcade", "studio"
+    ];
+    return rotatingProfiles[
+        stableNameBucket(palette.name) % rotatingProfiles.length
+    ];
+}
+
+/** User-facing grouping used by the Theme Manager's style browser. */
+export function getMultiFXThemeStyleLabel(
+    theme: MultiFXThemeDefinition
+): string {
+    switch (theme.appearance.controls.switchStyle) {
+        case "footswitch": return "METAL STOMPBOX";
+        case "glass": return "GLASS PANELS";
+        case "arcade": return "ARCADE BUTTONS";
+        case "minimal": return "MINIMAL";
+        case "tiles":
+        default:
+            return theme.appearance.controls.indicatorAnimation === "none"
+                ? "STUDIO TILES"
+                : "MODERN TILES";
+    }
+}
+
+/** Build a complete version-3 visual system from one curated color palette. */
+function makeTheme(
+    palette: MultiFXThemePaletteDefinition
+): MultiFXThemeDefinition {
+    const c = structuredClone(palette.colors);
+    c.navigationText = readablePaletteText(
+        c.navigationText,
+        c.navigationSurface,
+        c.text
+    );
+    c.selectedText = readablePaletteText(
+        c.selectedText,
+        c.selectedSurface,
+        c.text
+    );
+    const profile = getBuiltInThemeProfile(palette);
+    let normal = controlState(
+        solid(c.panel),
+        solid(c.border),
+        c.muted,
+        c.text,
+        c.muted
+    );
+    let active = controlState(
+        gradient(c.selectedSurface, c.panelAlt),
+        gradient(c.selected, c.navigation),
+        c.selected,
+        c.selectedText,
+        c.selected,
+        `0 0 20px ${c.selected}`
+    );
+    let navigationNormal = controlState(
+        gradient(c.navigationSurface, c.panel),
+        solid(c.navigation),
+        c.navigation,
+        c.text,
+        c.navigation
+    );
+    let utilityNormal = controlState(
+        gradient(c.panelAlt, c.panel, 180),
+        solid(c.border),
+        c.muted,
+        c.text,
+        c.navigation
+    );
+    let snapshotNormal = controlState(
+        gradient(c.selectedSurface, c.panel, 155),
+        solid(c.selected),
+        c.selected,
+        c.text,
+        c.selected
+    );
+    const dangerState = controlState(
+        gradient(c.panelAlt, c.background),
+        solid(c.danger),
+        c.danger,
+        c.text,
+        c.danger
+    );
+
+    let page = surface(
+        gradient(c.background, c.panel, 160),
+        solid(c.border), c.text, c.muted, c.selected, "none"
+    );
+    let header = surface(
+        gradient(c.panel, c.panelAlt, 90),
+        solid(c.border), c.text, c.muted,
+        c.navigation, "0 4px 20px rgba(0,0,0,.48)"
+    );
+    let panel = surface(
+        gradient(c.panel, c.panelAlt),
+        solid(c.border), c.text, c.muted, c.selected,
+        "0 8px 24px rgba(0,0,0,.26)"
+    );
+    let popup = surface(
+        gradient(c.panelAlt, c.panel),
+        gradient(c.navigation, c.selected),
+        c.text, c.muted, c.selected, "0 18px 48px rgba(0,0,0,.72)"
+    );
+    let toast = surface(
+        gradient(c.selectedSurface, c.panelAlt),
+        solid(c.selected), c.selectedText, c.selected,
+        c.selected, "0 10px 30px rgba(0,0,0,.62)"
+    );
+    let menu = surface(
+        gradient(c.panelAlt, c.panel, 90),
+        solid(c.navigation), c.text, c.muted,
+        c.navigation, "0 12px 34px rgba(0,0,0,.68)"
+    );
+
+    const controls: MultiFXThemeAppearance["controls"] = {
+        switchStyle: "tiles",
+        switchShape: "rounded",
+        analogStyle: "modern",
+        indicatorStyle: "dot",
+        indicatorAnimation: "pulse",
+        indicatorInactive: c.muted,
+        indicatorActive: c.selected,
+        indicatorChanged: c.navigation,
+        animationSeconds: 1.4,
+        borderWidth: 2,
+        cornerRadius: 12,
+        glowStrength: 0.65,
+        disabledOpacity: 0.48,
+        glassBlur: 10,
+        glassHighlight: 0.28
+    };
+
+    switch (profile) {
+        case "stompbox":
+            page = surface(
+                radial(c.panelAlt, c.background),
+                solid(c.border), c.text, c.muted, c.navigation, "none"
+            );
+            header = surface(
+                gradient(c.panelAlt, c.background, 180),
+                gradient(c.border, c.navigation), c.text,
+                c.muted, c.navigation,
+                "0 5px 18px rgba(0,0,0,.58)"
+            );
+            panel = surface(
+                solid(c.panel), gradient(c.border, c.navigation),
+                c.text, c.muted, c.navigation,
+                "0 9px 20px rgba(0,0,0,.4)"
+            );
+            normal = controlState(
+                gradient(c.panelAlt, c.panel, 180),
+                gradient(c.border, c.navigation),
+                c.navigationText, c.text, c.navigation
+            );
+            navigationNormal = controlState(
+                radial(c.navigationSurface, c.panel),
+                solid(c.navigation), c.navigation, c.text, c.navigation
+            );
+            snapshotNormal = controlState(
+                radial(c.selectedSurface, c.panel),
+                solid(c.selected), c.selected, c.text, c.selected
+            );
+            Object.assign(controls, {
+                switchStyle: "footswitch",
+                switchShape: "bevel",
+                analogStyle: "vintage",
+                indicatorStyle: "ring",
+                indicatorAnimation: "breathe",
+                animationSeconds: 1.8,
+                borderWidth: 3,
+                cornerRadius: 10,
+                glowStrength: 0.72
+            });
+            break;
+
+        case "glass":
+            page = surface(
+                radial(c.panelAlt, c.background, c.navigationSurface),
+                gradient(c.border, c.navigation), c.text, c.muted,
+                c.selected, "none"
+            );
+            header = surface(
+                gradient(c.panelAlt, c.navigationSurface, 105),
+                gradient(c.navigation, c.selected), c.text,
+                c.muted, c.selected,
+                "0 8px 26px rgba(0,0,0,.38)"
+            );
+            panel = surface(
+                gradient(c.panel, c.panelAlt, 145, c.navigationSurface),
+                gradient(c.border, c.selected), c.text, c.muted,
+                c.selected, "0 10px 30px rgba(0,0,0,.28)"
+            );
+            popup = surface(
+                radial(c.panelAlt, c.panel, c.selectedSurface),
+                gradient(c.navigation, c.selected), c.text, c.muted,
+                c.selected, "0 22px 58px rgba(0,0,0,.65)"
+            );
+            active = controlState(
+                radial(c.selectedSurface, c.panelAlt),
+                gradient(c.selected, c.navigation), c.selected,
+                c.selectedText, c.selected, `0 0 24px ${c.selected}`
+            );
+            Object.assign(controls, {
+                switchStyle: "glass",
+                switchShape: "rounded",
+                analogStyle: "modern",
+                indicatorStyle: "halo",
+                indicatorAnimation: "breathe",
+                animationSeconds: 2.2,
+                borderWidth: 1,
+                cornerRadius: 20,
+                glowStrength: 0.78,
+                glassBlur: 14,
+                glassHighlight: 0.42
+            });
+            break;
+
+        case "arcade":
+            page = surface(
+                radial(c.panel, c.background, c.selectedSurface),
+                solid(c.border), c.text, c.muted, c.selected, "none"
+            );
+            panel = surface(
+                conic(c.panel, c.panelAlt, c.navigationSurface, 25),
+                gradient(c.navigation, c.selected), c.text, c.muted,
+                c.selected, "0 8px 26px rgba(0,0,0,.42)"
+            );
+            normal = controlState(
+                radial(c.navigationSurface, c.panel),
+                gradient(c.navigation, c.border),
+                c.navigationText, c.text, c.navigation,
+                "inset 0 -8px 18px rgba(0,0,0,.28)"
+            );
+            active = controlState(
+                radial(c.selected, c.selectedSurface),
+                gradient(c.selectedText, c.selected),
+                c.selectedText, c.selectedText, c.selected,
+                `0 0 26px ${c.selected}`
+            );
+            utilityNormal = controlState(
+                radial(c.panelAlt, c.panel), solid(c.border),
+                c.muted, c.text, c.navigation
+            );
+            Object.assign(controls, {
+                switchStyle: "arcade",
+                switchShape: "rounded",
+                analogStyle: "neon",
+                indicatorStyle: "dot",
+                indicatorAnimation: "pulse",
+                animationSeconds: 0.9,
+                borderWidth: 3,
+                cornerRadius: 24,
+                glowStrength: 0.9
+            });
+            break;
+
+        case "studio":
+            page = surface(
+                solid(c.background), solid(c.border), c.text, c.muted,
+                c.selected, "none"
+            );
+            header = surface(
+                gradient(c.panel, c.panelAlt, 180), solid(c.border),
+                c.text, c.muted, c.navigation,
+                "0 3px 12px rgba(0,0,0,.32)"
+            );
+            panel = surface(
+                solid(c.panel), solid(c.border), c.text, c.muted,
+                c.selected, "0 5px 16px rgba(0,0,0,.24)"
+            );
+            popup = surface(
+                solid(c.panelAlt), solid(c.navigation), c.text,
+                c.muted, c.selected, "0 16px 40px rgba(0,0,0,.62)"
+            );
+            toast = surface(
+                solid(c.selectedSurface), solid(c.selected),
+                c.selectedText, c.selected, c.selected,
+                "0 8px 22px rgba(0,0,0,.5)"
+            );
+            menu = surface(
+                solid(c.panelAlt), solid(c.border), c.text, c.muted,
+                c.navigation, "0 10px 28px rgba(0,0,0,.52)"
+            );
+            normal = controlState(
+                solid(c.panel), solid(c.border), c.muted, c.text, c.muted
+            );
+            navigationNormal = controlState(
+                solid(c.navigationSurface), solid(c.navigation),
+                c.navigation, c.text, c.navigation
+            );
+            utilityNormal = controlState(
+                solid(c.panelAlt), solid(c.border), c.muted, c.text, c.muted
+            );
+            snapshotNormal = controlState(
+                solid(c.selectedSurface), solid(c.selected),
+                c.selected, c.selectedText, c.selected
+            );
+            Object.assign(controls, {
+                switchStyle: "tiles",
+                switchShape: stableNameBucket(palette.name) % 2
+                    ? "square" : "rounded",
+                analogStyle: "modern",
+                indicatorStyle: "dot",
+                indicatorAnimation: "none",
+                borderWidth: 1,
+                cornerRadius: 6,
+                glowStrength: 0.35
+            });
+            break;
+
+        case "minimal":
+            page = surface(
+                solid(c.background), solid(c.border), c.text, c.muted,
+                c.selected, "none"
+            );
+            header = surface(
+                solid(c.background), solid(c.navigation), c.text,
+                c.muted, c.navigation, "none"
+            );
+            panel = surface(
+                solid(c.background), solid(c.border), c.text, c.muted,
+                c.selected, "none"
+            );
+            popup = surface(
+                solid(c.panel), solid(c.navigation), c.text, c.muted,
+                c.selected, "none"
+            );
+            toast = surface(
+                solid(c.background), solid(c.selected), c.selectedText,
+                c.selected, c.selected, "none"
+            );
+            menu = surface(
+                solid(c.background), solid(c.border), c.text, c.muted,
+                c.navigation, "none"
+            );
+            normal = controlState(
+                solid(c.background), solid(c.border), c.muted, c.text, c.muted
+            );
+            active = controlState(
+                solid(c.background), solid(c.selected), c.selected,
+                c.selectedText, c.selected, "none"
+            );
+            navigationNormal = controlState(
+                solid(c.background), solid(c.navigation), c.navigation,
+                c.text, c.navigation
+            );
+            utilityNormal = structuredClone(normal);
+            snapshotNormal = controlState(
+                solid(c.background), solid(c.selected), c.selected,
+                c.text, c.selected
+            );
+            Object.assign(controls, {
+                switchStyle: "minimal",
+                switchShape: "square",
+                analogStyle: "minimal",
+                indicatorStyle: "bar",
+                indicatorAnimation: "chase",
+                animationSeconds: 1.6,
+                borderWidth: 1,
+                cornerRadius: 0,
+                glowStrength: 0.25
+            });
+            break;
+
+        case "modern":
+        default:
+            break;
+    }
+
+    const role = (
+        roleNormal: MultiFXThemeControlState,
+        roleActive: MultiFXThemeControlState
+    ): MultiFXThemeControlRole => ({
+        normal: structuredClone(roleNormal),
+        active: structuredClone(roleActive)
+    });
+
+    return {
+        name: palette.name,
+        author: palette.author,
+        version: 3,
+        colors: structuredClone(c),
+        appearance: {
+            surfaces: {
+                page, header, panel, popup, toast, menu
+            },
+            roles: {
+                preset: role(normal, active),
+                navigation: role(navigationNormal, active),
+                utility: role(utilityNormal, active),
+                snapshot: role(snapshotNormal, active),
+                bypass: role(normal, dangerState),
+                danger: role(dangerState, dangerState)
+            },
+            controls,
+            motion: {
+                enabled: true,
+                respectReducedMotion: true,
+                feedbackDurationMs: 2600
+            }
+        }
+    };
+}
+
+export const BUILT_IN_THEMES: MultiFXThemeDefinition[] =
+    BUILT_IN_THEME_PALETTES.map(makeTheme);
+
+export const THEME_STORAGE_KEY = "pipedal-multifx-theme-v3";
+export const CUSTOM_THEMES_STORAGE_KEY =
+    "pipedal-multifx-custom-themes-v3";
 export const MULTIFX_THEME_CHANGED_EVENT = "multifx-theme-changed";
 
 export const MFX_COLORS = {
@@ -2384,6 +3055,66 @@ export const MFX_COLORS = {
     danger: "var(--mfx-danger)"
 } as const;
 
+/** Semantic surfaces used by MultiFX screens, dialogs, menus and feedback. */
+export const MFX_SURFACES = {
+    page: {
+        background: "var(--mfx-surface-page-bg)",
+        border: "var(--mfx-surface-page-border)",
+        text: "var(--mfx-surface-page-text)",
+        label: "var(--mfx-surface-page-label)",
+        accent: "var(--mfx-surface-page-accent)",
+        shadow: "var(--mfx-surface-page-shadow)"
+    },
+    header: {
+        background: "var(--mfx-surface-header-bg)",
+        border: "var(--mfx-surface-header-border)",
+        text: "var(--mfx-surface-header-text)",
+        label: "var(--mfx-surface-header-label)",
+        accent: "var(--mfx-surface-header-accent)",
+        shadow: "var(--mfx-surface-header-shadow)"
+    },
+    panel: {
+        background: "var(--mfx-surface-panel-bg)",
+        border: "var(--mfx-surface-panel-border)",
+        text: "var(--mfx-surface-panel-text)",
+        label: "var(--mfx-surface-panel-label)",
+        accent: "var(--mfx-surface-panel-accent)",
+        shadow: "var(--mfx-surface-panel-shadow)"
+    },
+    popup: {
+        background: "var(--mfx-surface-popup-bg)",
+        border: "var(--mfx-surface-popup-border)",
+        text: "var(--mfx-surface-popup-text)",
+        label: "var(--mfx-surface-popup-label)",
+        accent: "var(--mfx-surface-popup-accent)",
+        shadow: "var(--mfx-surface-popup-shadow)"
+    },
+    toast: {
+        background: "var(--mfx-surface-toast-bg)",
+        border: "var(--mfx-surface-toast-border)",
+        text: "var(--mfx-surface-toast-text)",
+        label: "var(--mfx-surface-toast-label)",
+        accent: "var(--mfx-surface-toast-accent)",
+        shadow: "var(--mfx-surface-toast-shadow)"
+    },
+    menu: {
+        background: "var(--mfx-surface-menu-bg)",
+        border: "var(--mfx-surface-menu-border)",
+        text: "var(--mfx-surface-menu-text)",
+        label: "var(--mfx-surface-menu-label)",
+        accent: "var(--mfx-surface-menu-accent)",
+        shadow: "var(--mfx-surface-menu-shadow)"
+    }
+} as const;
+
+/** CSS double-background recipe that supports gradient borders. */
+export function multiFXSurfaceBackground(
+    surface: keyof typeof MFX_SURFACES
+): string {
+    const value = MFX_SURFACES[surface];
+    return `${value.background} padding-box, ${value.border} border-box`;
+}
+
 export const MFX_HEADER_HEIGHT = 56;
 
 function isHexColor(value: unknown): value is string {
@@ -2391,19 +3122,165 @@ function isHexColor(value: unknown): value is string {
         && /^#[0-9a-fA-F]{6}$/.test(value);
 }
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+    return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function hasOnlyKeys(
+    value: Record<string, unknown>,
+    keys: readonly string[]
+): boolean {
+    const actual = Object.keys(value).sort();
+    const expected = [...keys].sort();
+    return actual.length === expected.length
+        && actual.every((key, index) => key === expected[index]);
+}
+
+function validShadow(value: unknown): value is string {
+    return typeof value === "string"
+        && value.length <= 160
+        && !/[;{}]|url\s*\(/i.test(value);
+}
+
+function validPaint(value: unknown): value is MultiFXThemePaint {
+    if (!isRecord(value)
+        || !hasOnlyKeys(value, ["kind", "colors", "angle"])
+        || !["solid", "linear", "radial", "conic"].includes(
+            String(value.kind)
+        )
+        || !Array.isArray(value.colors)
+        || value.colors.length < 1
+        || value.colors.length > 3
+        || !value.colors.every(isHexColor)
+        || typeof value.angle !== "number"
+        || !Number.isFinite(value.angle)
+        || value.angle < 0
+        || value.angle > 360) {
+        return false;
+    }
+    return value.kind === "solid"
+        ? value.colors.length === 1
+        : value.colors.length >= 2;
+}
+
+function validSurface(value: unknown): value is MultiFXThemeSurface {
+    return isRecord(value)
+        && hasOnlyKeys(value, [
+            "background", "border", "text", "label", "accent", "shadow"
+        ])
+        && validPaint(value.background)
+        && validPaint(value.border)
+        && isHexColor(value.text)
+        && isHexColor(value.label)
+        && isHexColor(value.accent)
+        && validShadow(value.shadow);
+}
+
+function validControlState(value: unknown): value is MultiFXThemeControlState {
+    return isRecord(value)
+        && hasOnlyKeys(value, [
+            "background", "border", "label", "value", "indicator", "shadow"
+        ])
+        && validPaint(value.background)
+        && validPaint(value.border)
+        && isHexColor(value.label)
+        && isHexColor(value.value)
+        && isHexColor(value.indicator)
+        && validShadow(value.shadow);
+}
+
+function validControlRole(value: unknown): value is MultiFXThemeControlRole {
+    return isRecord(value)
+        && hasOnlyKeys(value, ["normal", "active"])
+        && validControlState(value.normal)
+        && validControlState(value.active);
+}
+
+function numberIn(value: unknown, min: number, max: number): boolean {
+    return typeof value === "number"
+        && Number.isFinite(value)
+        && value >= min
+        && value <= max;
+}
+
+function validAppearance(value: unknown): value is MultiFXThemeAppearance {
+    if (!isRecord(value)
+        || !hasOnlyKeys(value, ["surfaces", "roles", "controls", "motion"])
+        || !isRecord(value.surfaces)
+        || !hasOnlyKeys(value.surfaces, [
+            "page", "header", "panel", "popup", "toast", "menu"
+        ])
+        || !Object.values(value.surfaces).every(validSurface)
+        || !isRecord(value.roles)
+        || !hasOnlyKeys(value.roles, [
+            "preset", "navigation", "utility", "snapshot", "bypass", "danger"
+        ])
+        || !Object.values(value.roles).every(validControlRole)
+        || !isRecord(value.controls)
+        || !hasOnlyKeys(value.controls, [
+            "switchStyle", "switchShape", "analogStyle", "indicatorStyle",
+            "indicatorAnimation", "indicatorInactive", "indicatorActive",
+            "indicatorChanged", "animationSeconds", "borderWidth",
+            "cornerRadius", "glowStrength", "disabledOpacity",
+            "glassBlur", "glassHighlight"
+        ])
+        || !["tiles", "footswitch", "arcade", "glass", "minimal"]
+            .includes(String(value.controls.switchStyle))
+        || !["rounded", "square", "pill", "bevel", "hexagon"]
+            .includes(String(value.controls.switchShape))
+        || !["modern", "vintage", "neon", "minimal"]
+            .includes(String(value.controls.analogStyle))
+        || !["dot", "ring", "halo", "bar", "none"]
+            .includes(String(value.controls.indicatorStyle))
+        || !["none", "pulse", "breathe", "spin", "chase"]
+            .includes(String(value.controls.indicatorAnimation))
+        || !isHexColor(value.controls.indicatorInactive)
+        || !isHexColor(value.controls.indicatorActive)
+        || !isHexColor(value.controls.indicatorChanged)
+        || !numberIn(value.controls.animationSeconds, 0.2, 10)
+        || !numberIn(value.controls.borderWidth, 0, 8)
+        || !numberIn(value.controls.cornerRadius, 0, 40)
+        || !numberIn(value.controls.glowStrength, 0, 1)
+        || !numberIn(value.controls.disabledOpacity, 0.1, 1)
+        || !numberIn(value.controls.glassBlur, 0, 30)
+        || !numberIn(value.controls.glassHighlight, 0, 1)
+        || !isRecord(value.motion)
+        || !hasOnlyKeys(value.motion, [
+            "enabled", "respectReducedMotion", "feedbackDurationMs"
+        ])
+        || typeof value.motion.enabled !== "boolean"
+        || typeof value.motion.respectReducedMotion !== "boolean"
+        || !numberIn(value.motion.feedbackDurationMs, 500, 10000)) {
+        return false;
+    }
+    return true;
+}
+
 export function validateMultiFXTheme(
     value: unknown
 ): MultiFXThemeDefinition | undefined {
-    if (!value || typeof value !== "object") return undefined;
+    if (!isRecord(value)
+        || !hasOnlyKeys(value, [
+            "name", "author", "version", "colors", "appearance"
+        ])) return undefined;
 
-    const source = value as Record<string, unknown>;
-    const colors = source.colors as Record<string, unknown> | undefined;
+    const source = value;
+    const colors = source.colors;
 
     if (
         typeof source.name !== "string"
+        || !source.name.trim()
+        || source.name.length > 80
         || typeof source.author !== "string"
-        || typeof source.version !== "number"
-        || !colors
+        || source.author.length > 80
+        || source.version !== 3
+        || !isRecord(colors)
+        || !hasOnlyKeys(colors, [
+            "background", "panel", "panelAlt", "navigation",
+            "navigationText", "navigationSurface", "selected",
+            "selectedSurface", "selectedText", "text", "muted",
+            "border", "danger"
+        ])
     ) {
         return undefined;
     }
@@ -2427,8 +3304,22 @@ export function validateMultiFXTheme(
     for (const key of required) {
         if (!isHexColor(colors[key])) return undefined;
     }
+    if (!validAppearance(source.appearance)) return undefined;
 
-    return value as MultiFXThemeDefinition;
+    return structuredClone(value) as unknown as MultiFXThemeDefinition;
+}
+
+/** Convert a validated paint token into one CSS background value. */
+export function themePaintToCss(paint: MultiFXThemePaint): string {
+    if (paint.kind === "solid") return paint.colors[0];
+    const colors = paint.colors.join(", ");
+    if (paint.kind === "radial") {
+        return `radial-gradient(circle, ${colors})`;
+    }
+    if (paint.kind === "conic") {
+        return `conic-gradient(from ${paint.angle}deg, ${colors})`;
+    }
+    return `linear-gradient(${paint.angle}deg, ${colors})`;
 }
 
 export function loadMultiFXTheme(): MultiFXThemeDefinition {
@@ -2537,6 +3428,7 @@ export function clearSavedMultiFXTheme(): void {
 
 export function applyMultiFXTheme(theme: MultiFXThemeDefinition): void {
     const c = theme.colors;
+    const appearance = theme.appearance;
     const targets = [document.documentElement, document.body];
 
     for (const target of targets) {
@@ -2553,7 +3445,95 @@ export function applyMultiFXTheme(theme: MultiFXThemeDefinition): void {
         target.style.setProperty("--mfx-muted", c.muted);
         target.style.setProperty("--mfx-border", c.border);
         target.style.setProperty("--mfx-danger", c.danger);
+
+        for (const [name, surfaceValue] of Object.entries(
+            appearance.surfaces
+        )) {
+            const prefix = `--mfx-surface-${name}`;
+            target.style.setProperty(
+                `${prefix}-bg`,
+                themePaintToCss(surfaceValue.background)
+            );
+            target.style.setProperty(
+                `${prefix}-border`,
+                themePaintToCss(surfaceValue.border)
+            );
+            target.style.setProperty(`${prefix}-text`, surfaceValue.text);
+            target.style.setProperty(`${prefix}-label`, surfaceValue.label);
+            target.style.setProperty(`${prefix}-accent`, surfaceValue.accent);
+            target.style.setProperty(`${prefix}-shadow`, surfaceValue.shadow);
+        }
+
+        for (const [roleName, role] of Object.entries(appearance.roles)) {
+            for (const stateName of ["normal", "active"] as const) {
+                const state = role[stateName];
+                const prefix = `--mfx-role-${roleName}-${stateName}`;
+                target.style.setProperty(
+                    `${prefix}-bg`, themePaintToCss(state.background)
+                );
+                target.style.setProperty(
+                    `${prefix}-border`, themePaintToCss(state.border)
+                );
+                target.style.setProperty(`${prefix}-label`, state.label);
+                target.style.setProperty(`${prefix}-value`, state.value);
+                target.style.setProperty(
+                    `${prefix}-indicator`, state.indicator
+                );
+                target.style.setProperty(`${prefix}-shadow`, state.shadow);
+            }
+        }
+
+        const controls = appearance.controls;
+        target.style.setProperty(
+            "--mfx-control-indicator-inactive", controls.indicatorInactive
+        );
+        target.style.setProperty(
+            "--mfx-control-indicator-active", controls.indicatorActive
+        );
+        target.style.setProperty(
+            "--mfx-control-indicator-changed", controls.indicatorChanged
+        );
+        target.style.setProperty(
+            "--mfx-control-animation-seconds", `${controls.animationSeconds}s`
+        );
+        target.style.setProperty(
+            "--mfx-control-border-width", `${controls.borderWidth}px`
+        );
+        target.style.setProperty(
+            "--mfx-control-radius", `${controls.cornerRadius}px`
+        );
+        target.style.setProperty(
+            "--mfx-control-glow-strength", String(controls.glowStrength)
+        );
+        target.style.setProperty(
+            "--mfx-control-disabled-opacity", String(controls.disabledOpacity)
+        );
+        target.style.setProperty(
+            "--mfx-control-glass-blur", `${controls.glassBlur}px`
+        );
+        target.style.setProperty(
+            "--mfx-control-glass-highlight", String(controls.glassHighlight)
+        );
+        target.style.setProperty(
+            "--mfx-feedback-duration-ms",
+            String(appearance.motion.feedbackDurationMs)
+        );
     }
+
+    const root = document.documentElement;
+    root.dataset.mfxSwitchStyle = appearance.controls.switchStyle;
+    root.dataset.mfxSwitchShape = appearance.controls.switchShape;
+    root.dataset.mfxAnalogStyle = appearance.controls.analogStyle;
+    root.dataset.mfxIndicatorStyle = appearance.controls.indicatorStyle;
+    root.dataset.mfxIndicatorAnimation =
+        appearance.motion.enabled
+            ? appearance.controls.indicatorAnimation
+            : "none";
+    root.dataset.mfxRespectReducedMotion =
+        appearance.motion.respectReducedMotion ? "true" : "false";
+    root.dataset.mfxColorScheme = paletteLuminance(c.background) >= 0.4
+        ? "light"
+        : "dark";
 }
 
 export function clearAppliedMultiFXTheme(): void {
@@ -2573,9 +3553,52 @@ export function clearAppliedMultiFXTheme(): void {
         "--mfx-danger"
     ];
 
+    const surfaceKeys = [
+        "page", "header", "panel", "popup", "toast", "menu"
+    ].flatMap((name) => [
+        `--mfx-surface-${name}-bg`,
+        `--mfx-surface-${name}-border`,
+        `--mfx-surface-${name}-text`,
+        `--mfx-surface-${name}-label`,
+        `--mfx-surface-${name}-accent`,
+        `--mfx-surface-${name}-shadow`
+    ]);
+    const roleKeys = [
+        "preset", "navigation", "utility", "snapshot", "bypass", "danger"
+    ].flatMap((role) => ["normal", "active"].flatMap((state) => [
+        `--mfx-role-${role}-${state}-bg`,
+        `--mfx-role-${role}-${state}-border`,
+        `--mfx-role-${role}-${state}-label`,
+        `--mfx-role-${role}-${state}-value`,
+        `--mfx-role-${role}-${state}-indicator`,
+        `--mfx-role-${role}-${state}-shadow`
+    ]));
+    keys.push(
+        ...surfaceKeys,
+        ...roleKeys,
+        "--mfx-control-indicator-inactive",
+        "--mfx-control-indicator-active",
+        "--mfx-control-indicator-changed",
+        "--mfx-control-animation-seconds",
+        "--mfx-control-border-width",
+        "--mfx-control-radius",
+        "--mfx-control-glow-strength",
+        "--mfx-control-disabled-opacity",
+        "--mfx-control-glass-blur",
+        "--mfx-control-glass-highlight",
+        "--mfx-feedback-duration-ms"
+    );
+
     for (const target of [document.documentElement, document.body]) {
         for (const key of keys) {
             target.style.removeProperty(key);
         }
     }
+    delete document.documentElement.dataset.mfxSwitchStyle;
+    delete document.documentElement.dataset.mfxSwitchShape;
+    delete document.documentElement.dataset.mfxAnalogStyle;
+    delete document.documentElement.dataset.mfxIndicatorStyle;
+    delete document.documentElement.dataset.mfxIndicatorAnimation;
+    delete document.documentElement.dataset.mfxRespectReducedMotion;
+    delete document.documentElement.dataset.mfxColorScheme;
 }

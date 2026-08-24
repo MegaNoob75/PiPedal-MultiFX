@@ -1,0 +1,48 @@
+/* Native form popups do not reliably inherit React inline styles on Windows.
+   Scope solid fallback colors to MultiFX so PiPedal's original UI is untouched. */
+
+html[data-mfx-color-scheme="dark"] .mfx-app-root {
+    color-scheme: dark;
+}
+
+html[data-mfx-color-scheme="light"] .mfx-app-root {
+    color-scheme: light;
+}
+
+.mfx-app-root select,
+.mfx-app-root input,
+.mfx-app-root textarea {
+    caret-color: var(--mfx-cyan);
+    accent-color: var(--mfx-cyan);
+}
+
+.mfx-app-root select {
+    background-color: var(--mfx-panel);
+    color: var(--mfx-text);
+}
+
+.mfx-app-root select option,
+.mfx-app-root select optgroup {
+    background-color: var(--mfx-panel);
+    color: var(--mfx-text);
+}
+
+.mfx-app-root select option:checked {
+    background-color: var(--mfx-cyan-surface);
+    color: var(--mfx-cyan-text);
+}
+
+.mfx-app-root select:disabled,
+.mfx-app-root input:disabled,
+.mfx-app-root textarea:disabled {
+    color: var(--mfx-muted);
+    opacity: var(--mfx-control-disabled-opacity);
+}
+
+.mfx-app-root select:focus-visible,
+.mfx-app-root input:focus-visible,
+.mfx-app-root textarea:focus-visible,
+.mfx-app-root button:focus-visible {
+    outline: 2px solid var(--mfx-cyan);
+    outline-offset: 2px;
+}

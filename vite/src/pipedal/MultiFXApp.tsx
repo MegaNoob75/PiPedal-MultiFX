@@ -12,6 +12,7 @@ import FootControllerView, { NewPresetDraft } from "./FootControllerView";
 import MultiFXBankPresetView from "./MultiFXBankPresetView";
 import MultiFXEditView from "./MultiFXEditView";
 import MultiFXAboutView from "./MultiFXAboutView";
+import "./MultiFXForms.css";
 import MultiFXSettingsView from "./MultiFXSettingsView";
 import MultiFXSettingsHub from "./MultiFXSettingsHub";
 import MultiFXControllerSettings from "./MultiFXControllerSettings";
@@ -29,7 +30,9 @@ import {
     applyMultiFXTheme,
     clearAppliedMultiFXTheme,
     loadMultiFXTheme,
-    MFX_COLORS
+    MFX_COLORS,
+    MFX_SURFACES,
+    multiFXSurfaceBackground
 } from "./MultiFXTheme";
 
 export type MultiFXView =
@@ -284,7 +287,7 @@ export default function MultiFXApp({ onExitToOriginal }: MultiFXAppProps) {
     };
 
     return (
-        <div style={rootStyle}>
+        <div className="mfx-app-root" style={rootStyle}>
             <div style={shellStyle}>
                 <button type="button" onClick={() => {
                     if (newPresetDraft || view === "snapshotEdit") return;
@@ -509,7 +512,7 @@ function MultiFXMenu(props: MultiFXMenuProps) {
             >
                 <div style={menuBrandStyle}>
                     <FxAmplifierIcon style={{ width: 30, height: 30, fill: "currentColor" }} />
-                    <div><b>PiPedal</b><div style={{ color: MFX_COLORS.purpleLight, fontWeight: 900 }}>MULTIFX</div></div>
+                    <div><b>PiPedal</b><div style={{ color: MFX_SURFACES.menu.accent, fontWeight: 900 }}>MULTIFX</div></div>
                 </div>
                 <ShellMenuButton label="PERFORMANCE" subtitle="Preset and foot-controller view"
                     active={props.currentView === "performance"} onClick={props.onPerformance} />
@@ -558,8 +561,8 @@ function ShellMenuButton({ label, subtitle, active = false, onClick }: {
     );
 }
 
-const rootStyle: React.CSSProperties = { position: "absolute", inset: 0, overflow: "hidden", background: MFX_COLORS.background, color: MFX_COLORS.text };
-const shellStyle: React.CSSProperties = { position: "absolute", left: 0, right: 0, top: 0, height: 54, zIndex: 100000, display: "grid", gridTemplateColumns: "auto 1fr auto", alignItems: "center", gap: 10, padding: "6px 8px", boxSizing: "border-box", borderBottom: `1px solid ${MFX_COLORS.border}`, background: MFX_COLORS.panel };
+const rootStyle: React.CSSProperties = { position: "absolute", inset: 0, overflow: "hidden", background: MFX_SURFACES.page.background, color: MFX_SURFACES.page.text };
+const shellStyle: React.CSSProperties = { position: "absolute", left: 0, right: 0, top: 0, height: 54, zIndex: 100000, display: "grid", gridTemplateColumns: "auto 1fr auto", alignItems: "center", gap: 10, padding: "6px 8px", boxSizing: "border-box", borderBottom: `1px solid ${MFX_COLORS.border}`, background: MFX_SURFACES.header.background, color: MFX_SURFACES.header.text, boxShadow: MFX_SURFACES.header.shadow };
 const shellTitleStyle: React.CSSProperties = { minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", textAlign: "center", fontWeight: 900, letterSpacing: "0.08em" };
 const shellActionsStyle: React.CSSProperties = { display: "flex", alignItems: "center", gap: 8 };
 const pageHostStyle: React.CSSProperties = { position: "absolute", left: 0, right: 0, top: 54, bottom: 0, overflow: "hidden" };
@@ -568,8 +571,8 @@ const backButtonStyle: React.CSSProperties = { ...mfxButtonStyle, minWidth: 48, 
 const normalButtonStyle: React.CSSProperties = { minHeight: 40, padding: "0 12px", borderRadius: 9, border: `1px solid ${MFX_COLORS.border}`, background: MFX_COLORS.panelAlt, color: MFX_COLORS.text, font: "inherit", fontWeight: 900, cursor: "pointer" };
 const accentButtonStyle: React.CSSProperties = { ...normalButtonStyle, border: `2px solid ${MFX_COLORS.cyan}`, background: MFX_COLORS.cyanSurface, color: MFX_COLORS.cyanText };
 const dialogBackdropStyle: React.CSSProperties = { position: "fixed", inset: 0, zIndex: 100100, display: "flex", alignItems: "center", justifyContent: "center", background: "rgba(0,0,0,0.62)" };
-const dialogStyle: React.CSSProperties = { width: "min(420px, calc(100vw - 32px))", padding: 18, borderRadius: 14, border: `2px solid ${MFX_COLORS.cyan}`, background: MFX_COLORS.panel, display: "flex", flexDirection: "column", gap: 14 };
+const dialogStyle: React.CSSProperties = { width: "min(420px, calc(100vw - 32px))", padding: 18, borderRadius: 14, border: "2px solid transparent", background: multiFXSurfaceBackground("popup"), color: MFX_SURFACES.popup.text, boxShadow: MFX_SURFACES.popup.shadow, display: "flex", flexDirection: "column", gap: 14 };
 const inputStyle: React.CSSProperties = { width: "100%", height: 44, padding: "0 12px", boxSizing: "border-box", borderRadius: 9, border: `2px solid ${MFX_COLORS.border}`, outline: "none", background: MFX_COLORS.panelAlt, color: MFX_COLORS.text, font: "inherit", fontWeight: 800 };
 const menuBackdropStyle: React.CSSProperties = { position: "fixed", inset: 0, zIndex: 99998, background: "rgba(0,0,0,0.48)" };
-const menuStyle: React.CSSProperties = { position: "fixed", left: 8, top: 58, zIndex: 100002, width: "min(286px, calc(100vw - 16px))", maxHeight: "calc(100% - 68px)", overflowY: "auto", padding: 10, borderRadius: 12, border: `2px solid ${MFX_COLORS.purple}`, background: MFX_COLORS.panel, boxShadow: "0 12px 34px rgba(0,0,0,0.72)" };
+const menuStyle: React.CSSProperties = { position: "fixed", left: 8, top: 58, zIndex: 100002, width: "min(286px, calc(100vw - 16px))", maxHeight: "calc(100% - 68px)", overflowY: "auto", padding: 10, borderRadius: 12, border: "2px solid transparent", background: multiFXSurfaceBackground("menu"), color: MFX_SURFACES.menu.text, boxShadow: MFX_SURFACES.menu.shadow };
 const menuBrandStyle: React.CSSProperties = { display: "flex", alignItems: "center", gap: 9, padding: "6px 8px 10px", color: MFX_COLORS.text };

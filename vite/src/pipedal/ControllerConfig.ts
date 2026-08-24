@@ -1,11 +1,10 @@
 /*
  * PiPedal-MultiFX controller configuration.
  *
- * Schema 2 separates board-neutral input sources from logical switch actions
- * and adds the nested physical-hardware configuration. The parser contains one
- * deliberately narrow migration from the immediately preceding schema 1 so a
- * v0.2.0 user's layout and assignments survive this hardware upgrade. Older
- * page/tile formats remain unsupported.
+ * Schema 3 combines board-neutral input sources, logical switch actions and
+ * Performance geometry for switches plus physical analog/encoder controls.
+ * This unreleased configuration deliberately starts clean; unsupported schema
+ * versions are rejected instead of being guessed or partially migrated.
  */
 
 import {
@@ -112,7 +111,66 @@ export interface ControllerPerformanceLayout {
     mode: ControllerPerformanceLayoutMode;
     switches: Record<string, ControllerLayoutRect>;
     unplacedSwitchIds: string[];
+    /** Physical analog/encoder controls placed independently of logical switches. */
+    controls: Record<string, ControllerLayoutRect>;
+    unplacedControlIds: string[];
     elements: Record<ControllerLayoutElementId, ControllerLayoutElement>;
+}
+
+export type ControllerPerformanceControlKind =
+    | "pot"
+    | "slider"
+    | "expression"
+    | "encoder"
+    | "button";
+
+export interface ControllerPerformanceControlDescriptor {
+    id: string;
+    label: string;
+    kind: ControllerPerformanceControlKind;
+    midiCc: number;
+}
+
+/**
+ * Flatten hardware controls into stable Performance-layout identities. GPIO
+ * changes do not move a widget because layout follows the user-facing control
+ * ID, while active preset bindings continue to follow the emitted MIDI CC.
+ */
+export function controllerPerformanceControlDescriptors(
+    hardware: ControllerHardwareConfig
+): ControllerPerformanceControlDescriptor[] {
+    const result: ControllerPerformanceControlDescriptor[] =
+        hardware.analogControls.map((control) => ({
+            id: control.id,
+            label: control.label,
+            kind: control.style,
+            midiCc: control.midiCc
+        }));
+
+    for (const encoder of hardware.encoders) {
+        result.push({
+            id: `${encoder.id}:turn`,
+            label: encoder.label,
+            kind: "encoder",
+            midiCc: encoder.turnCc
+        });
+        if (encoder.buttonInput !== null) {
+            result.push({
+                id: `${encoder.id}:button`,
+                label: `${encoder.label} BUTTON`,
+                kind: "button",
+                midiCc: encoder.buttonCc
+            });
+        }
+    }
+    return result;
+}
+
+export function controllerPerformanceControlIds(
+    hardware: ControllerHardwareConfig
+): string[] {
+    return controllerPerformanceControlDescriptors(hardware)
+        .map((control) => control.id);
 }
 
 export interface ControllerGridLayoutDefault {
@@ -124,48 +182,14 @@ export interface ControllerGridLayoutDefault {
 export interface ControllerFreeformLayoutDefault {
     switches: Record<string, ControllerLayoutRect>;
     unplacedSwitchIds: string[];
+    controls: Record<string, ControllerLayoutRect>;
+    unplacedControlIds: string[];
     elements: Record<ControllerLayoutElementId, ControllerLayoutElement>;
 }
 
 export interface ControllerLayoutDefaults {
     grid: ControllerGridLayoutDefault | null;
     freeform: ControllerFreeformLayoutDefault | null;
-}
-
-/*
- * Visual values are still part of the current schema because Performance View
- * consumes them directly. They are not migration aliases. A later UI-only
- * refactor can move them into the theme without changing musical/controller
- * state semantics.
- */
-export interface ControllerColors {
-    pageBackground: string;
-    pageText: string;
-    headerBackground: string;
-    headerBorder: string;
-    headerShadow: string;
-    bankTitleText: string;
-    bankNameText: string;
-    activePresetLabelText: string;
-    activePresetNameText: string;
-    headerDivider: string;
-    switchBackground: string;
-    switchBorder: string;
-    switchLabelText: string;
-    switchValueText: string;
-    bankSwitchBackground: string;
-    bankSwitchBorder: string;
-    bankSwitchLabelText: string;
-    bankSwitchValueText: string;
-    activeSwitchBackground: string;
-    activeSwitchBorder: string;
-    activeSwitchLabelText: string;
-    activeSwitchValueText: string;
-    activeSwitchShadow: string;
-    disabledSwitchOpacity: number;
-    configErrorBackground: string;
-    configErrorBorder: string;
-    configErrorText: string;
 }
 
 export interface ControllerSizing {
@@ -185,7 +209,7 @@ export interface ControllerSizing {
 }
 
 export interface ControllerLayoutConfig {
-    schemaVersion: 2;
+    schemaVersion: 3;
     columns: number;
     rows: number;
     gap: number;
@@ -193,7 +217,6 @@ export interface ControllerLayoutConfig {
     headerPadding: string;
     longPressMs: number;
     sizing: ControllerSizing;
-    colors: ControllerColors;
     switches: ControllerSwitchConfig[];
     hardware: ControllerHardwareConfig;
     performanceLayout: ControllerPerformanceLayout;
@@ -215,12 +238,36 @@ export const MIN_FREEFORM_SWITCH_WIDTH = 0.06;
 export const MIN_FREEFORM_SWITCH_HEIGHT = 0.06;
 export const MIN_FREEFORM_HEADER_WIDTH = 0.18;
 export const MIN_FREEFORM_HEADER_HEIGHT = 0.09;
+export const MIN_FREEFORM_CONTROL_WIDTH = 0.12;
+export const MIN_FREEFORM_CONTROL_HEIGHT = 0.16;
+export const MIN_FREEFORM_VERTICAL_CONTROL_WIDTH = 0.09;
+export const MIN_FREEFORM_VERTICAL_CONTROL_HEIGHT = 0.22;
+
+/** Minimum readable footprint for a physical-control widget. Vertical
+ * sliders need more height; pots, encoders and buttons need more width. */
+export function minimumPerformanceControlSize(
+    kind: ControllerPerformanceControlKind
+): { width: number; height: number } {
+    if (kind === "slider" || kind === "expression") {
+        return {
+            width: MIN_FREEFORM_VERTICAL_CONTROL_WIDTH,
+            height: MIN_FREEFORM_VERTICAL_CONTROL_HEIGHT
+        };
+    }
+    return {
+        width: MIN_FREEFORM_CONTROL_WIDTH,
+        height: MIN_FREEFORM_CONTROL_HEIGHT
+    };
+}
 
 export const CONTROLLER_CONFIG_CHANGED_EVENT =
     "multifx-controller-config-changed";
 
-const CONTROLLER_STORAGE_KEY = "pipedal-multifx-controller-config-v3";
-const PREVIOUS_CONTROLLER_STORAGE_KEY = "pipedal-multifx-controller-config-v2";
+export const CONTROLLER_STORAGE_KEY =
+    "pipedal-multifx-controller-config-v4";
+export const PERFORMANCE_LAYOUT_FILE_FORMAT =
+    "pipedal-multifx-performance-layout";
+export const PERFORMANCE_LAYOUT_FILE_VERSION = 1;
 
 // Used only when no capability-aware controller is connected. Connected
 // controllers report their own usable inputs through the runtime bridge.
@@ -297,7 +344,7 @@ function makeDefaultElements(): Record<
 }
 
 export const defaultControllerConfig: ControllerLayoutConfig = {
-    schemaVersion: 2,
+    schemaVersion: 3,
     columns: 4,
     rows: 2,
     gap: 10,
@@ -319,35 +366,6 @@ export const defaultControllerConfig: ControllerLayoutConfig = {
         marqueePixelsPerSecond: 45,
         marqueeEndPauseSeconds: 1.0
     },
-    colors: {
-        pageBackground: "#121212",
-        pageText: "#ffffff",
-        headerBackground: "#1e1e1e",
-        headerBorder: "#333333",
-        headerShadow: "0 4px 20px rgba(0,0,0,0.5)",
-        bankTitleText: "#A770E4",
-        bankNameText: "#ffffff",
-        activePresetLabelText: "#aaaaaa",
-        activePresetNameText: "#22c55e",
-        headerDivider: "#333333",
-        switchBackground: "#1e1e1e",
-        switchBorder: "#333333",
-        switchLabelText: "#888888",
-        switchValueText: "#ffffff",
-        bankSwitchBackground: "#2a1b40",
-        bankSwitchBorder: "#A770E4",
-        bankSwitchLabelText: "#b99adf",
-        bankSwitchValueText: "#ffffff",
-        activeSwitchBackground: "#22c55e",
-        activeSwitchBorder: "#4ade80",
-        activeSwitchLabelText: "#d9ffe5",
-        activeSwitchValueText: "#071a0c",
-        activeSwitchShadow: "0 0 20px rgba(34,197,94,0.45)",
-        disabledSwitchOpacity: 0.48,
-        configErrorBackground: "#3b1111",
-        configErrorBorder: "#ef4444",
-        configErrorText: "#fecaca"
-    },
     switches: [
         { id: "sw1", label: "SW 1", hardwareSwitch: 1, input: { type: "gpio", pin: 6 },  action: { type: "preset", presetIndex: 0 }, longPressAction: { type: "none", text: "Unused" }, row: 1, column: 1 },
         { id: "sw2", label: "SW 2", hardwareSwitch: 2, input: { type: "gpio", pin: 7 },  action: { type: "preset", presetIndex: 1 }, longPressAction: { type: "none", text: "Unused" }, row: 1, column: 2 },
@@ -363,6 +381,11 @@ export const defaultControllerConfig: ControllerLayoutConfig = {
         mode: "grid",
         switches: {},
         unplacedSwitchIds: [],
+        controls: {},
+        unplacedControlIds: [
+            "pot1", "pot2", "pot3", "pot4",
+            "encoder1:turn", "encoder1:button"
+        ],
         elements: makeDefaultElements()
     },
     layoutDefaults: {
@@ -375,12 +398,25 @@ function isRecord(value: unknown): value is Record<string, unknown> {
     return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
+function hasExactKeys(
+    value: Record<string, unknown>,
+    keys: readonly string[]
+): boolean {
+    const actual = Object.keys(value).sort();
+    const expected = [...keys].sort();
+    return actual.length === expected.length
+        && actual.every((key, index) => key === expected[index]);
+}
+
 function cloneConfig(config: ControllerLayoutConfig): ControllerLayoutConfig {
     return structuredClone(config);
 }
 
 function validRect(value: unknown): value is ControllerLayoutRect {
-    if (!isRecord(value)) return false;
+    if (!isRecord(value)
+        || !hasExactKeys(value, ["x", "y", "width", "height"])) {
+        return false;
+    }
     const x = value.x;
     const y = value.y;
     const width = value.width;
@@ -403,16 +439,18 @@ function validAction(value: unknown): value is ControllerSwitchAction {
     if (!isRecord(value) || typeof value.type !== "string") return false;
     switch (value.type) {
         case "preset":
-            return typeof value.presetIndex === "number"
+            return hasExactKeys(value, ["type", "presetIndex"])
+                && typeof value.presetIndex === "number"
                 && Number.isInteger(value.presetIndex)
                 && value.presetIndex >= 0;
         case "bankUp":
         case "bankDown":
         case "chainBypass":
         case "snapshotMode":
-            return true;
+            return hasExactKeys(value, ["type"]);
         case "none":
-            return typeof value.text === "string";
+            return hasExactKeys(value, ["type", "text"])
+                && typeof value.text === "string";
         default:
             return false;
     }
@@ -420,7 +458,10 @@ function validAction(value: unknown): value is ControllerSwitchAction {
 
 function validElement(value: unknown, id: ControllerLayoutElementId): value is ControllerLayoutElement {
     if (!isRecord(value)) return false;
-    return value.id === id
+    return hasExactKeys(value, [
+        "id", "visible", "rect", "style", "shape", "showLabel"
+    ])
+        && value.id === id
         && typeof value.visible === "boolean"
         && validRect(value.rect)
         && (value.style === "panel" || value.style === "compact" || value.style === "minimal")
@@ -428,9 +469,16 @@ function validElement(value: unknown, id: ControllerLayoutElementId): value is C
         && typeof value.showLabel === "boolean";
 }
 
-function validateConfig(value: unknown): string | undefined {
+export function validateControllerLayoutConfig(
+    value: unknown
+): string | undefined {
     if (!isRecord(value)) return "Controller config must be an object.";
-    if (value.schemaVersion !== 2) return "Unsupported controller config schema. Reset to the current factory configuration.";
+    if (!hasExactKeys(value, [
+        "schemaVersion", "columns", "rows", "gap", "outerPadding",
+        "headerPadding", "longPressMs", "sizing", "switches", "hardware",
+        "performanceLayout", "layoutDefaults"
+    ])) return "Controller config has an invalid schema shape.";
+    if (value.schemaVersion !== 3) return "Unsupported controller config schema. Reset to the current factory configuration.";
 
     const integerIn = (input: unknown, min: number, max: number) =>
         typeof input === "number" && Number.isInteger(input) && input >= min && input <= max;
@@ -452,25 +500,15 @@ function validateConfig(value: unknown): string | undefined {
         "bankTitleFontSize", "bankNameFontSize",
         "activePresetLabelFontSize", "activePresetNameFontSize"
     ];
+    if (!hasExactKeys(value.sizing, [...numericSizing, ...stringSizing])) {
+        return "Invalid controller sizing shape.";
+    }
     for (const key of numericSizing) {
         const input = value.sizing[key];
         if (typeof input !== "number" || !Number.isFinite(input) || input < 0) return `Invalid sizing field: ${key}.`;
     }
     for (const key of stringSizing) {
         if (typeof value.sizing[key] !== "string") return `Invalid sizing field: ${key}.`;
-    }
-
-    if (!isRecord(value.colors)) return "Missing controller colors.";
-    const colorStringKeys = Object.keys(defaultControllerConfig.colors)
-        .filter((key) => key !== "disabledSwitchOpacity");
-    for (const key of colorStringKeys) {
-        if (typeof value.colors[key] !== "string") return `Invalid color field: ${key}.`;
-    }
-    if (typeof value.colors.disabledSwitchOpacity !== "number"
-        || !Number.isFinite(value.colors.disabledSwitchOpacity)
-        || value.colors.disabledSwitchOpacity < 0
-        || value.colors.disabledSwitchOpacity > 1) {
-        return "Invalid disabled-switch opacity.";
     }
 
     if (!Array.isArray(value.switches) || value.switches.length > MAX_FOOTSWITCHES) return "Invalid switch list.";
@@ -483,6 +521,10 @@ function validateConfig(value: unknown): string | undefined {
 
     for (const raw of value.switches) {
         if (!isRecord(raw)) return "Invalid switch entry.";
+        if (!hasExactKeys(raw, [
+            "id", "label", "hardwareSwitch", "input", "action",
+            "longPressAction", "row", "column"
+        ])) return "Invalid switch entry shape.";
         if (typeof raw.id !== "string" || !raw.id.trim() || ids.has(raw.id)) return "Switch IDs must be non-empty and unique.";
         if (typeof raw.label !== "string" || !raw.label.trim()) return "Switch labels must be non-empty.";
         ids.add(raw.id);
@@ -525,42 +567,130 @@ function validateConfig(value: unknown): string | undefined {
 
     const layout = value.performanceLayout;
     if (!isRecord(layout)) return "Missing Performance layout.";
+    if (!hasExactKeys(layout, [
+        "mode", "switches", "unplacedSwitchIds", "controls",
+        "unplacedControlIds", "elements"
+    ])) return "Invalid Performance layout shape.";
     if (layout.mode !== "grid" && layout.mode !== "freeform") return "Invalid Performance layout mode.";
-    if (!isRecord(layout.switches) || !Array.isArray(layout.unplacedSwitchIds) || !isRecord(layout.elements)) return "Invalid Performance layout data.";
+    if (!isRecord(layout.switches)
+        || !Array.isArray(layout.unplacedSwitchIds)
+        || !isRecord(layout.controls)
+        || !Array.isArray(layout.unplacedControlIds)
+        || !isRecord(layout.elements)
+        || !hasExactKeys(layout.elements, CONTROLLER_LAYOUT_ELEMENT_IDS)) {
+        return "Invalid Performance layout data.";
+    }
     const validSwitchIds = new Set(ids);
     for (const rawId of layout.unplacedSwitchIds) {
         if (typeof rawId !== "string" || !validSwitchIds.has(rawId)) return "Invalid unplaced switch ID.";
     }
+    if (new Set(layout.unplacedSwitchIds).size
+        !== layout.unplacedSwitchIds.length) {
+        return "Unplaced switch IDs must be unique.";
+    }
     for (const [switchId, rect] of Object.entries(layout.switches)) {
         if (!validSwitchIds.has(switchId) || !validRect(rect)) return `Invalid Performance switch rectangle: ${switchId}.`;
+    }
+    const controlIds = controllerPerformanceControlIds(
+        value.hardware as ControllerHardwareConfig
+    );
+    const validControlIds = new Set(controlIds);
+    if (validControlIds.size !== controlIds.length) {
+        return "Hardware control layout IDs must be unique.";
+    }
+    for (const rawId of layout.unplacedControlIds) {
+        if (typeof rawId !== "string" || !validControlIds.has(rawId)) {
+            return "Invalid unplaced hardware-control ID.";
+        }
+    }
+    if (new Set(layout.unplacedControlIds).size
+        !== layout.unplacedControlIds.length) {
+        return "Unplaced hardware-control IDs must be unique.";
+    }
+    for (const [controlId, rect] of Object.entries(layout.controls)) {
+        if (!validControlIds.has(controlId) || !validRect(rect)) {
+            return `Invalid Performance hardware-control rectangle: ${controlId}.`;
+        }
+    }
+    for (const controlId of validControlIds) {
+        const placed = Object.prototype.hasOwnProperty.call(
+            layout.controls,
+            controlId
+        );
+        const unplaced = layout.unplacedControlIds.includes(controlId);
+        if (placed === unplaced) {
+            return `Hardware control ${controlId} must be either placed or unplaced.`;
+        }
     }
     for (const id of CONTROLLER_LAYOUT_ELEMENT_IDS) {
         if (!validElement((layout.elements as Record<string, unknown>)[id], id)) return `Invalid dashboard element: ${id}.`;
     }
 
-    if (!isRecord(value.layoutDefaults)) return "Missing layout defaults.";
+    if (!isRecord(value.layoutDefaults)
+        || !hasExactKeys(value.layoutDefaults, ["grid", "freeform"])) {
+        return "Missing or invalid layout defaults.";
+    }
     const gridDefault = value.layoutDefaults.grid;
     if (gridDefault !== null) {
         if (!isRecord(gridDefault)
+            || !hasExactKeys(gridDefault, ["columns", "rows", "positions"])
             || !integerIn(gridDefault.columns, 1, MAX_CONTROLLER_COLUMNS)
             || !integerIn(gridDefault.rows, 1, MAX_CONTROLLER_ROWS)
             || !isRecord(gridDefault.positions)) return "Invalid Grid default.";
         for (const [switchId, position] of Object.entries(gridDefault.positions)) {
             if (!validSwitchIds.has(switchId) || !isRecord(position)
+                || !hasExactKeys(position, ["row", "column"])
                 || !integerIn(position.row, 1, MAX_CONTROLLER_ROWS)
                 || !integerIn(position.column, 1, MAX_CONTROLLER_COLUMNS)) return "Invalid Grid-default switch position.";
         }
     }
     const freeformDefault = value.layoutDefaults.freeform;
     if (freeformDefault !== null) {
-        if (!isRecord(freeformDefault) || !isRecord(freeformDefault.switches)
+        if (!isRecord(freeformDefault)
+            || !hasExactKeys(freeformDefault, [
+                "switches", "unplacedSwitchIds", "controls",
+                "unplacedControlIds", "elements"
+            ])
+            || !isRecord(freeformDefault.switches)
             || !Array.isArray(freeformDefault.unplacedSwitchIds)
-            || !isRecord(freeformDefault.elements)) return "Invalid Freeform default.";
+            || !isRecord(freeformDefault.controls)
+            || !Array.isArray(freeformDefault.unplacedControlIds)
+            || !isRecord(freeformDefault.elements)
+            || !hasExactKeys(
+                freeformDefault.elements,
+                CONTROLLER_LAYOUT_ELEMENT_IDS
+            )) return "Invalid Freeform default.";
         for (const [switchId, rect] of Object.entries(freeformDefault.switches)) {
             if (!validSwitchIds.has(switchId) || !validRect(rect)) return "Invalid Freeform-default switch rectangle.";
         }
         for (const rawId of freeformDefault.unplacedSwitchIds) {
             if (typeof rawId !== "string" || !validSwitchIds.has(rawId)) return "Invalid Freeform-default unplaced switch ID.";
+        }
+        if (new Set(freeformDefault.unplacedSwitchIds).size
+            !== freeformDefault.unplacedSwitchIds.length) {
+            return "Freeform-default unplaced switch IDs must be unique.";
+        }
+        for (const [controlId, rect] of Object.entries(freeformDefault.controls)) {
+            if (!validControlIds.has(controlId) || !validRect(rect)) return "Invalid Freeform-default hardware-control rectangle.";
+        }
+        for (const rawId of freeformDefault.unplacedControlIds) {
+            if (typeof rawId !== "string" || !validControlIds.has(rawId)) return "Invalid Freeform-default unplaced hardware-control ID.";
+        }
+        if (new Set(freeformDefault.unplacedControlIds).size
+            !== freeformDefault.unplacedControlIds.length) {
+            return "Freeform-default unplaced hardware-control IDs must be unique.";
+        }
+        for (const controlId of validControlIds) {
+            const placed = Object.prototype.hasOwnProperty.call(
+                freeformDefault.controls,
+                controlId
+            );
+            const unplaced = freeformDefault.unplacedControlIds.includes(
+                controlId
+            );
+            if (placed === unplaced) {
+                return `Freeform-default hardware control ${controlId} must be either placed or unplaced.`;
+            }
         }
         for (const id of CONTROLLER_LAYOUT_ELEMENT_IDS) {
             if (!validElement((freeformDefault.elements as Record<string, unknown>)[id], id)) return `Invalid Freeform-default element: ${id}.`;
@@ -606,14 +736,102 @@ export function ensureControllerPerformanceLayout(
     }
     next.performanceLayout.switches = rects;
 
+    const validControlIds = new Set(
+        controllerPerformanceControlIds(next.hardware)
+    );
+    next.performanceLayout.controls = Object.fromEntries(
+        Object.entries(next.performanceLayout.controls)
+            .filter(([id, rect]) => validControlIds.has(id) && validRect(rect))
+            .map(([id, rect]) => [id, { ...rect }])
+    );
+    const placedControlIds = new Set(
+        Object.keys(next.performanceLayout.controls)
+    );
+    next.performanceLayout.unplacedControlIds = [
+        ...validControlIds
+    ].filter((id) => !placedControlIds.has(id));
+
+    // Saved layout defaults are part of the same configuration document. Keep
+    // them valid when hardware controls or logical switches are added/removed,
+    // otherwise an unrelated Hardware Setup edit could make SAVE fail because
+    // a stale default still referenced a deleted ID.
+    if (next.layoutDefaults.grid) {
+        next.layoutDefaults.grid.positions = Object.fromEntries(
+            Object.entries(next.layoutDefaults.grid.positions)
+                .filter(([id]) => validIds.has(id))
+                .map(([id, position]) => [id, { ...position }])
+        );
+    }
+    if (next.layoutDefaults.freeform) {
+        const saved = next.layoutDefaults.freeform;
+        saved.switches = Object.fromEntries(
+            Object.entries(saved.switches)
+                .filter(([id, rect]) => validIds.has(id) && validRect(rect))
+                .map(([id, rect]) => [id, { ...rect }])
+        );
+        const savedUnplacedSwitches = new Set(
+            saved.unplacedSwitchIds.filter((id) => validIds.has(id))
+        );
+        for (const id of validIds) {
+            if (!saved.switches[id]) savedUnplacedSwitches.add(id);
+        }
+        saved.unplacedSwitchIds = [...savedUnplacedSwitches];
+        saved.controls = Object.fromEntries(
+            Object.entries(saved.controls)
+                .filter(([id, rect]) =>
+                    validControlIds.has(id) && validRect(rect)
+                )
+                .map(([id, rect]) => [id, { ...rect }])
+        );
+        const savedPlacedControls = new Set(Object.keys(saved.controls));
+        saved.unplacedControlIds = [...validControlIds].filter(
+            (id) => !savedPlacedControls.has(id)
+        );
+    }
+
     return next;
 }
 
+/**
+ * Validate an imported layout and merge only its geometry/defaults with the
+ * current controller. Physical wiring and switch actions are intentionally
+ * retained from the local configuration.
+ */
+export function parsePerformanceLayoutFile(
+    current: ControllerLayoutConfig,
+    parsed: unknown
+): ControllerLayoutConfig {
+    if (typeof parsed !== "object" || parsed === null
+        || Array.isArray(parsed)) {
+        throw new Error("Layout file must contain an object.");
+    }
+
+    const source = parsed as Record<string, unknown>;
+    const keys = Object.keys(source).sort();
+    const expected = [
+        "format", "layoutDefaults", "performanceLayout", "version"
+    ].sort();
+    if (keys.length !== expected.length
+        || keys.some((key, index) => key !== expected[index])
+        || source.format !== PERFORMANCE_LAYOUT_FILE_FORMAT
+        || source.version !== PERFORMANCE_LAYOUT_FILE_VERSION) {
+        throw new Error("Unsupported or malformed layout file.");
+    }
+
+    const candidate = {
+        ...structuredClone(current),
+        performanceLayout: structuredClone(source.performanceLayout),
+        layoutDefaults: structuredClone(source.layoutDefaults)
+    } as ControllerLayoutConfig;
+    const error = validateControllerLayoutConfig(candidate);
+    if (error) throw new Error(error);
+
+    return ensureControllerPerformanceLayout(candidate);
+}
+
 function parseControllerConfig(value: unknown): LoadedControllerConfig {
-    const currentValue = addCurrentHardwareDefaults(
-        migratePreviousControllerConfig(value)
-    );
-    const error = validateConfig(currentValue);
+    const currentValue = value;
+    const error = validateControllerLayoutConfig(currentValue);
     if (error) {
         return {
             config: cloneConfig(defaultControllerConfig),
@@ -628,58 +846,6 @@ function parseControllerConfig(value: unknown): LoadedControllerConfig {
     };
 }
 
-/**
- * Add fields introduced within schema 2 without discarding a user's hardware
- * layout. This narrow default lets configurations saved before adjustable
- * analog response load with the same balanced two-step behavior.
- */
-function addCurrentHardwareDefaults(value: unknown): unknown {
-    if (!isRecord(value) || value.schemaVersion !== 2
-        || !isRecord(value.hardware)
-        || !Array.isArray(value.hardware.analogControls)) {
-        return value;
-    }
-    const needsUpgrade = value.hardware.analogControls.some(
-        (control) => isRecord(control) && control.midiHysteresis === undefined
-    );
-    if (!needsUpgrade) return value;
-
-    const upgraded = structuredClone(value) as Record<string, unknown>;
-    const hardware = upgraded.hardware as Record<string, unknown>;
-    hardware.analogControls = (hardware.analogControls as unknown[]).map(
-        (control) => isRecord(control) && control.midiHysteresis === undefined
-            ? { ...control, midiHysteresis: 2 }
-            : control
-    );
-    return upgraded;
-}
-
-/**
- * Convert exactly the v0.2.0 schema into schema 2. No page, tile, or other
- * obsolete representation is recognized here.
- */
-function migratePreviousControllerConfig(value: unknown): unknown {
-    if (!isRecord(value) || value.schemaVersion !== 1 || !Array.isArray(value.switches)) {
-        return value;
-    }
-    const migrated = structuredClone(value) as Record<string, unknown>;
-    migrated.schemaVersion = 2;
-    migrated.hardware = structuredClone(defaultControllerHardwareConfig);
-    migrated.switches = value.switches.map((raw) => {
-        if (!isRecord(raw)) return raw;
-        const item = { ...raw };
-        const gpioPin = item.gpioPin;
-        delete item.gpioPin;
-        item.input = gpioPin === null
-            ? null
-            : typeof gpioPin === "number" && Number.isInteger(gpioPin)
-                ? { type: "gpio", pin: gpioPin }
-                : null;
-        return item;
-    });
-    return migrated;
-}
-
 export async function loadControllerConfig(): Promise<LoadedControllerConfig> {
     const saved = window.localStorage.getItem(CONTROLLER_STORAGE_KEY);
     if (saved) {
@@ -689,24 +855,6 @@ export async function loadControllerConfig(): Promise<LoadedControllerConfig> {
             window.localStorage.removeItem(CONTROLLER_STORAGE_KEY);
         } catch {
             window.localStorage.removeItem(CONTROLLER_STORAGE_KEY);
-        }
-    }
-
-    // Import the immediately preceding release once, then store it under the
-    // new key so subsequent loads only use the current schema.
-    const previous = window.localStorage.getItem(PREVIOUS_CONTROLLER_STORAGE_KEY);
-    if (previous) {
-        try {
-            const parsed = parseControllerConfig(JSON.parse(previous) as unknown);
-            if (!parsed.error) {
-                window.localStorage.setItem(
-                    CONTROLLER_STORAGE_KEY,
-                    JSON.stringify(parsed.config, null, 2)
-                );
-                return parsed;
-            }
-        } catch {
-            // A malformed prior value is ignored; factory config remains safe.
         }
     }
 
@@ -733,14 +881,12 @@ export function saveControllerConfig(
         CONTROLLER_STORAGE_KEY,
         JSON.stringify(parsed.config, null, 2)
     );
-    window.localStorage.removeItem(PREVIOUS_CONTROLLER_STORAGE_KEY);
     window.dispatchEvent(new Event(CONTROLLER_CONFIG_CHANGED_EVENT));
     return parsed;
 }
 
 export function clearSavedControllerConfig(): void {
     window.localStorage.removeItem(CONTROLLER_STORAGE_KEY);
-    window.localStorage.removeItem(PREVIOUS_CONTROLLER_STORAGE_KEY);
     window.dispatchEvent(new Event(CONTROLLER_CONFIG_CHANGED_EVENT));
 }
 

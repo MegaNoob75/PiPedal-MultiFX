@@ -84,6 +84,13 @@ function parseAssignments(value: unknown): MultiFXPresetAssignments | null {
     return { version: 1, banks };
 }
 
+/** Public backup/import guard for the authoritative assignment document. */
+export function validateMultiFXPresetAssignments(
+    value: unknown
+): value is MultiFXPresetAssignments {
+    return parseAssignments(value) !== null;
+}
+
 function cloneStore(value: MultiFXPresetAssignments): MultiFXPresetAssignments {
     return structuredClone(value);
 }

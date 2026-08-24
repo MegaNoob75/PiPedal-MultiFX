@@ -75,7 +75,7 @@ export interface ControllerEncoderConfig {
     reversed: boolean;
 }
 
-/** Physical portion of controller schema 2. */
+/** Physical portion of the current controller schema. */
 export interface ControllerHardwareConfig {
     version: 1;
     boardProfile: "auto" | string;
@@ -271,6 +271,16 @@ function isRecord(value: unknown): value is Record<string, unknown> {
     return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
+function hasExactKeys(
+    value: Record<string, unknown>,
+    keys: readonly string[]
+): boolean {
+    const actual = Object.keys(value).sort();
+    const expected = [...keys].sort();
+    return actual.length === expected.length
+        && actual.every((key, index) => key === expected[index]);
+}
+
 function integerIn(value: unknown, minimum: number, maximum: number): boolean {
     return typeof value === "number"
         && Number.isInteger(value)
@@ -305,7 +315,12 @@ export function validateControllerHardwareConfig(
     value: unknown,
     switchInputs: readonly (ControllerInputSource | null)[] = []
 ): string | undefined {
-    if (!isRecord(value) || value.version !== 1) {
+    if (!isRecord(value)
+        || !hasExactKeys(value, [
+            "version", "boardProfile", "templateId", "modules",
+            "analogControls", "encoders"
+        ])
+        || value.version !== 1) {
         return "Unsupported controller hardware configuration.";
     }
     if (typeof value.boardProfile !== "string" || !value.boardProfile.trim()) {
@@ -356,6 +371,14 @@ export function validateControllerHardwareConfig(
         }
         if (!CONTROLLER_MODULE_DRIVERS.some((item) => item.id === rawModule.driver)) {
             return `Module ${rawModule.label} uses an unsupported driver.`;
+        }
+
+        const moduleKeys = rawModule.driver === "hc4051"
+            || rawModule.driver === "hc4067"
+            ? ["id", "label", "driver", "signalPin", "selectPins", "enablePin"]
+            : ["id", "label", "driver", "sdaPin", "sclPin", "address"];
+        if (!hasExactKeys(rawModule, moduleKeys)) {
+            return `Module ${rawModule.label} has an invalid configuration shape.`;
         }
 
         const module = rawModule as unknown as ControllerModuleConfig;
@@ -454,6 +477,11 @@ export function validateControllerHardwareConfig(
     const midiCcs = new Map<number, string>();
     for (const rawControl of value.analogControls) {
         if (!isRecord(rawControl)
+            || !hasExactKeys(rawControl, [
+                "id", "label", "style", "input", "midiCc",
+                "calibrationMin", "calibrationMax", "inverted",
+                "filterShift", "midiHysteresis"
+            ])
             || typeof rawControl.id !== "string"
             || !rawControl.id.trim()
             || controlIds.has(rawControl.id)) return "Analog control IDs must be non-empty and unique.";
@@ -489,6 +517,10 @@ export function validateControllerHardwareConfig(
 
     for (const rawEncoder of value.encoders) {
         if (!isRecord(rawEncoder)
+            || !hasExactKeys(rawEncoder, [
+                "id", "label", "aInput", "bInput", "buttonInput",
+                "turnCc", "buttonCc", "stepsPerDetent", "reversed"
+            ])
             || typeof rawEncoder.id !== "string"
             || !rawEncoder.id.trim()
             || controlIds.has(rawEncoder.id)) return "Encoder IDs must be non-empty and unique.";

@@ -22,6 +22,8 @@ import {
     findMultiFXMidiSource,
     isActiveMultiFXMidiBinding
 } from "./MultiFXControllerMidi";
+import { loadMultiFXTheme } from "./MultiFXTheme";
+import { loadMultiFXUIBehaviorSettings } from "./MultiFXUIBehavior";
 
 interface MultiFXParameterFeedbackProps {
     controllerConfig: ControllerLayoutConfig;
@@ -35,7 +37,6 @@ interface ParameterFeedbackValue {
     range: number;
 }
 
-const FEEDBACK_HIDE_DELAY_MS = 2600;
 
 /**
  * A compact structural signature prevents ordinary live value changes from
@@ -63,7 +64,6 @@ export default function MultiFXParameterFeedback({
     controllerConfig
 }: MultiFXParameterFeedbackProps) {
     const model = PiPedalModelFactory.getInstance();
-    const colors = controllerConfig.colors;
     const [feedback, setFeedback] =
         useState<ParameterFeedbackValue | null>(null);
     const [bindingSignature, setBindingSignature] = useState(
@@ -121,6 +121,10 @@ export default function MultiFXParameterFeedback({
             handles.push(model.addControlValueChangeListener(
                 instanceId,
                 (symbol, value) => {
+                    if (!loadMultiFXUIBehaviorSettings()
+                        .parameterFeedbackEnabled) {
+                        return;
+                    }
                     const activeBinding = bindings.get(symbol);
                     if (!activeBinding) return;
 
@@ -189,7 +193,7 @@ export default function MultiFXParameterFeedback({
                     hideTimerRef.current = window.setTimeout(() => {
                         hideTimerRef.current = null;
                         setFeedback(null);
-                    }, FEEDBACK_HIDE_DELAY_MS);
+                    }, loadMultiFXTheme().appearance.motion.feedbackDurationMs);
                 }
             ));
         }
@@ -223,10 +227,11 @@ export default function MultiFXParameterFeedback({
                 padding: "11px 14px 10px",
                 boxSizing: "border-box",
                 borderRadius: 12,
-                border: `2px solid ${colors.activeSwitchBorder}`,
-                background: colors.headerBackground,
-                color: colors.pageText,
-                boxShadow: "0 12px 34px rgba(0,0,0,.62)",
+                border: "2px solid transparent",
+                background:
+                    "var(--mfx-surface-toast-bg) padding-box, var(--mfx-surface-toast-border) border-box",
+                color: "var(--mfx-surface-toast-text)",
+                boxShadow: "var(--mfx-surface-toast-shadow)",
                 pointerEvents: "none"
             }}
         >
@@ -234,27 +239,27 @@ export default function MultiFXParameterFeedback({
                 <div style={{ minWidth: 0 }}>
                     <div style={{
                         ...sourceStyle,
-                        color: colors.bankTitleText
+                        color: "var(--mfx-surface-toast-label)"
                     }}>
                         {feedback.source}
                     </div>
                     <div style={{
                         ...parameterStyle,
-                        color: colors.activePresetNameText
+                        color: "var(--mfx-surface-toast-accent)"
                     }}>
                         {feedback.effect} · {feedback.parameter}
                     </div>
                 </div>
                 <div style={{
                     ...valueStyle,
-                    color: colors.activePresetNameText
+                    color: "var(--mfx-surface-toast-accent)"
                 }}>
                     {feedback.value}
                 </div>
             </div>
             <div style={{
                 ...progressTrackStyle,
-                background: colors.switchBackground
+                background: "var(--mfx-role-utility-normal-bg)"
             }}>
                 <div style={{
                     width: `${Math.round(
@@ -262,7 +267,7 @@ export default function MultiFXParameterFeedback({
                     )}%`,
                     height: "100%",
                     borderRadius: 999,
-                    background: colors.activeSwitchBorder,
+                    background: "var(--mfx-surface-toast-accent)",
                     transition: "width 70ms linear"
                 }} />
             </div>

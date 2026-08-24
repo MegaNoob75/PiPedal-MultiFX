@@ -1,44 +1,37 @@
 import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import { MFX_COLORS } from "./MultiFXTheme";
+import {
+    MFX_COLORS,
+    MFX_SURFACES,
+    loadMultiFXTheme,
+    multiFXSurfaceBackground,
+    saveMultiFXTheme
+} from "./MultiFXTheme";
 import {
     clearPresetAssignmentCache,
     replacePresetAssignments,
     resetPresetAssignments
 } from "./MultiFXPresetAssignments";
+import { CONTROLLER_STORAGE_KEY } from "./ControllerConfig";
+import {
+    MULTIFX_BACKUP_FORMAT,
+    MULTIFX_BACKUP_LOCAL_STORAGE_KEYS,
+    MULTIFX_BACKUP_VERSION,
+    MultiFXBackupFile,
+    MultiFXBackupSettings,
+    validateMultiFXBackup
+} from "./MultiFXBackup";
 import {
     readMultiFXRuntimeState,
     updateMultiFXRuntimeState
 } from "./MultiFXRuntimeSync";
+import {
+    loadMultiFXUIBehaviorSettings,
+    MULTIFX_UI_BEHAVIOR_STORAGE_KEY,
+    MultiFXUIBehaviorSettings,
+    saveMultiFXUIBehaviorSettings
+} from "./MultiFXUIBehavior";
 
-const BACKUP_FORMAT = "pipedal-multifx-ui-backup";
-const BACKUP_VERSION = 4;
-
-const THEME_STORAGE_KEY = "pipedal-multifx-theme-v1";
-const CUSTOM_THEMES_STORAGE_KEY =
-    "pipedal-multifx-custom-themes-v1";
-const CONTROLLER_STORAGE_KEY =
-    "pipedal-multifx-controller-config-v2";
-
-const LOCAL_STORAGE_KEYS = [
-    THEME_STORAGE_KEY,
-    CUSTOM_THEMES_STORAGE_KEY
-] as const;
-
-type BackupSettings = Record<string, string | null>;
-
-type SharedBackupState = {
-    controllerConfig?: unknown | null;
-    presetAssignments?: unknown;
-};
-
-interface MultiFXBackupFile {
-    format: typeof BACKUP_FORMAT;
-    version: number;
-    createdAt: string;
-    settings: BackupSettings;
-    sharedState: SharedBackupState;
-}
 
 function readStoredJson(key: string): unknown | undefined {
     const raw = window.localStorage.getItem(key);
@@ -88,6 +81,13 @@ export default function MultiFXUISettings() {
         useState(false);
     const messageTimerRef = useRef<number | null>(null);
     const reloadTimerRef = useRef<number | null>(null);
+    const [uiBehavior, setUIBehavior] = useState<MultiFXUIBehaviorSettings>(
+        () => loadMultiFXUIBehaviorSettings()
+    );
+    const [parameterFeedbackDurationMs, setParameterFeedbackDurationMs] =
+        useState(() =>
+            loadMultiFXTheme().appearance.motion.feedbackDurationMs
+        );
 
     useEffect(() => {
         return () => {
@@ -103,7 +103,8 @@ export default function MultiFXUISettings() {
 
     const showMessage = (
         value: string,
-        durationMs: number = 2200
+        durationMs: number = loadMultiFXUIBehaviorSettings()
+            .statusToastDurationMs
     ) => {
         setMessage(value);
 
@@ -115,6 +116,27 @@ export default function MultiFXUISettings() {
             messageTimerRef.current = null;
             setMessage("");
         }, durationMs);
+    };
+
+    const saveInteractionSettings = () => {
+        const theme = loadMultiFXTheme();
+        const updatedTheme = {
+            ...theme,
+            appearance: {
+                ...theme.appearance,
+                motion: {
+                    ...theme.appearance.motion,
+                    feedbackDurationMs: parameterFeedbackDurationMs
+                }
+            }
+        };
+
+        if (!saveMultiFXUIBehaviorSettings(uiBehavior)
+            || !saveMultiFXTheme(updatedTheme)) {
+            showMessage("One or more interaction settings are invalid.");
+            return;
+        }
+        showMessage("MultiFX interaction settings saved.");
     };
 
     const scheduleReload = () => {
@@ -129,9 +151,9 @@ export default function MultiFXUISettings() {
 
     const exportBackup = async () => {
         try {
-            const localSettings: BackupSettings = {};
+            const localSettings: MultiFXBackupSettings = {};
 
-            for (const key of LOCAL_STORAGE_KEYS) {
+            for (const key of MULTIFX_BACKUP_LOCAL_STORAGE_KEYS) {
                 localSettings[key] =
                     window.localStorage.getItem(key);
             }
@@ -140,6 +162,8 @@ export default function MultiFXUISettings() {
                 readStoredJson(CONTROLLER_STORAGE_KEY)
                     ?? null;
             let presetAssignments: unknown = undefined;
+            let uiSettings: unknown =
+                loadMultiFXUIBehaviorSettings();
 
             // Runtime state is authoritative for shared Performance/controller
             // state. A backup is explicit recovery data, so do not invent or
@@ -156,6 +180,10 @@ export default function MultiFXUISettings() {
                     presetAssignments =
                         runtime.presetAssignments;
                 }
+
+                if (runtime.uiSettings !== undefined) {
+                    uiSettings = runtime.uiSettings;
+                }
             } catch (error) {
                 throw new Error(
                     `The MultiFX runtime service is unavailable: ${String(error)}`
@@ -163,13 +191,14 @@ export default function MultiFXUISettings() {
             }
 
             const backup: MultiFXBackupFile = {
-                format: BACKUP_FORMAT,
-                version: BACKUP_VERSION,
+                format: MULTIFX_BACKUP_FORMAT,
+                version: MULTIFX_BACKUP_VERSION,
                 createdAt: new Date().toISOString(),
                 settings: localSettings,
                 sharedState: {
                     controllerConfig,
-                    presetAssignments
+                    presetAssignments,
+                    uiSettings
                 }
             };
 
@@ -191,14 +220,14 @@ export default function MultiFXUISettings() {
             const text = await file.text();
             const value: unknown = JSON.parse(text);
 
-            if (!isValidBackup(value)) {
+            if (!validateMultiFXBackup(value)) {
                 showMessage(
                     "That file is not a valid MultiFX settings backup."
                 );
                 return;
             }
 
-            for (const key of LOCAL_STORAGE_KEYS) {
+            for (const key of MULTIFX_BACKUP_LOCAL_STORAGE_KEYS) {
                 const storedValue = value.settings[key];
 
                 if (
@@ -220,6 +249,7 @@ export default function MultiFXUISettings() {
             const patch: {
                 controllerConfig?: unknown | null;
                 presetAssignments?: unknown;
+                uiSettings?: unknown | null;
             } = {};
 
             if (
@@ -245,6 +275,18 @@ export default function MultiFXUISettings() {
             ) {
                 await replacePresetAssignments(
                     sharedState.presetAssignments
+                );
+            }
+
+
+            if (Object.prototype.hasOwnProperty.call(
+                sharedState,
+                "uiSettings"
+            )) {
+                patch.uiSettings = sharedState.uiSettings;
+                writeStoredJson(
+                    MULTIFX_UI_BEHAVIOR_STORAGE_KEY,
+                    sharedState.uiSettings
                 );
             }
 
@@ -282,18 +324,23 @@ export default function MultiFXUISettings() {
 
     const resetMultiFXSettings = async () => {
         try {
-            for (const key of LOCAL_STORAGE_KEYS) {
+            for (const key of MULTIFX_BACKUP_LOCAL_STORAGE_KEYS) {
                 window.localStorage.removeItem(key);
             }
 
             window.localStorage.removeItem(
                 CONTROLLER_STORAGE_KEY
             );
+            window.localStorage.removeItem(
+                MULTIFX_UI_BEHAVIOR_STORAGE_KEY
+            );
 
             await resetPresetAssignments();
             clearPresetAssignmentCache();
             await updateMultiFXRuntimeState({
-                controllerConfig: null
+                controllerConfig: null,
+                theme: null,
+                uiSettings: null
             });
             window.dispatchEvent(
                 new Event(
@@ -389,6 +436,114 @@ export default function MultiFXUISettings() {
 
                 <section style={sectionStyle}>
                     <div style={sectionTitleStyle}>
+                        PERFORMANCE INTERACTION
+                    </div>
+
+                    <div style={sectionDescriptionStyle}>
+                        Control temporary Performance pop-outs and MultiFX
+                        feedback timing. These choices are shared by the PC
+                        and pedalboard display. Existing theme and controller
+                        settings stay in their current editors.
+                    </div>
+
+                    <div style={settingsGridStyle}>
+                        <SettingsToggle
+                            label="Physical control pop-out"
+                            description="Enlarge a placed pot, slider, expression pedal or encoder when its bound value moves."
+                            checked={uiBehavior.physicalControlPopout}
+                            onChange={(physicalControlPopout) =>
+                                setUIBehavior((current) => ({
+                                    ...current,
+                                    physicalControlPopout
+                                }))
+                            }
+                        />
+                        <SettingsToggle
+                            label="Touch control pop-out"
+                            description="Open the same enlarged display when a placed control is tapped."
+                            checked={uiBehavior.touchControlPopout}
+                            onChange={(touchControlPopout) =>
+                                setUIBehavior((current) => ({
+                                    ...current,
+                                    touchControlPopout
+                                }))
+                            }
+                        />
+                        <SettingsToggle
+                            label="Parameter feedback popup"
+                            description="Show the parameter name and value overlay for bound controller changes."
+                            checked={uiBehavior.parameterFeedbackEnabled}
+                            onChange={(parameterFeedbackEnabled) =>
+                                setUIBehavior((current) => ({
+                                    ...current,
+                                    parameterFeedbackEnabled
+                                }))
+                            }
+                        />
+                        <SettingsNumber
+                            label="Control pop-out time"
+                            suffix="ms"
+                            value={uiBehavior.controlPopoutDurationMs}
+                            minimum={500}
+                            maximum={10000}
+                            step={100}
+                            onChange={(controlPopoutDurationMs) =>
+                                setUIBehavior((current) => ({
+                                    ...current,
+                                    controlPopoutDurationMs
+                                }))
+                            }
+                        />
+                        <SettingsNumber
+                            label="Control pop-out size"
+                            suffix="×"
+                            value={uiBehavior.controlPopoutScale}
+                            minimum={1.2}
+                            maximum={2.5}
+                            step={0.05}
+                            onChange={(controlPopoutScale) =>
+                                setUIBehavior((current) => ({
+                                    ...current,
+                                    controlPopoutScale
+                                }))
+                            }
+                        />
+                        <SettingsNumber
+                            label="Parameter popup time"
+                            suffix="ms"
+                            value={parameterFeedbackDurationMs}
+                            minimum={500}
+                            maximum={10000}
+                            step={100}
+                            onChange={setParameterFeedbackDurationMs}
+                        />
+                        <SettingsNumber
+                            label="Status / toast time"
+                            suffix="ms"
+                            value={uiBehavior.statusToastDurationMs}
+                            minimum={500}
+                            maximum={10000}
+                            step={100}
+                            onChange={(statusToastDurationMs) =>
+                                setUIBehavior((current) => ({
+                                    ...current,
+                                    statusToastDurationMs
+                                }))
+                            }
+                        />
+                    </div>
+
+                    <button
+                        type="button"
+                        onClick={saveInteractionSettings}
+                        style={primaryButtonStyle}
+                    >
+                        SAVE INTERACTION SETTINGS
+                    </button>
+                </section>
+
+                <section style={sectionStyle}>
+                    <div style={sectionTitleStyle}>
                         SYNC BEHAVIOR
                     </div>
 
@@ -442,7 +597,11 @@ export default function MultiFXUISettings() {
                         />
                         <SyncRow
                             label="Theme"
-                            value="LOCAL"
+                            value="SHARED"
+                        />
+                        <SyncRow
+                            label="Interaction / Timing"
+                            value="SHARED"
                         />
                     </div>
                 </section>
@@ -511,7 +670,7 @@ export default function MultiFXUISettings() {
                 </section>
 
                 <div style={versionStyle}>
-                    BACKUP FORMAT v{BACKUP_VERSION}
+                    BACKUP FORMAT v{MULTIFX_BACKUP_VERSION}
                 </div>
             </div>
         </div>
@@ -534,7 +693,7 @@ function SyncRow({
                     color:
                         value === "SHARED"
                             ? MFX_COLORS.cyan
-                            : MFX_COLORS.purpleLight
+                            : MFX_COLORS.purple
                 }}
             >
                 {value}
@@ -543,52 +702,72 @@ function SyncRow({
     );
 }
 
-function isRecord(
-    value: unknown
-): value is Record<string, unknown> {
+function SettingsToggle({
+    label,
+    description,
+    checked,
+    onChange
+}: {
+    label: string;
+    description: string;
+    checked: boolean;
+    onChange: (checked: boolean) => void;
+}) {
     return (
-        typeof value === "object"
-        && value !== null
-        && !Array.isArray(value)
+        <label style={settingCardStyle}>
+            <span style={settingTextStyle}>
+                <span style={settingLabelStyle}>{label}</span>
+                <span style={settingDescriptionStyle}>{description}</span>
+            </span>
+            <input
+                type="checkbox"
+                checked={checked}
+                onChange={(event) => onChange(event.currentTarget.checked)}
+                style={checkboxStyle}
+            />
+        </label>
     );
 }
 
-function isValidBackup(
-    value: unknown
-): value is MultiFXBackupFile {
-    if (!isRecord(value)) {
-        return false;
-    }
-
-    if (
-        value.format !== BACKUP_FORMAT
-        || value.version !== BACKUP_VERSION
-        || !isRecord(value.settings)
-    ) {
-        return false;
-    }
-
-    for (const [key, storedValue] of Object.entries(
-        value.settings
-    )) {
-        if (
-            typeof key !== "string"
-            || (
-                storedValue !== null
-                && typeof storedValue !== "string"
-            )
-        ) {
-            return false;
-        }
-    }
-
-    if (
-        !isRecord(value.sharedState)
-    ) {
-        return false;
-    }
-
-    return true;
+function SettingsNumber({
+    label,
+    suffix,
+    value,
+    minimum,
+    maximum,
+    step,
+    onChange
+}: {
+    label: string;
+    suffix: string;
+    value: number;
+    minimum: number;
+    maximum: number;
+    step: number;
+    onChange: (value: number) => void;
+}) {
+    return (
+        <label style={settingCardStyle}>
+            <span style={settingLabelStyle}>{label}</span>
+            <span style={numberInputWrapStyle}>
+                <input
+                    type="number"
+                    value={value}
+                    min={minimum}
+                    max={maximum}
+                    step={step}
+                    onChange={(event) => {
+                        const next = Number(event.currentTarget.value);
+                        if (Number.isFinite(next)) {
+                            onChange(Math.max(minimum, Math.min(maximum, next)));
+                        }
+                    }}
+                    style={numberInputStyle}
+                />
+                <span style={numberSuffixStyle}>{suffix}</span>
+            </span>
+        </label>
+    );
 }
 
 const screenStyle: React.CSSProperties = {
@@ -597,8 +776,8 @@ const screenStyle: React.CSSProperties = {
     display: "flex",
     flexDirection: "column",
     overflow: "hidden",
-    background: MFX_COLORS.background,
-    color: MFX_COLORS.text
+    background: MFX_SURFACES.page.background,
+    color: MFX_SURFACES.page.text
 };
 
 const headerStyle: React.CSSProperties = {
@@ -609,18 +788,20 @@ const headerStyle: React.CSSProperties = {
         "calc(6px * var(--mfx-ui-scale, 1)) calc(70px * var(--mfx-ui-scale, 1)) calc(6px * var(--mfx-ui-scale, 1)) calc(78px * var(--mfx-ui-scale, 1))",
     boxSizing: "border-box",
     borderBottom: `1px solid ${MFX_COLORS.border}`,
-    background: MFX_COLORS.panel
+    background: MFX_SURFACES.header.background,
+    color: MFX_SURFACES.header.text,
+    boxShadow: MFX_SURFACES.header.shadow
 };
 
 const titleStyle: React.CSSProperties = {
-    color: MFX_COLORS.purpleLight,
+    color: MFX_SURFACES.header.accent,
     fontWeight: 900,
     letterSpacing: "0.05em"
 };
 
 const subtitleStyle: React.CSSProperties = {
     marginTop: 2,
-    color: MFX_COLORS.muted,
+    color: MFX_SURFACES.header.label,
     fontSize: "0.72rem"
 };
 
@@ -640,13 +821,15 @@ const sectionStyle: React.CSSProperties = {
     minWidth: 0,
     padding: "calc(14px * var(--mfx-ui-scale, 1))",
     borderRadius: 14,
-    border: `1px solid ${MFX_COLORS.border}`,
-    background: MFX_COLORS.panel,
+    border: "1px solid transparent",
+    background: multiFXSurfaceBackground("panel"),
+    color: MFX_SURFACES.panel.text,
+    boxShadow: MFX_SURFACES.panel.shadow,
     boxSizing: "border-box"
 };
 
 const sectionTitleStyle: React.CSSProperties = {
-    color: MFX_COLORS.purpleLight,
+    color: MFX_SURFACES.panel.accent,
     fontSize: "0.94rem",
     fontWeight: 900,
     letterSpacing: "0.05em"
@@ -654,7 +837,7 @@ const sectionTitleStyle: React.CSSProperties = {
 
 const sectionDescriptionStyle: React.CSSProperties = {
     marginTop: 7,
-    color: MFX_COLORS.muted,
+    color: MFX_SURFACES.panel.label,
     fontSize: "0.75rem",
     lineHeight: 1.4
 };
@@ -705,6 +888,82 @@ const buttonSubtextStyle: React.CSSProperties = {
     fontSize: "0.66rem",
     fontWeight: 600,
     lineHeight: 1.25
+};
+
+const settingsGridStyle: React.CSSProperties = {
+    display: "grid",
+    gridTemplateColumns: "repeat(2, minmax(0, 1fr))",
+    gap: 8,
+    margin: "calc(12px * var(--mfx-ui-scale, 1)) 0"
+};
+
+const settingCardStyle: React.CSSProperties = {
+    minWidth: 0,
+    minHeight: "var(--mfx-touch-height, 46px)",
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: 10,
+    padding: "8px 10px",
+    boxSizing: "border-box",
+    border: `1px solid ${MFX_COLORS.border}`,
+    borderRadius: 9,
+    background: MFX_COLORS.background,
+    color: MFX_COLORS.text
+};
+
+const settingTextStyle: React.CSSProperties = {
+    minWidth: 0,
+    display: "flex",
+    flexDirection: "column",
+    gap: 3
+};
+
+const settingLabelStyle: React.CSSProperties = {
+    color: MFX_COLORS.text,
+    fontSize: ".76rem",
+    fontWeight: 900
+};
+
+const settingDescriptionStyle: React.CSSProperties = {
+    color: MFX_COLORS.muted,
+    fontSize: ".65rem",
+    lineHeight: 1.25
+};
+
+const checkboxStyle: React.CSSProperties = {
+    flex: "0 0 auto",
+    width: 24,
+    height: 24,
+    accentColor: MFX_COLORS.cyan,
+    cursor: "pointer"
+};
+
+const numberInputWrapStyle: React.CSSProperties = {
+    flex: "0 0 auto",
+    display: "flex",
+    alignItems: "center",
+    gap: 5
+};
+
+const numberInputStyle: React.CSSProperties = {
+    width: 82,
+    minHeight: 34,
+    boxSizing: "border-box",
+    border: `1px solid ${MFX_COLORS.border}`,
+    borderRadius: 7,
+    background: MFX_COLORS.panelAlt,
+    color: MFX_COLORS.text,
+    font: "inherit",
+    fontWeight: 900,
+    textAlign: "right"
+};
+
+const numberSuffixStyle: React.CSSProperties = {
+    minWidth: 18,
+    color: MFX_COLORS.muted,
+    fontSize: ".7rem",
+    fontWeight: 900
 };
 
 const syncGridStyle: React.CSSProperties = {
@@ -772,11 +1031,11 @@ const toastStyle: React.CSSProperties = {
     padding:
         "calc(8px * var(--mfx-ui-scale, 1)) calc(14px * var(--mfx-ui-scale, 1))",
     borderRadius: 10,
-    border: `1px solid ${MFX_COLORS.cyan}`,
-    background: MFX_COLORS.panelAlt,
-    color: MFX_COLORS.cyanText,
+    border: "1px solid transparent",
+    background: multiFXSurfaceBackground("toast"),
+    color: MFX_SURFACES.toast.text,
     fontWeight: 900,
     textAlign: "center",
-    boxShadow: "0 8px 22px rgba(0,0,0,0.68)",
+    boxShadow: MFX_SURFACES.toast.shadow,
     pointerEvents: "none"
 };

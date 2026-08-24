@@ -33,37 +33,26 @@ class ControllerHardwareConfigTests(unittest.TestCase):
     def test_factory_config_validates(self):
         """The checked-in reference template must pass bridge validation."""
         validated = bridge._validate_controller_config(self.factory_config())
-        self.assertEqual(validated["schemaVersion"], 2)
+        self.assertEqual(validated["schemaVersion"], 3)
         self.assertEqual(len(validated["hardware"]["analogControls"]), 4)
         self.assertEqual(
             validated["hardware"]["analogControls"][0]["midiHysteresis"],
             2,
         )
 
-    def test_existing_schema_2_gets_balanced_analog_response(self):
-        """Configs saved before v4 retain the two-step noise behavior."""
+    def test_incomplete_current_schema_is_rejected(self):
+        """The clean schema break must not silently invent missing fields."""
         config = self.factory_config()
         for control in config["hardware"]["analogControls"]:
             control.pop("midiHysteresis")
-        validated = bridge._validate_controller_config(config)
-        self.assertTrue(all(
-            control["midiHysteresis"] == 2
-            for control in validated["hardware"]["analogControls"]
-        ))
+        with self.assertRaisesRegex(ValueError, "analog response"):
+            bridge._validate_controller_config(config)
 
-    def test_v02_gpio_switch_migrates_once(self):
-        """Only the immediately previous gpioPin field becomes a source."""
-        old = {
-            "schemaVersion": 1,
-            "switches": [{"hardwareSwitch": 1, "gpioPin": 6}],
-        }
-        migrated = bridge._migrate_controller_config(old)
-        self.assertEqual(migrated["schemaVersion"], 2)
-        self.assertEqual(
-            migrated["switches"][0]["input"],
-            {"type": "gpio", "pin": 6},
-        )
-        self.assertIn("hardware", migrated)
+    def test_old_controller_schema_is_rejected(self):
+        """Unreleased legacy configs cannot be partially restored."""
+        old = {"schemaVersion": 2, "switches": []}
+        with self.assertRaisesRegex(ValueError, "schemaVersion 3"):
+            bridge._validate_controller_config(old)
 
     def test_duplicate_gpio_is_rejected(self):
         """A pot cannot silently share a pin already owned by a switch."""
@@ -197,6 +186,138 @@ class ControllerHardwareConfigTests(unittest.TestCase):
         finally:
             bridge.state.clear()
             bridge.state.update(original_state)
+
+    def test_theme_update_is_validated_persisted_and_returned(self):
+        """One saved theme becomes the durable source shared by all displays."""
+        original_state = bridge._deepcopy(bridge.state)
+        theme = {
+            "version": 3,
+            "name": "Stage Test",
+            "colors": {"accent": "#33ddff"},
+            "appearance": {"controls": {"switchStyle": "footswitch"}},
+        }
+        try:
+            with mock.patch.object(bridge, "_save_persistent_locked") as save:
+                result = bridge.update_state({"theme": theme})
+            self.assertEqual(result["theme"], theme)
+            self.assertEqual(bridge._persistent_payload_locked()["theme"], theme)
+            save.assert_called_once_with()
+
+            # The bridge must own a copy so an HTTP request object cannot alter
+            # persisted state after update_state returns.
+            theme["name"] = "Mutated request"
+            self.assertEqual(bridge.state["theme"]["name"], "Stage Test")
+        finally:
+            bridge.state.clear()
+            bridge.state.update(original_state)
+
+    def test_invalid_theme_update_does_not_replace_saved_theme(self):
+        """Malformed browser data must not desynchronize the saved theme."""
+        original_state = bridge._deepcopy(bridge.state)
+        bridge.state["theme"] = {
+            "version": 3,
+            "name": "Known Good",
+            "colors": {},
+            "appearance": {},
+        }
+        try:
+            with mock.patch.object(bridge, "_save_persistent_locked") as save:
+                with self.assertRaisesRegex(ValueError, "version 3"):
+                    bridge.update_state({
+                        "theme": {
+                            "version": 2,
+                            "name": "Old",
+                            "colors": {},
+                            "appearance": {},
+                        }
+                    })
+            self.assertEqual(bridge.state["theme"]["name"], "Known Good")
+            save.assert_not_called()
+        finally:
+            bridge.state.clear()
+            bridge.state.update(original_state)
+
+    def test_ui_interaction_settings_are_strict_and_persistent(self):
+        """Shared timing/preferences reject partial records before saving."""
+        original_state = bridge._deepcopy(bridge.state)
+        settings = {
+            "version": 1,
+            "physicalControlPopout": True,
+            "touchControlPopout": True,
+            "controlPopoutDurationMs": 2200,
+            "controlPopoutScale": 1.65,
+            "parameterFeedbackEnabled": True,
+            "statusToastDurationMs": 1800,
+        }
+        try:
+            with mock.patch.object(bridge, "_save_persistent_locked") as save:
+                result = bridge.update_state({"uiSettings": settings})
+            self.assertEqual(result["uiSettings"], settings)
+            save.assert_called_once_with()
+            with self.assertRaisesRegex(ValueError, "complete version 1"):
+                bridge._validate_ui_settings({"version": 1})
+        finally:
+            bridge.state.clear()
+            bridge.state.update(original_state)
+
+    def test_i2c_module_scan_request_and_results_are_correlated(self):
+        """Discovery sends selected pins and accepts only its matching token."""
+        original_state = bridge._deepcopy(bridge.state)
+        original_token = bridge.next_module_scan_token
+        sent = []
+        try:
+            bridge.state["controllerHardware"] = {
+                "connected": True,
+                "protocolVersion": bridge.HARDWARE_PROTOCOL_VERSION,
+                "boardId": "test",
+                "boardName": "Test controller",
+                "drivers": [],
+                "moduleScanSupported": True,
+                "limits": {"modules": 4, "analogControls": 16, "encoders": 4},
+                "inputs": [
+                    {
+                        "type": "gpio", "channel": 9,
+                        "outputCapable": True, "reserved": False,
+                    },
+                    {
+                        "type": "gpio", "channel": 10,
+                        "outputCapable": True, "reserved": False,
+                    },
+                ],
+                "apply": {"status": "idle", "message": "", "token": None},
+            }
+            with mock.patch.object(
+                bridge,
+                "send_controller_sysex",
+                side_effect=lambda message, _label: sent.append(message) or True,
+            ):
+                result = bridge.update_state({
+                    "controllerModuleScanStart": {"sdaPin": 9, "sclPin": 10}
+                })
+            token = result["controllerModuleScan"]["token"]
+            self.assertEqual(sent[0][-3:], [token, 9, 10])
+
+            found = list(bridge.MFX_SYSEX_PREFIX) + [
+                bridge.HARDWARE_PROTOCOL_VERSION,
+                bridge.CMD_MODULE_SCAN_RESULT,
+                token, 0, 0x20, 1,
+            ]
+            complete = list(bridge.MFX_SYSEX_PREFIX) + [
+                bridge.HARDWARE_PROTOCOL_VERSION,
+                bridge.CMD_MODULE_SCAN_RESULT,
+                token, 1, 0, 0,
+            ]
+            self.assertTrue(bridge._handle_module_scan_result(found))
+            self.assertTrue(bridge._handle_module_scan_result(complete))
+            scan = bridge.state["controllerModuleScan"]
+            self.assertEqual(scan["status"], "complete")
+            self.assertEqual(scan["devices"], [{
+                "address": 0x20, "family": "mcp23017"
+            }])
+        finally:
+            bridge.state.clear()
+            bridge.state.update(original_state)
+            bridge.next_module_scan_token = original_token
 
 
 if __name__ == "__main__":

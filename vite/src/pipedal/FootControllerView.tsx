@@ -42,12 +42,18 @@ import {
     updateMultiFXRuntimeState
 } from "./MultiFXRuntimeSync";
 import MultiFXParameterFeedback from "./MultiFXParameterFeedback";
+import MultiFXPerformanceControls from "./MultiFXPerformanceControls";
+import MultiFXFootswitchGraphic, {
+    MultiFXArcadeButtonGraphic
+} from "./MultiFXFootswitchGraphic";
 import {
     prepareBasePresetForWrite,
     restoreChainBypassForSafeWrite
 } from "./MultiFXPresetSafety";
+import { loadMultiFXUIBehaviorSettings } from "./MultiFXUIBehavior";
 
 type MarqueeTextProps = {
+    className?: string;
     text: string;
     color: string;
     fontSize: string;
@@ -60,6 +66,7 @@ type MarqueeTextProps = {
 };
 
 function MarqueeText({
+    className,
     text,
     color,
     fontSize,
@@ -125,8 +132,9 @@ function MarqueeText({
     return (
         <span
             ref={viewportRef}
+            className={className}
             style={{
-                display: "block",
+                display: "flex",
                 width: "100%",
                 minWidth: 0,
                 overflow: "hidden",
@@ -136,7 +144,11 @@ function MarqueeText({
                 fontWeight,
                 lineHeight: 1.05,
                 marginTop: `${marginTop}px`,
-                textAlign: centered ? "center" : "left"
+                justifyContent: overflowDistance > 0
+                    ? "flex-start"
+                    : centered
+                        ? "center"
+                        : "flex-start"
             }}
         >
             <span
@@ -172,6 +184,7 @@ const MFX_SYSTEM_VALUE_TEXT_SIZE =
     "clamp(9px, min(12px, 20cqh), 12px)";
 
 type ResponsiveMarqueeTextProps = {
+    className?: string;
     text: string;
     color: string;
     fontSize: string;
@@ -188,6 +201,7 @@ type ResponsiveMarqueeTextProps = {
 };
 
 function ResponsiveMarqueeText({
+    className,
     text,
     color,
     fontSize,
@@ -343,6 +357,7 @@ function ResponsiveMarqueeText({
     return (
         <span
             ref={viewportRef}
+            className={className}
             style={{
                 display: "flex",
                 width: "100%",
@@ -386,6 +401,7 @@ type SwitchVisualState = {
     border: string;
     labelText: string;
     valueText: string;
+    indicator: string;
     shadow: string;
 };
 
@@ -485,6 +501,10 @@ export default function FootControllerView({
     const menuItemRefs = useRef<Array<HTMLButtonElement | null>>([]);
     const [selectedPresetSlot, setSelectedPresetSlot] = useState(0);
     const [presetAssignmentsBySlot, setPresetAssignmentsBySlot] = useState<Array<number | null>>([]);
+    // Momentary press state is separate from persistent states such as the
+    // active preset and Chain Bypass. It lets both touchscreen presses and
+    // physical controller key events illuminate navigation/utility switches.
+    const [pressedSwitchId, setPressedSwitchId] = useState<string | null>(null);
     const [presetAssignPickerOpen, setPresetAssignPickerOpen] = useState(false);
     const [presetAssignTargetIndex, setPresetAssignTargetIndex] = useState<number | null>(null);
     const [statusToast, setStatusToast] = useState<string | null>(null);
@@ -571,7 +591,7 @@ export default function FootControllerView({
         statusToastTimerRef.current = window.setTimeout(() => {
             statusToastTimerRef.current = null;
             setStatusToast(null);
-        }, 1800);
+        }, loadMultiFXUIBehaviorSettings().statusToastDurationMs);
     };
 
     const [presetOptionsOpen, setPresetOptionsOpen] = useState(false);
@@ -653,7 +673,9 @@ export default function FootControllerView({
             x: event.clientX,
             y: event.clientY
         };
-        try { event.currentTarget.setPointerCapture(event.pointerId); } catch { }
+        try { event.currentTarget.setPointerCapture(event.pointerId); } catch {
+            // Pointer capture is optional on older touch browsers.
+        }
         snapshotLongPressTimerRef.current = window.setTimeout(() => {
             snapshotLongPressTimerRef.current = null;
             snapshotSuppressNextClickRef.current = true;
@@ -678,7 +700,9 @@ export default function FootControllerView({
             if (event.currentTarget.hasPointerCapture(event.pointerId)) {
                 event.currentTarget.releasePointerCapture(event.pointerId);
             }
-        } catch { }
+        } catch {
+            // Pointer capture may already have been released.
+        }
 
         if (optionsWereOpenedByThisHold) {
             // The overlay was created while this pointer was still held down.
@@ -885,7 +909,9 @@ export default function FootControllerView({
             dragging: false
         };
         presetDragRef.current = candidate;
-        try { event.currentTarget.setPointerCapture(event.pointerId); } catch { }
+        try { event.currentTarget.setPointerCapture(event.pointerId); } catch {
+            // Pointer capture is optional on older touch browsers.
+        }
         startPresetLongPress(slotIndex);
     };
 
@@ -930,7 +956,9 @@ export default function FootControllerView({
             if (event.currentTarget.hasPointerCapture(event.pointerId)) {
                 event.currentTarget.releasePointerCapture(event.pointerId);
             }
-        } catch { }
+        } catch {
+            // Pointer capture may already have been released.
+        }
         presetDragRef.current = null;
         setPresetDrag(null);
         setPresetDropIndex(null);
@@ -1430,6 +1458,7 @@ export default function FootControllerView({
                     (s) => s.hardwareSwitch === physicalSwitchNumber
                 );
                 if (!physicalSwitchConfig) return;
+                setPressedSwitchId(physicalSwitchConfig.id);
                 const longPressAction = physicalSwitchConfig.longPressAction
                     ?? { type: "none", text: "Unused" } as ControllerSwitchAction;
                 if (longPressAction.type === "none") {
@@ -1497,6 +1526,14 @@ export default function FootControllerView({
             if (physicalSwitchNumber <= 0) return;
             event.preventDefault();
             event.stopPropagation();
+            const releasedSwitchConfig = controllerConfig.switches.find(
+                (item) => item.hardwareSwitch === physicalSwitchNumber
+            );
+            if (releasedSwitchConfig) {
+                setPressedSwitchId((current) => current === releasedSwitchConfig.id
+                    ? null
+                    : current);
+            }
             const wasPending = hardwarePressPendingRef.current.delete(physicalSwitchNumber);
             const longActionFired = hardwareLongPressFiredRef.current.delete(physicalSwitchNumber);
             if (!wasPending && !longActionFired) return;
@@ -1517,9 +1554,12 @@ export default function FootControllerView({
 
         window.addEventListener("keydown", handleKeyDown, true);
         window.addEventListener("keyup", handleKeyUp, true);
+        const clearPressedSwitch = () => setPressedSwitchId(null);
+        window.addEventListener("blur", clearPressedSwitch);
         return () => {
             window.removeEventListener("keydown", handleKeyDown, true);
             window.removeEventListener("keyup", handleKeyUp, true);
+            window.removeEventListener("blur", clearPressedSwitch);
         };
     }, [
         bankMenuOpen, presetMenuOpen, presetOptionsOpen, presetOptionIndex, menuIndex,
@@ -1600,64 +1640,91 @@ export default function FootControllerView({
         setPresetMenuOpen(true);
     };
 
+    // Performance consumes the unified theme directly. Controller config now
+    // contains geometry and behavior only, so imported layouts cannot carry a
+    // second, conflicting color system.
     const colors = {
-        ...controllerConfig.colors,
-        pageBackground: "var(--mfx-bg)",
-        pageText: "var(--mfx-text)",
-        headerBackground: "var(--mfx-panel)",
-        headerBorder: "var(--mfx-border)",
-        bankTitleText: "var(--mfx-purple-light)",
-        bankNameText: "var(--mfx-text)",
-        activePresetLabelText: "var(--mfx-muted)",
-        activePresetNameText: "var(--mfx-cyan)",
-        headerDivider: "var(--mfx-border)",
-        switchBackground: "var(--mfx-panel)",
-        switchBorder: "var(--mfx-border)",
-        switchLabelText: "var(--mfx-muted)",
-        switchValueText: "var(--mfx-text)",
-        bankSwitchBackground: "var(--mfx-purple-surface)",
-        bankSwitchBorder: "var(--mfx-purple)",
-        bankSwitchLabelText: "var(--mfx-purple-light)",
-        bankSwitchValueText: "var(--mfx-text)",
-        activeSwitchBackground: "var(--mfx-cyan-surface)",
-        activeSwitchBorder: "var(--mfx-cyan)",
-        activeSwitchLabelText: "var(--mfx-cyan)",
-        activeSwitchValueText: "var(--mfx-cyan-text)",
-        activeSwitchShadow: "0 0 20px var(--mfx-cyan)",
-        configErrorBackground: "var(--mfx-panel-alt)",
-        configErrorBorder: "var(--mfx-danger)",
-        configErrorText: "var(--mfx-danger)"
+        pageBackground: "var(--mfx-surface-page-bg)",
+        pageText: "var(--mfx-surface-page-text)",
+        headerBackground: "var(--mfx-surface-header-bg)",
+        headerBorder: "var(--mfx-surface-header-border)",
+        headerShadow: "var(--mfx-surface-header-shadow)",
+        bankTitleText: "var(--mfx-surface-header-label)",
+        bankNameText: "var(--mfx-surface-header-text)",
+        activePresetLabelText: "var(--mfx-surface-header-label)",
+        activePresetNameText: "var(--mfx-surface-header-accent)",
+        headerDivider: "var(--mfx-surface-header-border)",
+        switchBackground: "var(--mfx-role-utility-normal-bg)",
+        switchBorder: "var(--mfx-role-utility-normal-border)",
+        switchLabelText: "var(--mfx-role-utility-normal-label)",
+        switchValueText: "var(--mfx-role-utility-normal-value)",
+        bankSwitchBackground: "var(--mfx-role-navigation-normal-bg)",
+        bankSwitchBorder: "var(--mfx-role-navigation-normal-border)",
+        bankSwitchLabelText: "var(--mfx-role-navigation-normal-label)",
+        bankSwitchValueText: "var(--mfx-role-navigation-normal-value)",
+        activeSwitchBackground: "var(--mfx-role-preset-active-bg)",
+        activeSwitchBorder: "var(--mfx-role-preset-active-border)",
+        activeSwitchLabelText: "var(--mfx-role-preset-active-label)",
+        activeSwitchValueText: "var(--mfx-role-preset-active-value)",
+        activeSwitchShadow: "var(--mfx-role-preset-active-shadow)",
+        disabledSwitchOpacity: "var(--mfx-control-disabled-opacity)",
+        configErrorBackground: "var(--mfx-role-danger-normal-bg)",
+        configErrorBorder: "var(--mfx-role-danger-normal-border)",
+        configErrorText: "var(--mfx-role-danger-normal-label)",
+        popupBackground: "var(--mfx-surface-popup-bg) padding-box, var(--mfx-surface-popup-border) border-box",
+        popupText: "var(--mfx-surface-popup-text)",
+        popupAccent: "var(--mfx-surface-popup-accent)",
+        popupShadow: "var(--mfx-surface-popup-shadow)",
+        menuBackground: "var(--mfx-surface-menu-bg) padding-box, var(--mfx-surface-menu-border) border-box",
+        menuText: "var(--mfx-surface-menu-text)",
+        menuShadow: "var(--mfx-surface-menu-shadow)",
+        toastBackground: "var(--mfx-surface-toast-bg) padding-box, var(--mfx-surface-toast-border) border-box",
+        toastText: "var(--mfx-surface-toast-text)",
+        toastShadow: "var(--mfx-surface-toast-shadow)"
     };
     const sizing = controllerConfig.sizing;
     const currentPreset = presets.getItem(presets.selectedInstanceId);
     const currentPedalboardSignature =
         stablePedalboardStateSignature(snapshotPedalboard);
+    const hasCleanPresetBaseline =
+        cleanPresetBaseline?.presetId === presets.selectedInstanceId;
     const matchesCleanPresetBaseline =
-        cleanPresetBaseline?.presetId === presets.selectedInstanceId
+        hasCleanPresetBaseline
         && cleanPresetBaseline.signature === currentPedalboardSignature;
+    const differsFromCleanPresetBaseline =
+        hasCleanPresetBaseline && !matchesCleanPresetBaseline;
     const effectivePresetChanged =
-        presets.presetChanged && !matchesCleanPresetBaseline;
+        !matchesCleanPresetBaseline
+        && (presets.presetChanged || differsFromCleanPresetBaseline);
     const showPresetChanged =
         effectivePresetChanged
         && selectedSnapshot < 0
         && (!chainBypassed || chainBypassWasPresetChangedRef.current);
 
-    const getSwitchVisualState = (isActive: boolean): SwitchVisualState =>
-        isActive
-            ? {
-                background: colors.activeSwitchBackground,
-                border: colors.activeSwitchBorder,
-                labelText: colors.activeSwitchLabelText,
-                valueText: colors.activeSwitchValueText,
-                shadow: colors.activeSwitchShadow
-            }
-            : {
-                background: colors.switchBackground,
-                border: colors.switchBorder,
-                labelText: colors.switchLabelText,
-                valueText: colors.switchValueText,
-                shadow: "none"
-            };
+    const getSwitchVisualState = (
+        action: ControllerSwitchAction,
+        isActive: boolean
+    ): SwitchVisualState => {
+        const role = action.type === "preset"
+            ? "preset"
+            : action.type === "bankUp" || action.type === "bankDown"
+                ? "navigation"
+                : action.type === "snapshotMode"
+                    ? "snapshot"
+                    : action.type === "chainBypass"
+                        ? "bypass"
+                        : "utility";
+        const state = isActive ? "active" : "normal";
+        const prefix = `var(--mfx-role-${role}-${state}`;
+        return {
+            background: `${prefix}-bg)`,
+            border: `${prefix}-border)`,
+            labelText: `${prefix}-label)`,
+            valueText: `${prefix}-value)`,
+            indicator: `${prefix}-indicator)`,
+            shadow: `${prefix}-shadow)`
+        };
+    };
 
     const selectPreset = (preset: PresetIndexEntry | undefined) => {
         if (!preset) return;
@@ -1678,10 +1745,11 @@ export default function FootControllerView({
         zIndex: 100,
         maxHeight: "55vh",
         overflowY: "auto" as const,
-        background: colors.headerBackground,
-        border: `2px solid ${colors.bankSwitchBorder}`,
+        background: colors.menuBackground,
+        color: colors.menuText,
+        border: "2px solid transparent",
         borderRadius: `${sizing.switchBorderRadius}px`,
-        boxShadow: "0 10px 28px rgba(0,0,0,.75)",
+        boxShadow: colors.menuShadow,
         padding: "calc(6px * var(--mfx-ui-scale, 1))"
     };
 
@@ -1691,10 +1759,14 @@ export default function FootControllerView({
         minHeight: "calc(48px * var(--mfx-ui-scale, 1))",
         padding: "calc(10px * var(--mfx-ui-scale, 1)) calc(14px * var(--mfx-ui-scale, 1))",
         margin: "2px 0",
-        background: selected ? colors.activeSwitchBackground : colors.switchBackground,
+        background: `${
+            selected ? colors.activeSwitchBackground : colors.switchBackground
+        } padding-box, ${
+            selected ? colors.activeSwitchBorder : colors.switchBorder
+        } border-box`,
         color: selected ? colors.activeSwitchValueText : colors.switchValueText,
-        border: selected ? `2px solid ${colors.activeSwitchBorder}` : `1px solid ${colors.switchBorder}`,
-        outline: highlighted ? `3px solid ${colors.bankSwitchBorder}` : "none",
+        border: selected ? "2px solid transparent" : "1px solid transparent",
+        outline: highlighted ? "3px solid var(--mfx-purple)" : "none",
         outlineOffset: highlighted ? "-4px" : "0",
         borderRadius: `${Math.max(6, sizing.switchBorderRadius - 3)}px`,
         textAlign: "left" as const,
@@ -2002,7 +2074,9 @@ export default function FootControllerView({
         cancelUiSwitchLongPress();
         uiSwitchSuppressNextClickRef.current = false;
         uiSwitchPointerStartRef.current = { pointerId: event.pointerId, x: event.clientX, y: event.clientY };
-        try { event.currentTarget.setPointerCapture(event.pointerId); } catch { }
+        try { event.currentTarget.setPointerCapture(event.pointerId); } catch {
+            // Pointer capture is optional on older touch browsers.
+        }
         uiSwitchLongPressTimerRef.current = window.setTimeout(() => {
             uiSwitchLongPressTimerRef.current = null;
             uiSwitchPointerStartRef.current = null;
@@ -2023,7 +2097,9 @@ export default function FootControllerView({
         cancelUiSwitchLongPress();
         try {
             if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId);
-        } catch { }
+        } catch {
+            // Pointer capture may already have been released.
+        }
     };
 
     const renderSwitch = (switchConfig: ControllerSwitchConfig) => {
@@ -2041,7 +2117,15 @@ export default function FootControllerView({
             && absolutePresetIndex >= 0
             && presetDropIndex === absolutePresetIndex;
         const isEncoderSelected = isPresetAction && presetSlotIndex === selectedPresetSlot;
-        const isActive = isPresetAction && preset?.instanceId === presets.selectedInstanceId;
+        const isActive = Boolean(isPresetAction
+            ? preset?.instanceId === presets.selectedInstanceId
+            : switchConfig.action.type === "chainBypass"
+                ? chainBypassed
+                : switchConfig.action.type === "snapshotMode"
+                    ? snapshotMode
+                    : false);
+        const isPressed = pressedSwitchId === switchConfig.id;
+        const isVisualActive = isActive || isPressed;
         const isDisabled = switchConfig.action.type === "none";
         const longPressLabel = isPresetAction && !preset
             ? undefined
@@ -2051,28 +2135,100 @@ export default function FootControllerView({
         // Use exactly the same visual palette as a preset tile.
         // A populated, unselected preset uses the normal visual state; only
         // the currently selected preset uses the active state.
-        const visualState = getSwitchVisualState(Boolean(isActive));
+        const visualState = getSwitchVisualState(
+            switchConfig.action,
+            isVisualActive
+        );
         const primaryTextColor = visualState.valueText;
         const labelTextColor = visualState.labelText;
+        // The active preset owns the main performance-state light, matching
+        // the original MultiFX LED behavior. Temporary states override its
+        // normal active color in priority order: bypass, snapshot, modified.
+        const activePresetLightState = isPresetAction && isActive
+            ? chainBypassed
+                ? "bypass"
+                : snapshotPerformanceActive
+                    ? "snapshot"
+                    : showPresetChanged
+                        ? "modified"
+                        : "active"
+            : "inactive";
+        const isModifiedActivePreset = activePresetLightState === "modified";
+        const isBypassedActivePreset = activePresetLightState === "bypass";
+        const isSnapshotActivePreset = activePresetLightState === "snapshot";
+        const hardwareIndicatorColor = isBypassedActivePreset
+            ? "var(--mfx-role-bypass-active-indicator)"
+            : isSnapshotActivePreset
+                ? "var(--mfx-role-snapshot-active-indicator)"
+                : isModifiedActivePreset
+                    ? "var(--mfx-control-indicator-changed)"
+                    : isVisualActive
+                        ? visualState.indicator
+                        : "var(--mfx-control-indicator-inactive)";
 
         return (
             <button
                 key={switchConfig.id}
+                className="mfx-performance-switch"
+                data-mfx-role={
+                    isPresetAction
+                        ? "preset"
+                        : switchConfig.action.type === "bankUp"
+                            || switchConfig.action.type === "bankDown"
+                            ? "navigation"
+                            : switchConfig.action.type === "snapshotMode"
+                                ? "snapshot"
+                                : switchConfig.action.type === "chainBypass"
+                                    ? "bypass"
+                                    : "utility"
+                }
+                data-mfx-active={isVisualActive ? "true" : "false"}
+                data-mfx-modified={isModifiedActivePreset ? "true" : "false"}
+                data-mfx-light-state={isPresetAction
+                    ? activePresetLightState
+                    : isVisualActive
+                        ? switchConfig.action.type === "chainBypass"
+                            ? "bypass"
+                            : switchConfig.action.type === "snapshotMode"
+                                ? "snapshot"
+                                : "active"
+                        : "inactive"}
                 type="button"
                 disabled={isDisabled}
                 data-mfx-performance-preset-index={absolutePresetIndex >= 0 ? absolutePresetIndex : undefined}
                 data-mfx-performance-preset-id={isPresetAction && preset ? preset.instanceId : undefined}
                 onPointerDown={(event) => {
+                    if (event.pointerType === "mouse" && event.button !== 0) return;
+                    setPressedSwitchId(switchConfig.id);
+                    try {
+                        event.currentTarget.setPointerCapture(event.pointerId);
+                    } catch {
+                        // Pointer capture is optional on older touch browsers.
+                    }
                     if (isPresetAction && preset && absolutePresetIndex >= 0) beginPresetDrag(event, preset, absolutePresetIndex);
                     else if (isPresetAction && presetSlotIndex >= 0) {
                         suppressNextClickRef.current = false;
-                        try { event.currentTarget.setPointerCapture(event.pointerId); } catch { }
+                        try { event.currentTarget.setPointerCapture(event.pointerId); } catch {
+                            // Pointer capture is optional on older touch browsers.
+                        }
                         startPresetLongPress(presetSlotIndex);
                     } else startUiSwitchLongPress(event, switchConfig, preset, presetSlotIndex);
                 }}
                 onPointerMove={(event) => isPresetAction && preset ? movePresetDrag(event) : !isPresetAction ? moveUiSwitchLongPress(event) : undefined}
-                onPointerUp={(event) => isPresetAction && preset ? endPresetDrag(event) : isPresetAction ? finishPresetLongPress() : finishUiSwitchLongPress(event)}
-                onPointerCancel={(event) => isPresetAction && preset ? cancelPresetDrag(event) : isPresetAction ? finishPresetLongPress() : finishUiSwitchLongPress(event)}
+                onPointerUp={(event) => {
+                    setPressedSwitchId((current) => current === switchConfig.id ? null : current);
+                    if (isPresetAction && preset) endPresetDrag(event);
+                    else if (isPresetAction) finishPresetLongPress();
+                    else finishUiSwitchLongPress(event);
+                }}
+                onPointerCancel={(event) => {
+                    setPressedSwitchId((current) => current === switchConfig.id ? null : current);
+                    if (isPresetAction && preset) cancelPresetDrag(event);
+                    else if (isPresetAction) finishPresetLongPress();
+                    else finishUiSwitchLongPress(event);
+                }}
+                onLostPointerCapture={() => setPressedSwitchId((current) =>
+                    current === switchConfig.id ? null : current)}
                 onContextMenu={(event) => { if (isPresetAction) { event.preventDefault(); event.stopPropagation(); } }}
                 onClick={(event) => {
                     if (!isPresetAction && uiSwitchSuppressNextClickRef.current) {
@@ -2092,11 +2248,11 @@ export default function FootControllerView({
                     height: freeformRect ? `${freeformRect.height * 100}%` : undefined,
                     boxSizing: "border-box",
                     pointerEvents: "auto",
-                    background: visualState.background,
-                    border: `2px solid ${visualState.border}`,
+                    background: `${visualState.background} padding-box, ${visualState.border} border-box`,
+                    border: "var(--mfx-control-border-width) solid transparent",
                     outline: isEncoderSelected ? `4px solid ${colors.bankSwitchBorder}` : "none",
                     outlineOffset: isEncoderSelected ? "-6px" : "0",
-                    borderRadius: `${sizing.switchBorderRadius}px`,
+                    borderRadius: "var(--mfx-control-radius)",
                     padding: adaptiveTile ? 2 : sizing.switchPadding,
                     containerType: adaptiveTile ? "size" : undefined,
                     display: "flex",
@@ -2124,17 +2280,22 @@ export default function FootControllerView({
                     gridColumn: freeformRect ? undefined : switchConfig.column
                 }}
             >
-                {isPresetAction && preset && (
-                    <span aria-hidden="true" style={{
+                <MultiFXFootswitchGraphic color={hardwareIndicatorColor} />
+                <MultiFXArcadeButtonGraphic color={hardwareIndicatorColor} />
+                {!isDisabled && (
+                    <span aria-hidden="true" className="mfx-performance-indicator" style={{
                         position: "absolute",
                         top: adaptiveTile ? "clamp(1px, 3cqh, 6px)" : 6,
                         right: adaptiveTile ? "clamp(1px, 3cqw, 7px)" : 7,
                         width: adaptiveTile ? "clamp(5px, min(11cqw, 20cqh), 16px)" : 16,
                         height: adaptiveTile ? "clamp(5px, min(11cqw, 20cqh), 16px)" : 16,
                         borderRadius: "50%",
-                        border: `${adaptiveTile ? "clamp(1px, 1.2cqw, 2px)" : "2px"} solid ${isActive ? chainBypassed ? "#FCA5A5" : snapshotPerformanceActive ? "#93C5FD" : showPresetChanged ? "#FDE68A" : "#86EFAC" : "#555"}`,
-                        background: isActive ? chainBypassed ? "#F87171" : snapshotPerformanceActive ? "#3B82F6" : showPresetChanged ? "#FBBF24" : "#22C55E" : "#242424",
-                        boxShadow: isActive ? "0 0 9px currentColor" : "none",
+                        color: hardwareIndicatorColor,
+                        border: `${adaptiveTile ? "clamp(1px, 1.2cqw, 2px)" : "2px"} solid currentColor`,
+                        background: hardwareIndicatorColor,
+                        boxShadow: isVisualActive
+                            ? "0 0 calc(14px * var(--mfx-control-glow-strength)) currentColor"
+                            : "none",
                         boxSizing: "border-box"
                     }} />
                 )}
@@ -2152,7 +2313,7 @@ export default function FootControllerView({
                             marquee={false}
                         />
                     ) : (
-                        <div style={{
+                        <div className="mfx-performance-switch__content" style={{
                             width: "100%",
                             height: "100%",
                             minWidth: 0,
@@ -2163,7 +2324,7 @@ export default function FootControllerView({
                                 : "minmax(0,.82fr) minmax(0,1.78fr)",
                             gap: 1
                         }}>
-                            <div style={{
+                            <div className="mfx-performance-switch__label-row" style={{
                                 minWidth: 0,
                                 minHeight: 0,
                                 paddingRight: isPresetAction && preset
@@ -2171,35 +2332,41 @@ export default function FootControllerView({
                                     : 0
                             }}>
                                 <ResponsiveMarqueeText
+                                    className="mfx-performance-switch__label"
                                     text={switchConfig.label.toUpperCase()}
                                     color={labelTextColor}
                                     fontSize={MFX_SWITCH_LABEL_TEXT_SIZE}
                                     fontWeight={800}
+                                    align="center"
                                     textTransform="uppercase"
                                     marqueeDelaySeconds={sizing.marqueeDelaySeconds}
                                     marqueePixelsPerSecond={sizing.marqueePixelsPerSecond}
                                     marqueeEndPauseSeconds={sizing.marqueeEndPauseSeconds}
                                 />
                             </div>
-                            <div style={{ minWidth: 0, minHeight: 0 }}>
+                            <div className="mfx-performance-switch__value-row" style={{ minWidth: 0, minHeight: 0 }}>
                                 <ResponsiveMarqueeText
+                                    className="mfx-performance-switch__value"
                                     text={getSwitchText(switchConfig, preset)}
                                     color={primaryTextColor}
                                     fontSize={MFX_PRIMARY_TEXT_SIZE}
                                     fontWeight={900}
+                                    align="center"
                                     marqueeDelaySeconds={sizing.marqueeDelaySeconds}
                                     marqueePixelsPerSecond={sizing.marqueePixelsPerSecond}
                                     marqueeEndPauseSeconds={sizing.marqueeEndPauseSeconds}
                                 />
                             </div>
                             {longPressLabel && (
-                                <div style={{ minWidth: 0, minHeight: 0 }}>
+                                <div className="mfx-performance-switch__hold-row" style={{ minWidth: 0, minHeight: 0 }}>
                                     <ResponsiveMarqueeText
+                                        className="mfx-performance-switch__hold"
                                         text={`HOLD: ${longPressLabel}`.toUpperCase()}
                                         color={labelTextColor}
                                         fontSize={MFX_SECONDARY_TEXT_SIZE}
                                         fontWeight={800}
                                         textTransform="uppercase"
+                                        align="center"
                                         opacity={0.82}
                                         marqueeDelaySeconds={sizing.marqueeDelaySeconds}
                                         marqueePixelsPerSecond={sizing.marqueePixelsPerSecond}
@@ -2212,7 +2379,7 @@ export default function FootControllerView({
                 ) : (
                     <>
                         {!(isPresetAction && !preset) && (
-                            <span style={{ fontSize: sizing.switchLabelFontSize, fontWeight: "bold", color: labelTextColor, textTransform: "uppercase" }}>
+                            <span className="mfx-performance-switch__label" style={{ width: "100%", textAlign: "center", fontSize: sizing.switchLabelFontSize, fontWeight: "bold", color: labelTextColor, textTransform: "uppercase" }}>
                                 {switchConfig.label}
                             </span>
                         )}
@@ -2220,6 +2387,7 @@ export default function FootControllerView({
                             <span style={{ color: primaryTextColor, fontSize: "clamp(1.7rem, 4vw, 2.4rem)", fontWeight: 900, lineHeight: 1 }}>+</span>
                         ) : (
                             <MarqueeText
+                                className="mfx-performance-switch__value"
                                 text={getSwitchText(switchConfig, preset)}
                                 color={primaryTextColor}
                                 fontSize={sizing.switchValueFontSize}
@@ -2228,14 +2396,15 @@ export default function FootControllerView({
                                 delaySeconds={sizing.marqueeDelaySeconds}
                                 pixelsPerSecond={sizing.marqueePixelsPerSecond}
                                 endPauseSeconds={sizing.marqueeEndPauseSeconds}
+                                centered
                             />
                         )}
                         {longPressLabel && (
-                            <span style={{
+                            <span className="mfx-performance-switch__hold" style={{
                                 width: "100%", marginTop: 5, color: labelTextColor,
                                 fontSize: "clamp(.48rem, 1.05vw, .62rem)", fontWeight: 800,
                                 whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis",
-                                textTransform: "uppercase", opacity: .82
+                                textAlign: "center", textTransform: "uppercase", opacity: .82
                             }}>HOLD: {longPressLabel}</span>
                         )}
                     </>
@@ -2289,8 +2458,15 @@ export default function FootControllerView({
     const renderSnapshotTile = (index: number) => {
         const snapshot = snapshotPedalboard.snapshots[index];
         const active = selectedSnapshot === index;
+        const visualState = getSwitchVisualState(
+            { type: "snapshotMode" },
+            active
+        );
         return (
             <button key={`snapshot-${index}`} type="button"
+                className="mfx-performance-switch"
+                data-mfx-role="snapshot"
+                data-mfx-active={active ? "true" : "false"}
                 onPointerDown={(event) => { if (event.button === 0) startSnapshotLongPress(event, index); }}
                 onPointerMove={moveSnapshotLongPress}
                 onPointerUp={finishSnapshotLongPress}
@@ -2304,24 +2480,36 @@ export default function FootControllerView({
                 }}
                 style={{
                     position: "relative", minWidth: 0, minHeight: 0, padding: sizing.switchPadding,
-                    borderRadius: `${sizing.switchBorderRadius}px`,
-                    border: `2px solid ${active ? colors.activeSwitchBorder : colors.switchBorder}`,
-                    background: active ? colors.activeSwitchBackground : colors.switchBackground,
-                    color: active ? colors.activeSwitchValueText : colors.switchValueText,
+                    borderRadius: "var(--mfx-control-radius)",
+                    border: "var(--mfx-control-border-width) solid transparent",
+                    background: `${visualState.background} padding-box, ${visualState.border} border-box`,
+                    color: visualState.valueText,
+                    boxShadow: visualState.shadow,
                     display: "flex", flexDirection: "column", justifyContent: snapshot ? "space-between" : "center",
                     font: "inherit", overflow: "hidden", touchAction: "none"
                 }}>
-                <span style={{ color: active ? colors.activeSwitchLabelText : colors.switchLabelText, fontSize: sizing.switchLabelFontSize, fontWeight: 900 }}>SNAPSHOT {index + 1}</span>
+                <MultiFXFootswitchGraphic
+                    color={active
+                        ? visualState.indicator
+                        : "var(--mfx-control-indicator-inactive)"}
+                />
+                <MultiFXArcadeButtonGraphic
+                    color={active
+                        ? visualState.indicator
+                        : "var(--mfx-control-indicator-inactive)"}
+                />
+                <span className="mfx-performance-switch__label" style={{ width: "100%", textAlign: "center", color: visualState.labelText, fontSize: sizing.switchLabelFontSize, fontWeight: 900 }}>SNAPSHOT {index + 1}</span>
                 <MarqueeText
+                    className="mfx-performance-switch__value"
                     text={snapshot ? snapshot.name || `Snapshot ${index + 1}` : "EMPTY"}
-                    color={active ? colors.activeSwitchValueText : colors.switchValueText}
+                    color={visualState.valueText}
                     fontSize={snapshot ? sizing.switchValueFontSize : "1.2rem"}
                     fontWeight="bold"
                     marginTop={sizing.switchValueMarginTop}
                     delaySeconds={sizing.marqueeDelaySeconds}
                     pixelsPerSecond={sizing.marqueePixelsPerSecond}
                     endPauseSeconds={sizing.marqueeEndPauseSeconds}
-                    centered={!snapshot}
+                    centered
                 />
             </button>
         );
@@ -2808,8 +2996,8 @@ export default function FootControllerView({
                 >
                     <polygon
                         points={points}
-                        fill={colors.switchBackground}
-                        stroke={colors.switchBorder}
+                        fill="var(--mfx-panel-alt)"
+                        stroke="var(--mfx-border)"
                         strokeWidth={2}
                         vectorEffect="non-scaling-stroke"
                         strokeLinejoin="round"
@@ -2825,10 +3013,8 @@ export default function FootControllerView({
                     position: "absolute",
                     inset: 0,
                     pointerEvents: "none",
-                    background:
-                        colors.switchBackground,
-                    border:
-                        `2px solid ${colors.switchBorder}`,
+                    background: `${colors.switchBackground} padding-box, ${colors.switchBorder} border-box`,
+                    border: "2px solid transparent",
                     boxSizing: "border-box",
                     borderRadius:
                         element.shape === "circle"
@@ -3083,10 +3269,10 @@ export default function FootControllerView({
                 <div style={{
                     position: "relative",
                     boxSizing: "border-box",
-                    background: colors.headerBackground,
+                    background: `${colors.headerBackground} padding-box, ${colors.headerBorder} border-box`,
                     padding: controllerConfig.headerPadding,
                     borderRadius: `${sizing.switchBorderRadius}px`,
-                    border: `1px solid ${colors.headerBorder}`,
+                    border: "1px solid transparent",
                     textAlign: "center",
                     boxShadow: colors.headerShadow,
                     flex: "0 0 auto"
@@ -3095,7 +3281,7 @@ export default function FootControllerView({
 
 
                     <div style={{
-                        borderTop: `1px solid ${colors.headerDivider}`,
+                        borderTop: "1px solid var(--mfx-border)",
                         paddingTop: 8,
                         marginTop: 6
                     }}>
@@ -3104,10 +3290,16 @@ export default function FootControllerView({
                 </div>
             )}
 
+            {useFreeformPerformanceLayout && (
+                <MultiFXPerformanceControls
+                    controllerConfig={controllerConfig}
+                />
+            )}
+
             {presetAssignPickerOpen && presetAssignTargetIndex !== null && (
                 <div style={{ position: "absolute", inset: 0, zIndex: 520, background: "rgba(0,0,0,.78)", display: "flex", alignItems: "center", justifyContent: "center" }} onClick={() => { setPresetAssignPickerOpen(false); setPresetAssignTargetIndex(null); }}>
-                    <div style={{ width: "min(680px,94vw)", maxHeight: "84vh", overflowY: "auto", padding: 18, borderRadius: 12, border: `3px solid ${colors.bankSwitchBorder}`, background: colors.headerBackground }} onClick={(event) => event.stopPropagation()}>
-                        <div style={{ color: colors.bankTitleText, fontWeight: 900, marginBottom: 10 }}>ASSIGN PRESET TO SWITCH</div>
+                    <div style={{ width: "min(680px,94vw)", maxHeight: "84vh", overflowY: "auto", padding: 18, borderRadius: 12, border: "3px solid transparent", background: colors.popupBackground, color: colors.popupText, boxShadow: colors.popupShadow }} onClick={(event) => event.stopPropagation()}>
+                        <div style={{ color: colors.popupAccent, fontWeight: 900, marginBottom: 10 }}>ASSIGN PRESET TO SWITCH</div>
                         {presets.presets.map((preset) => <button key={preset.instanceId} type="button" onClick={() => assignPresetIdToSlot(preset.instanceId, presetAssignTargetIndex)} style={{ ...dropdownItemStyle(preset.instanceId === presets.selectedInstanceId, false), margin: "5px 0" }}>{preset.name}</button>)}
                         <button type="button" onClick={() => { setPresetAssignPickerOpen(false); setPresetAssignTargetIndex(null); }} style={{ ...dropdownItemStyle(false, false), marginTop: 10 }}>CANCEL</button>
                     </div>
@@ -3128,8 +3320,8 @@ export default function FootControllerView({
                         setSnapshotRenameOpen(false);
                     }}
                 >
-                    <div style={{ width: "min(620px,92vw)", padding: 18, borderRadius: 12, border: `3px solid ${colors.bankSwitchBorder}`, background: colors.headerBackground }} onClick={(event) => event.stopPropagation()}>
-                        <div style={{ color: colors.bankTitleText, fontWeight: 900 }}>SNAPSHOT {snapshotOptionsIndex + 1}</div>
+                    <div style={{ width: "min(620px,92vw)", padding: 18, borderRadius: 12, border: "3px solid transparent", background: colors.popupBackground, color: colors.popupText, boxShadow: colors.popupShadow }} onClick={(event) => event.stopPropagation()}>
+                        <div style={{ color: colors.popupAccent, fontWeight: 900 }}>SNAPSHOT {snapshotOptionsIndex + 1}</div>
                         {snapshotRenameOpen && <div style={{ display: "flex", gap: 8, margin: "10px 0" }}>
                             <input autoFocus value={snapshotRenameValue} onChange={(event) => setSnapshotRenameValue(event.target.value)} style={{ flex: 1, minHeight: 48, background: colors.switchBackground, color: colors.pageText, border: `2px solid ${colors.activeSwitchBorder}`, borderRadius: 8, padding: "6px 10px" }} />
                             <button type="button" onClick={savePerformanceSnapshotRename}>SAVE</button>
@@ -3147,8 +3339,8 @@ export default function FootControllerView({
 
             {presetOptionsOpen && (
                 <div style={{ position: "absolute", inset: 0, zIndex: 500, display: "flex", alignItems: "center", justifyContent: "center", background: "rgba(0,0,0,.72)" }} onClick={closePresetOptions}>
-                    <div style={{ width: "min(620px,92vw)", maxHeight: "82vh", overflowY: "auto", padding: 18, borderRadius: 12, border: `3px solid ${colors.bankSwitchBorder}`, background: colors.headerBackground }} onClick={(event) => event.stopPropagation()}>
-                        <div style={{ color: colors.bankTitleText, fontWeight: 900, marginBottom: 10 }}>PRESET SWITCH {selectedPresetSlot + 1}</div>
+                    <div style={{ width: "min(620px,92vw)", maxHeight: "82vh", overflowY: "auto", padding: 18, borderRadius: 12, border: "3px solid transparent", background: colors.popupBackground, color: colors.popupText, boxShadow: colors.popupShadow }} onClick={(event) => event.stopPropagation()}>
+                        <div style={{ color: colors.popupAccent, fontWeight: 900, marginBottom: 10 }}>PRESET SWITCH {selectedPresetSlot + 1}</div>
                         {selectedSlotPreset && <div style={{ display: "flex", gap: 8, marginBottom: 10 }}>
                             <input value={presetRenameValue} onChange={(event) => setPresetRenameValue(event.target.value)} style={{ flex: 1, minHeight: 48, background: colors.switchBackground, color: colors.pageText, border: `2px solid ${colors.activeSwitchBorder}`, borderRadius: 8, padding: "6px 10px" }} />
                             <button type="button" onClick={() => void renameSelectedSlotPreset()}>RENAME</button>
@@ -3160,7 +3352,7 @@ export default function FootControllerView({
 
             {presetDeleteConfirmOpen && selectedSlotPreset && (
                 <div style={{ position: "absolute", inset: 0, zIndex: 560, background: "rgba(0,0,0,.82)", display: "flex", alignItems: "center", justifyContent: "center" }}>
-                    <div style={{ width: "min(560px,92vw)", padding: 20, borderRadius: 12, border: `3px solid ${colors.configErrorBorder}`, background: colors.headerBackground }}>
+                    <div style={{ width: "min(560px,92vw)", padding: 20, borderRadius: 12, border: "3px solid transparent", background: colors.popupBackground, color: colors.popupText, boxShadow: colors.popupShadow }}>
                         <div style={{ color: colors.configErrorText, fontWeight: 900, fontSize: "1.1rem" }}>DELETE PRESET?</div>
                         <div style={{ margin: "12px 0", fontWeight: 900 }}>{selectedSlotPreset.name}</div>
                         <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
@@ -3176,7 +3368,7 @@ export default function FootControllerView({
             />
 
             {statusToast && createPortal(
-                <div role="status" style={{ position: "fixed", left: "50%", top: 8, transform: "translateX(-50%)", zIndex: 2147483647, padding: "8px 14px", borderRadius: 10, border: `1px solid ${colors.activeSwitchBorder}`, background: colors.headerBackground, color: colors.activePresetNameText, fontWeight: 900 }}>{statusToast}</div>,
+                <div role="status" style={{ position: "fixed", left: "50%", top: 8, transform: "translateX(-50%)", zIndex: 2147483647, padding: "8px 14px", borderRadius: 10, border: "1px solid transparent", background: colors.toastBackground, color: colors.toastText, boxShadow: colors.toastShadow, fontWeight: 900 }}>{statusToast}</div>,
                 document.body
             )}
 

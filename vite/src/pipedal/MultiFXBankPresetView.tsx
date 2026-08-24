@@ -7,7 +7,11 @@ import {
     getBankPresetAssignments,
     setPresetAssignment
 } from "./MultiFXPresetAssignments";
-import { MFX_COLORS } from "./MultiFXTheme";
+import {
+    MFX_COLORS,
+    MFX_SURFACES,
+    multiFXSurfaceBackground
+} from "./MultiFXTheme";
 
 type Props = { onClose: () => void };
 
@@ -135,5 +139,5 @@ export default function MultiFXBankPresetView({ onClose }: Props) {
 const buttonStyle: React.CSSProperties = { minHeight: 38, padding: "0 10px", borderRadius: 8, border: `1px solid ${MFX_COLORS.border}`, background: MFX_COLORS.panelAlt, color: MFX_COLORS.text, font: "inherit", fontWeight: 900, cursor: "pointer" };
 const accentButtonStyle: React.CSSProperties = { ...buttonStyle, border: `1px solid ${MFX_COLORS.cyan}`, background: MFX_COLORS.cyanSurface, color: MFX_COLORS.cyanText };
 const overlayStyle: React.CSSProperties = { position: "absolute", inset: 0, zIndex: 1600, display: "flex", alignItems: "center", justifyContent: "center", background: "rgba(0,0,0,.72)" };
-const dialogStyle: React.CSSProperties = { width: "min(520px, 88vw)", padding: 18, borderRadius: 12, border: `2px solid ${MFX_COLORS.purple}`, background: MFX_COLORS.panel, color: MFX_COLORS.text, display: "flex", flexDirection: "column", gap: 12 };
+const dialogStyle: React.CSSProperties = { width: "min(520px, 88vw)", padding: 18, borderRadius: 12, border: "2px solid transparent", background: multiFXSurfaceBackground("popup"), color: MFX_SURFACES.popup.text, boxShadow: MFX_SURFACES.popup.shadow, display: "flex", flexDirection: "column", gap: 12 };
 const inputStyle: React.CSSProperties = { minHeight: 46, padding: "0 10px", borderRadius: 8, border: `1px solid ${MFX_COLORS.border}`, background: MFX_COLORS.background, color: MFX_COLORS.text, font: "inherit" };

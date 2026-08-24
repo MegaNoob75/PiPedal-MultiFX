@@ -10,7 +10,7 @@
  *   v1  direct-GPIO logical switch map (retained for older bridges)
  *   v2  capability discovery and transient digital/analog Learn
  *   v3  board/driver catalog and atomic portable hardware configuration
- *   v4  configurable response threshold for each analog control
+ *   v4  configurable analog threshold and explicit I2C module discovery
  */
 
 #include <Control_Surface.h>
@@ -26,7 +26,8 @@ namespace {
 
 constexpr uint8_t SYSEX_PREFIX[] = {0x7D, 0x4D, 0x46, 0x58};
 constexpr size_t SOURCE_DESCRIPTOR_SIZE = 7;
-constexpr uint8_t DRIVER_MASK = 0x1F; // All five initial runtime drivers.
+// Low five bits are drivers; bit 5 advertises the optional I2C scan command.
+constexpr uint8_t DRIVER_MASK = 0x3F;
 
 /** Send one controller event on MIDI channel 1. */
 void sendControlChange(uint8_t cc, uint8_t value) {
@@ -197,6 +198,21 @@ void sendConfigResult(uint8_t token, uint8_t status, uint8_t detail) {
     midi.sendSysEx(message);
 }
 
+/** Stream one detected I2C device or the terminal scan status to the bridge. */
+void sendModuleScanResult(
+    uint8_t token,
+    uint8_t status,
+    uint8_t address,
+    uint8_t family
+) {
+    uint8_t message[] = {
+        0xF0, 0x7D, 0x4D, 0x46, 0x58,
+        mfx::PROTOCOL_V4, mfx::CMD_MODULE_SCAN_RESULT,
+        token, status, address, family, 0xF7,
+    };
+    midi.sendSysEx(message);
+}
+
 /** Remove optional F0/F7 delimiters and verify the private manufacturer tag. */
 bool unwrapMessage(
     SysExMessage sysex,
@@ -273,6 +289,29 @@ bool handleHardwareProtocol(const uint8_t *data, uint16_t start, uint16_t end) {
     const uint8_t command = data[start + 5];
     if (command == mfx::CMD_PROFILE_REQUEST && end - start == 6) {
         sendHardwareProfile();
+        return true;
+    }
+    if (command == mfx::CMD_MODULE_SCAN && end - start == 9) {
+        const uint8_t token = data[start + 6];
+        const uint8_t sdaPin = data[start + 7];
+        const uint8_t sclPin = data[start + 8];
+        if (sdaPin == sclPin
+            || !mfx::boardPinSupports(sdaPin, mfx::CAP_OUTPUT)
+            || !mfx::boardPinSupports(sclPin, mfx::CAP_OUTPUT)) {
+            sendModuleScanResult(token, 2, 0, 0);
+            return true;
+        }
+        uint8_t addresses[12] = {};
+        uint8_t families[12] = {};
+        const uint8_t count = controller.scanI2cDevices(
+            sdaPin, sclPin, addresses, families, 12
+        );
+        for (uint8_t index = 0; index < count; ++index) {
+            sendModuleScanResult(
+                token, 0, addresses[index], families[index]
+            );
+        }
+        sendModuleScanResult(token, 1, 0, 0);
         return true;
     }
     if (command == mfx::CMD_CONFIG_BEGIN && end - start == 11) {

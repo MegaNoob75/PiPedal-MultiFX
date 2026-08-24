@@ -12,12 +12,14 @@ Persistence contract
 Only user configuration is durable:
   * controllerConfig
   * presetAssignments (bank -> logical switch id -> native PiPedal preset id)
+  * theme (the complete validated MultiFX theme shared by every display)
+  * uiSettings (shared MultiFX interaction and timing preferences)
 
 Those values are stored atomically in /var/lib/pipedal-multifx/state.json.
 Snapshot Mode and Chain Bypass are transient live-performance state and always
-start neutral when this service restarts. Schema 2 contains one narrow
-migration from the immediately preceding v0.2.0 controller schema. Obsolete
-tile/page formats are still never migrated.
+start neutral when this service restarts. Schema 3 is a clean unreleased-format
+break: incompatible state is reported and then atomically replaced with the
+checked-in factory controller configuration.
 
 Encoder transport
 -----------------
@@ -35,6 +37,7 @@ CCAbsoluteEncoder, so the physical encoder can turn indefinitely.
 from __future__ import annotations
 
 import json
+import math
 import os
 import socket
 import subprocess
@@ -74,8 +77,8 @@ RUNTIME_STATE_PORT = 8877
 RUNTIME_STATE_PATH = "/multifx-state"
 PERSISTENT_STATE_FILE = "/var/lib/pipedal-multifx/state.json"
 FACTORY_CONTROLLER_CONFIG_FILE = "/etc/pipedal/controller-config.json"
-STATE_SCHEMA_VERSION = 2
-RUNTIME_VERSION = 4
+STATE_SCHEMA_VERSION = 3
+RUNTIME_VERSION = 6
 
 MFX_SYSEX_PREFIX = (0x7D, 0x4D, 0x46, 0x58)
 CONTROLLER_PROTOCOL_VERSION = 2
@@ -100,6 +103,9 @@ CMD_CONFIG_ANALOG = 0x23
 CMD_CONFIG_ENCODER = 0x24
 CMD_CONFIG_COMMIT = 0x25
 CMD_CONFIG_RESULT = 0x26
+CMD_MODULE_SCAN = 0x30
+CMD_MODULE_SCAN_RESULT = 0x31
+PROFILE_FLAG_MODULE_SCAN = 0x20
 
 CAPABILITY_DIGITAL = 0x01
 CAPABILITY_ANALOG = 0x02
@@ -169,12 +175,15 @@ state = {
     "chainBypassEnabledStates": {},
     "controllerConfig": None,
     "presetAssignments": {"version": 1, "banks": {}},
+    "theme": None,
+    "uiSettings": None,
     "controllerHardware": {
         "connected": False,
         "protocolVersion": None,
         "boardId": None,
         "boardName": None,
         "drivers": [],
+        "moduleScanSupported": False,
         "limits": {"modules": 0, "analogControls": 0, "encoders": 0},
         "inputs": [],
         "apply": {
@@ -190,6 +199,14 @@ state = {
         "input": None,
         "message": "",
     },
+    "controllerModuleScan": {
+        "status": "idle",
+        "token": None,
+        "sdaPin": None,
+        "sclPin": None,
+        "devices": [],
+        "message": "",
+    },
 }
 
 midi_output_lock = threading.Lock()
@@ -197,6 +214,7 @@ midi_output_port = None
 last_pushed_pin_signature = None
 last_pushed_hardware_signature = None
 next_controller_learn_token = 0
+next_module_scan_token = 0
 next_hardware_config_token = 0
 physical_switch_lock = threading.Lock()
 pressed_physical_switches = set()
@@ -389,38 +407,6 @@ DEFAULT_CONTROLLER_HARDWARE = {
 }
 
 
-def _migrate_controller_config(value):
-    """Migrate schema 1 and default fields added safely within schema 2."""
-    if not isinstance(value, dict):
-        return value
-    if value.get("schemaVersion") == 1:
-        switches = value.get("switches")
-        if not isinstance(switches, list):
-            return value
-        migrated = _deepcopy(value)
-        migrated["schemaVersion"] = 2
-        migrated["hardware"] = _deepcopy(DEFAULT_CONTROLLER_HARDWARE)
-        for item in migrated["switches"]:
-            if not isinstance(item, dict):
-                continue
-            pin = item.pop("gpioPin", None)
-            item["input"] = None if pin is None else {"type": "gpio", "pin": pin}
-    else:
-        migrated = value
-
-    hardware = migrated.get("hardware")
-    controls = hardware.get("analogControls") if isinstance(hardware, dict) else None
-    if isinstance(controls, list) and any(
-        isinstance(control, dict) and "midiHysteresis" not in control
-        for control in controls
-    ):
-        migrated = _deepcopy(migrated)
-        for control in migrated["hardware"]["analogControls"]:
-            if isinstance(control, dict):
-                control.setdefault("midiHysteresis", 2)
-    return migrated
-
-
 def _validate_hardware_config(value, switch_inputs):
     """Validate topology and resource ownership before firmware transmission."""
     if not isinstance(value, dict) or value.get("version") != 1:
@@ -588,12 +574,11 @@ def _validate_hardware_config(value, switch_inputs):
 
 
 def _validate_controller_config(value):
-    """Validate current config, accepting only the explicit v0.2 migration."""
+    """Validate the current unreleased controller schema without migration."""
     if value is None:
         return None
-    value = _migrate_controller_config(value)
     if not isinstance(value, dict) or value.get("schemaVersion") != STATE_SCHEMA_VERSION:
-        raise ValueError("controllerConfig must use schemaVersion 2")
+        raise ValueError("controllerConfig must use schemaVersion 3")
     switches = value.get("switches")
     if not isinstance(switches, list) or len(switches) > MAX_FOOTSWITCHES:
         raise ValueError("controllerConfig.switches is invalid")
@@ -630,7 +615,65 @@ def _persistent_payload_locked():
         "schemaVersion": STATE_SCHEMA_VERSION,
         "controllerConfig": state.get("controllerConfig"),
         "presetAssignments": state.get("presetAssignments"),
+        "theme": state.get("theme"),
+        "uiSettings": state.get("uiSettings"),
     }
+
+
+def _validate_theme(value):
+    """Accept one bounded v3 theme document for cross-display sharing."""
+    if value is None:
+        return None
+    if not isinstance(value, dict):
+        raise ValueError("theme must be an object")
+    if value.get("version") != 3:
+        raise ValueError("theme must use version 3")
+    if not isinstance(value.get("name"), str) or not value["name"].strip():
+        raise ValueError("theme name is invalid")
+    if not isinstance(value.get("colors"), dict) or not isinstance(value.get("appearance"), dict):
+        raise ValueError("theme colors or appearance are invalid")
+    if len(json.dumps(value, separators=(",", ":"))) > 200000:
+        raise ValueError("theme is too large")
+    return _deepcopy(value)
+
+
+def _validate_ui_settings(value):
+    """Validate shared, non-audio MultiFX interaction/timing preferences."""
+    if value is None:
+        return None
+    if not isinstance(value, dict) or isinstance(value, list):
+        raise ValueError("uiSettings must be an object")
+    expected = {
+        "version",
+        "physicalControlPopout",
+        "touchControlPopout",
+        "controlPopoutDurationMs",
+        "controlPopoutScale",
+        "parameterFeedbackEnabled",
+        "statusToastDurationMs",
+    }
+    if set(value) != expected or value.get("version") != 1:
+        raise ValueError("uiSettings must use the complete version 1 schema")
+    for field in (
+        "physicalControlPopout",
+        "touchControlPopout",
+        "parameterFeedbackEnabled",
+    ):
+        if not isinstance(value.get(field), bool):
+            raise ValueError(f"uiSettings.{field} must be boolean")
+
+    def bounded_number(field, minimum, maximum):
+        setting = value.get(field)
+        if (not isinstance(setting, (int, float))
+                or isinstance(setting, bool)
+                or not math.isfinite(setting)
+                or not minimum <= setting <= maximum):
+            raise ValueError(f"uiSettings.{field} is out of range")
+
+    bounded_number("controlPopoutDurationMs", 500, 10000)
+    bounded_number("controlPopoutScale", 1.2, 2.5)
+    bounded_number("statusToastDurationMs", 500, 10000)
+    return _deepcopy(value)
 
 
 def _save_persistent_locked():
@@ -644,7 +687,7 @@ def _save_persistent_locked():
 
 
 def load_persistent_state():
-    """Restore state and rewrite the one supported previous schema atomically."""
+    """Restore current state or atomically replace incompatible unreleased data."""
     if not os.path.exists(PERSISTENT_STATE_FILE):
         with state_lock:
             state["controllerConfig"] = _load_factory_controller_config()
@@ -654,28 +697,28 @@ def load_persistent_state():
     try:
         with open(PERSISTENT_STATE_FILE, "r", encoding="utf-8") as file:
             saved = json.load(file)
-        if not isinstance(saved, dict) or saved.get("schemaVersion") not in {1, STATE_SCHEMA_VERSION}:
+        if not isinstance(saved, dict) or saved.get("schemaVersion") != STATE_SCHEMA_VERSION:
             raise ValueError("unsupported MultiFX state schema")
         raw_controller = saved.get("controllerConfig")
         controller = _validate_controller_config(raw_controller)
-        migrated_state = (
-            saved.get("schemaVersion") == 1
-            or controller != raw_controller
-        )
         assignments = _normalize_assignments(saved.get("presetAssignments", {"version": 1, "banks": {}}))
+        theme = _validate_theme(saved.get("theme"))
+        ui_settings = _validate_ui_settings(saved.get("uiSettings"))
         with state_lock:
             state["controllerConfig"] = controller
             state["presetAssignments"] = assignments
-            if migrated_state:
-                _save_persistent_locked()
+            state["theme"] = theme
+            state["uiSettings"] = ui_settings
         print(f"Restored MultiFX state from {PERSISTENT_STATE_FILE}.", flush=True)
     except Exception as error:
-        # Preserve unknown formats for inspection. Only schema 1 immediately
-        # preceding this release has a defined migration above.
+        # This feature is not released, so partial migration is riskier than a
+        # deliberate factory reset of only MultiFX controller/assignment data.
         print(f"Ignoring incompatible MultiFX state: {error}", file=sys.stderr, flush=True)
         with state_lock:
             state["controllerConfig"] = _load_factory_controller_config()
             state["presetAssignments"] = {"version": 1, "banks": {}}
+            state["theme"] = None
+            state["uiSettings"] = None
             if state["controllerConfig"] is not None:
                 _save_persistent_locked()
 
@@ -693,8 +736,19 @@ def _assignment_bank_locked(bank_id, create=False):
     return banks.get(key)
 
 
+def _expire_module_scan(token):
+    """Release a scan UI if its terminal SysEx packet is ever lost."""
+    with state_lock:
+        scan = state["controllerModuleScan"]
+        if scan.get("token") != token or scan.get("status") != "scanning":
+            return
+        scan["status"] = "error"
+        scan["message"] = "I2C discovery timed out. Check the bus pins and try again."
+        state["revision"] += 1
+
+
 def update_state(patch):
-    global next_controller_learn_token
+    global next_controller_learn_token, next_module_scan_token
     if not isinstance(patch, dict):
         raise ValueError("JSON object required")
 
@@ -730,6 +784,54 @@ def update_state(patch):
             )
             persistent_changed = True
             controller_changed = True
+
+        if "theme" in patch:
+            state["theme"] = _validate_theme(patch["theme"])
+            persistent_changed = True
+
+        if "uiSettings" in patch:
+            state["uiSettings"] = _validate_ui_settings(patch["uiSettings"])
+            persistent_changed = True
+
+        if "controllerModuleScanStart" in patch:
+            op = patch["controllerModuleScanStart"]
+            if not isinstance(op, dict):
+                raise ValueError("controllerModuleScanStart must be an object")
+            sda_pin = op.get("sdaPin")
+            scl_pin = op.get("sclPin")
+            if (not isinstance(sda_pin, int) or isinstance(sda_pin, bool)
+                    or not 0 <= sda_pin <= 126
+                    or not isinstance(scl_pin, int) or isinstance(scl_pin, bool)
+                    or not 0 <= scl_pin <= 126 or sda_pin == scl_pin):
+                raise ValueError("I2C scan pins are invalid")
+            hardware = state["controllerHardware"]
+            if not hardware["connected"] or not hardware.get("moduleScanSupported"):
+                raise ValueError("connected controller does not support I2C discovery")
+            output_pins = {
+                item.get("channel") for item in hardware.get("inputs", [])
+                if item.get("type") == "gpio" and item.get("outputCapable")
+                and not item.get("reserved")
+            }
+            if sda_pin not in output_pins or scl_pin not in output_pins:
+                raise ValueError("I2C scan pins are not available output-capable GPIOs")
+            next_module_scan_token = (next_module_scan_token % 126) + 1
+            token = next_module_scan_token
+            state["controllerModuleScan"] = {
+                "status": "scanning",
+                "token": token,
+                "sdaPin": sda_pin,
+                "sclPin": scl_pin,
+                "devices": [],
+                "message": "Scanning the selected I2C bus…",
+            }
+            controller_command = list(MFX_SYSEX_PREFIX) + [
+                HARDWARE_PROTOCOL_VERSION,
+                CMD_MODULE_SCAN,
+                token,
+                sda_pin,
+                scl_pin,
+            ]
+            controller_command_kind = "moduleScan"
 
         if "controllerLearnStart" in patch:
             op = patch["controllerLearnStart"]
@@ -905,7 +1007,21 @@ def update_state(patch):
                         "message": "Could not send Cancel. The controller will leave Learn when its timeout expires.",
                     }
                     state["revision"] += 1
+                elif controller_command_kind == "moduleScan":
+                    state["controllerModuleScan"] = {
+                        "status": "error",
+                        "token": token,
+                        "sdaPin": state["controllerModuleScan"].get("sdaPin"),
+                        "sclPin": state["controllerModuleScan"].get("sclPin"),
+                        "devices": [],
+                        "message": "Could not send the I2C discovery command.",
+                    }
+                    state["revision"] += 1
             return get_state()
+        if controller_command_kind == "moduleScan":
+            timeout = threading.Timer(4.0, _expire_module_scan, args=(token,))
+            timeout.daemon = True
+            timeout.start()
     return get_state() if controller_command is not None else result
 
 
@@ -1155,6 +1271,7 @@ def set_controller_connected(connected):
             "boardId": None,
             "boardName": None,
             "drivers": [],
+            "moduleScanSupported": False,
             "limits": {"modules": 0, "analogControls": 0, "encoders": 0},
             "inputs": [],
             "apply": {
@@ -1180,6 +1297,22 @@ def set_controller_connected(connected):
                 "input": None,
                 "message": "Controller disconnected during Learn.",
             }
+        current_scan = state["controllerModuleScan"]
+        state["controllerModuleScan"] = {
+            "status": "idle" if connected else (
+                "error" if current_scan.get("status") == "scanning"
+                else current_scan.get("status", "idle")
+            ),
+            "token": None if connected else current_scan.get("token"),
+            "sdaPin": current_scan.get("sdaPin"),
+            "sclPin": current_scan.get("sclPin"),
+            "devices": [] if connected else current_scan.get("devices", []),
+            "message": "" if connected else (
+                "Controller disconnected during I2C discovery."
+                if current_scan.get("status") == "scanning"
+                else current_scan.get("message", "")
+            ),
+        }
         state["revision"] += 1
 
 
@@ -1319,6 +1452,7 @@ def _handle_profile_report(data):
         "boardId": board_id or "multifx-controller",
         "boardName": board_name,
         "drivers": drivers,
+        "moduleScanSupported": bool(driver_mask & PROFILE_FLAG_MODULE_SCAN),
         "limits": {
             "modules": data[settings_start],
             "analogControls": data[settings_start + 1],
@@ -1359,6 +1493,7 @@ def _handle_profile_end(data):
             "boardId": completed["boardId"],
             "boardName": completed["boardName"],
             "drivers": completed["drivers"],
+            "moduleScanSupported": completed["moduleScanSupported"],
             "limits": completed["limits"],
             "inputs": completed["inputs"],
         })
@@ -1408,6 +1543,50 @@ def _handle_config_result(data):
     return True
 
 
+def _handle_module_scan_result(data):
+    """Accumulate identifiable I2C devices and publish the terminal result."""
+    if len(data) != 10:
+        return False
+    token, status_code, address, family_code = data[6:10]
+    terminal_message = None
+    with state_lock:
+        scan = state["controllerModuleScan"]
+        if scan.get("token") != token:
+            return True
+        if status_code == 0:
+            family = (
+                "mcp23017" if family_code == 1
+                else "ads1x15" if family_code == 2
+                else None
+            )
+            if family is not None and not any(
+                item.get("address") == address
+                for item in scan["devices"]
+            ):
+                scan["devices"].append({
+                    "address": address,
+                    "family": family,
+                })
+                scan["message"] = f"Found {len(scan['devices'])} I2C device(s)…"
+        elif status_code == 1:
+            count = len(scan["devices"])
+            scan["status"] = "complete"
+            scan["message"] = (
+                f"Found {count} identifiable I2C expansion device(s)."
+                if count else
+                "No supported I2C expansion devices answered on these pins."
+            )
+            terminal_message = scan["message"]
+        else:
+            scan["status"] = "error"
+            scan["message"] = "The controller rejected the I2C discovery pins."
+            terminal_message = scan["message"]
+        state["revision"] += 1
+    if terminal_message:
+        print(f"Controller I2C scan <- {terminal_message}", flush=True)
+    return True
+
+
 def handle_controller_sysex(raw_data):
     """Route private controller SysEx while ignoring unrelated MIDI devices."""
     data = list(raw_data)
@@ -1423,6 +1602,8 @@ def handle_controller_sysex(raw_data):
             return _handle_profile_end(data)
         if command == CMD_CONFIG_RESULT:
             return _handle_config_result(data)
+        if command == CMD_MODULE_SCAN_RESULT:
+            return _handle_module_scan_result(data)
         return False
     if data[4] != CONTROLLER_PROTOCOL_VERSION:
         return False

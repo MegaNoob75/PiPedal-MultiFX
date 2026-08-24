@@ -13,7 +13,7 @@ Each footswitch sends a neutral physical identity (SW1..SW12 / CC40..CC51). Cont
 - Footswitches: GPIO 6, 7, 15, 16, 1, 2, 4, 5
 
 This is the factory template, not a fixed firmware pinout. Open **Settings →
-Controller → Hardware** to select compatible pins, add input modules, configure
+Controller → Hardware Setup** to select compatible pins, add input modules, configure
 pots/sliders/expression inputs, or move the encoder connections. The firmware
 validates and stores the complete configuration atomically.
 
@@ -31,17 +31,17 @@ multifx/MULTIFX_CONTROLLER_PROTOCOL.txt
 
 A physical controller is optional. Logical switches with `input: null` remain usable with touch/mouse.
 
-## Capability discovery and switch Learn
+## Capability discovery and control Learn
 
 The controller firmware reports its board name, pin capabilities, cautions,
 hard reservations, driver catalog, and configured module channels to the
 MultiFX bridge. Controller Settings consumes that report instead of treating an
 ESP32 pin list as universal hardware knowledge.
 
-For a physical switch, select the logical switch and press **Learn** beside the
-Physical input field. While Controller Settings shows **Waiting for switch
-press…**, press the desired footswitch. The learned direct or module input is
-placed only in the unsaved draft; press **Save** to persist and activate it.
+Learn is available for switches, analog controls, encoder rotation and encoder
+buttons in Hardware Setup. Start Learn for the logical control, then press or
+move the physical input you want to assign. The learned direct or module input
+is placed only in the unsaved draft; press **Save** to persist and activate it.
 
 Learn can be cancelled and times out after 30 seconds. Switch action events are suppressed while Learn is active. An input already assigned to another logical switch is reported as a conflict and is not stolen.
 
@@ -51,11 +51,20 @@ firmware applies and stores it only after every module, source, calibration, and
 pin-ownership rule passes. A bad configuration therefore leaves the running
 last-known-good setup intact.
 
-Controller configuration schema 2 replaces the ESP32-only `gpioPin` field with
-a board-neutral source such as `{ "type": "gpio", "pin": 11 }` or
-`{ "type": "module", "moduleId": "mux1", "channel": 6 }`. The bridge and
-browser migrate only the immediately preceding v0.2.0 schema; obsolete
-preset-page/tile formats remain unsupported.
+Hardware Setup can also scan a user-selected I2C SDA/SCL pair. MCP23017 devices
+are identified directly; ADS1015/ADS1115 addresses are reported as ADS1x15 and
+the user confirms the exact converter before adding it. Passive 74HC4051 and
+CD74HC4067 multiplexers have no address or identity register, so they remain
+manual additions. A scan briefly selects the requested bus and then restores
+the active saved controller configuration.
+
+Controller configuration schema 3 uses board-neutral sources such as
+`{ "type": "gpio", "pin": 11 }` or
+`{ "type": "module", "moduleId": "mux1", "channel": 6 }`. It also stores
+freeform Performance geometry for physical controls separately from switch
+actions and wiring. This unreleased schema is an intentional clean break: old
+controller configurations are rejected and replaced by the current factory
+configuration instead of being partially migrated.
 
 ## MIDI device selection
 

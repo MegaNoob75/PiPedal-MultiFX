@@ -6,12 +6,23 @@ import { Pedalboard, PedalboardItem } from "./Pedalboard";
 import { PiPedalModelFactory } from "./PiPedalModel";
 import MultiFXPluginBrowser from "./MultiFXPluginBrowser";
 import MultiFXParameterBindingView from "./MultiFXParameterBindingView";
-import { MFX_COLORS, MFX_HEADER_HEIGHT } from "./MultiFXTheme";
+import {
+    MFX_COLORS,
+    MFX_HEADER_HEIGHT,
+    MFX_SURFACES
+} from "./MultiFXTheme";
 import "./MultiFXEffectControls.css";
 
 type BrowserTarget =
     | { kind: "replace"; instanceId: number }
     | { kind: "insert"; referenceId: number; append: boolean };
+
+/** Turn an unknown model exception into safe user-facing alert text. */
+function modelErrorMessage(error: unknown, fallback: string): string {
+    if (error instanceof Error && error.message) return error.message;
+    if (typeof error === "string" && error) return error;
+    return fallback;
+}
 
 type EditPage = "chain" | "settings" | "bindings";
 
@@ -353,8 +364,8 @@ export default function MultiFXEditView({
 
             // Adding/replacing stays on the Chain page; tapping a tile opens settings.
             setEditPage("chain");
-        } catch (error: any) {
-            model.showAlert(error?.toString?.() ?? "Unable to add plugin.");
+        } catch (error: unknown) {
+            model.showAlert(modelErrorMessage(error, "Unable to add plugin."));
         }
     };
 
@@ -398,8 +409,8 @@ export default function MultiFXEditView({
                 model.setPedalboardSelectedPlugin(next);
             }
             setEditPage("chain");
-        } catch (error: any) {
-            model.showAlert(error?.toString?.() ?? "Unable to delete plugin.");
+        } catch (error: unknown) {
+            model.showAlert(modelErrorMessage(error, "Unable to delete plugin."));
         }
     };
 
@@ -435,8 +446,8 @@ export default function MultiFXEditView({
                     target.instanceId
                 );
             }
-        } catch (error: any) {
-            model.showAlert(error?.toString?.() ?? "Unable to move plugin.");
+        } catch (error: unknown) {
+            model.showAlert(modelErrorMessage(error, "Unable to move plugin."));
         }
     };
 
@@ -581,10 +592,8 @@ export default function MultiFXEditView({
 
             // Keep the removal visually immediate even with in-place updates.
             setPedalboardRevision((revision) => revision + 1);
-        } catch (error: any) {
-            model.showAlert(
-                error?.toString?.() ?? "Unable to delete plugin."
-            );
+        } catch (error: unknown) {
+            model.showAlert(modelErrorMessage(error, "Unable to delete plugin."));
         }
     };
 
@@ -628,10 +637,8 @@ export default function MultiFXEditView({
                     leftItem.instanceId
                 );
             }
-        } catch (error: any) {
-            model.showAlert(
-                error?.toString?.() ?? "Unable to move plugin."
-            );
+        } catch (error: unknown) {
+            model.showAlert(modelErrorMessage(error, "Unable to move plugin."));
         }
     };
 
@@ -1313,7 +1320,7 @@ function EditHeader({
             >
                 <div
                     style={{
-                        color: MFX_COLORS.purpleLight,
+                        color: MFX_SURFACES.header.accent,
                         fontWeight: 900,
                         letterSpacing: "0.05em",
                         whiteSpace: "nowrap"
@@ -2015,7 +2022,7 @@ function AddPoint({
                 borderRadius: `calc(${size / 2}px * var(--mfx-ui-scale, 1))`,
                 border: `2px solid ${MFX_COLORS.purple}`,
                 background: MFX_COLORS.background,
-                color: MFX_COLORS.purpleLight,
+                color: MFX_COLORS.purple,
                 font: "inherit",
                 fontWeight: 900,
                 fontSize: compact ? "1.15rem" : "1.35rem",
@@ -2087,6 +2094,6 @@ const screenStyle: React.CSSProperties = {
     display: "flex",
     flexDirection: "column",
     overflow: "hidden",
-    background: MFX_COLORS.background,
-    color: MFX_COLORS.text
+    background: MFX_SURFACES.page.background,
+    color: MFX_SURFACES.page.text
 };

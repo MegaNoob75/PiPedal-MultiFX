@@ -23,13 +23,20 @@ meaning to a footswitch.
 
 ## Configuration split
 
-Controller configuration schema 2 contains two related sections:
+Controller configuration schema 3 contains three related sections:
 
-- `switches` and the existing layout fields describe the logical controls,
-  actions, and Performance-screen arrangement.
+- `switches` describe logical footswitch actions and their optional physical
+  input sources.
 - `hardware` describes the board template, expansion modules, analog controls,
-  and encoders. Each logical switch contains an optional board-neutral input
-  source instead of an ESP32-only GPIO number.
+  and encoders.
+- `performanceLayout` and `layoutDefaults` describe the on-screen arrangement
+  of logical switches, status elements and physical pots, sliders, expression
+  pedals, encoders and encoder buttons. Performance widgets use stable control
+  IDs, so changing a GPIO does not move the on-screen control.
+
+Each logical switch contains an optional board-neutral input source instead of
+an ESP32-only GPIO number. Schema 3 is a clean unreleased-format break; old
+controller records are reset instead of migrated.
 
 An input source is either a direct board pin or a channel on a configured
 module:
@@ -54,6 +61,12 @@ without requiring a firmware edit:
 | MCP23017 | 16 | I2C | switches and buttons |
 | ADS1015 | 4 | I2C | external 12-bit analog inputs |
 | ADS1115 | 4 | I2C | external 16-bit analog inputs |
+
+Identifiable I2C addresses can be discovered explicitly from Hardware Setup.
+The scan is deliberately limited to MCP23017 (`0x20`-`0x27`) and ADS1x15
+(`0x48`-`0x4B`) ranges. ADS1015 and ADS1115 share the same basic address and
+register protocol, so discovery reports the family and the UI requires the user
+to choose the exact model. Passive analog multiplexers cannot be auto-detected.
 
 Drivers are compiled into the firmware and selected at runtime. The firmware
 reports its driver catalog, so the UI never offers a driver that the connected

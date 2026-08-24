@@ -27,26 +27,59 @@ import {
     moduleSupportsCapability,
     validateControllerHardwareConfig
 } from "./ControllerHardwareConfig";
-import { ControllerLayoutConfig } from "./ControllerConfig";
+import {
+    ControllerLayoutConfig,
+    ControllerSwitchAction,
+    MAX_FOOTSWITCHES,
+    MAX_LONG_PRESS_MS,
+    MIN_LONG_PRESS_MS
+} from "./ControllerConfig";
 import {
     getLatestMultiFXRuntimeState,
     MultiFXControllerHardware,
     MultiFXControllerInput,
     MultiFXControllerLearn,
+    MultiFXControllerModuleScan,
     subscribeMultiFXRuntimeState,
     updateMultiFXRuntimeState
 } from "./MultiFXRuntimeSync";
-import { MFX_COLORS } from "./MultiFXTheme";
+import {
+    MFX_COLORS,
+    MFX_SURFACES,
+    multiFXSurfaceBackground
+} from "./MultiFXTheme";
 
 interface MultiFXControllerHardwareSettingsProps {
     controllerDraft: ControllerLayoutConfig;
     reportedHardware: MultiFXControllerHardware;
+    selectedSwitchId: string;
+    onSelectSwitch: (id: string) => void;
+    onSwitchLabelChange: (label: string) => void;
+    onSwitchActionChange: (
+        target: "action" | "longPressAction",
+        type: HardwareActionKind
+    ) => void;
+    onSwitchPresetIndexChange: (
+        target: "action" | "longPressAction",
+        presetIndex: number
+    ) => void;
+    onLongPressMsChange: (value: number) => void;
+    onAddSwitch: () => void;
+    onRemoveSwitch: () => void;
     onCancel: () => void;
     onSave: (
         hardware: ControllerHardwareConfig,
         switchInputs: readonly (ControllerInputSource | null)[]
     ) => Promise<string | undefined>;
 }
+
+type HardwareActionKind =
+    | "none"
+    | "preset"
+    | "bankUp"
+    | "bankDown"
+    | "chainBypass"
+    | "snapshotMode";
 
 type SourceOption = {
     id: string;
@@ -166,6 +199,14 @@ function cloneHardware(value: ControllerHardwareConfig): ControllerHardwareConfi
 export default function MultiFXControllerHardwareSettings({
     controllerDraft,
     reportedHardware,
+    selectedSwitchId,
+    onSelectSwitch,
+    onSwitchLabelChange,
+    onSwitchActionChange,
+    onSwitchPresetIndexChange,
+    onLongPressMsChange,
+    onAddSwitch,
+    onRemoveSwitch,
     onCancel,
     onSave
 }: MultiFXControllerHardwareSettingsProps) {
@@ -176,6 +217,29 @@ export default function MultiFXControllerHardwareSettings({
         () => controllerDraft.switches.map((item) => structuredClone(item.input))
     );
     const [moduleDriver, setModuleDriver] = useState<ControllerModuleDriver>("hc4067");
+    const initialI2cModule = controllerDraft.hardware.modules.find(
+        (module) => !isControllerMuxModule(module)
+    );
+    const [scanSdaPin, setScanSdaPin] = useState(
+        initialI2cModule && !isControllerMuxModule(initialI2cModule)
+            ? initialI2cModule.sdaPin
+            : 9
+    );
+    const [scanSclPin, setScanSclPin] = useState(
+        initialI2cModule && !isControllerMuxModule(initialI2cModule)
+            ? initialI2cModule.sclPin
+            : 10
+    );
+    const [moduleScan, setModuleScan] = useState<MultiFXControllerModuleScan>(
+        () => getLatestMultiFXRuntimeState()?.controllerModuleScan ?? {
+            status: "idle",
+            token: null,
+            sdaPin: null,
+            sclPin: null,
+            devices: [],
+            message: ""
+        }
+    );
     const [status, setStatus] = useState("No unsaved changes.");
     const [saving, setSaving] = useState(false);
     const [controllerLearn, setControllerLearn] = useState<MultiFXControllerLearn>(
@@ -191,14 +255,42 @@ export default function MultiFXControllerHardwareSettings({
     const [learnSession, setLearnSession] = useState<HardwareLearnSession | null>(null);
     const learnSessionRef = useRef<HardwareLearnSession | null>(null);
     const [learnFeedback, setLearnFeedback] = useState("");
+    const switchIdsRef = useRef(
+        controllerDraft.switches.map((item) => item.id)
+    );
+
+    // Logical switch edits live in the parent controller draft while this page
+    // owns unsaved source selections. Preserve those selections by durable ID
+    // when a switch is added or removed here.
+    useEffect(() => {
+        const previousIds = switchIdsRef.current;
+        setSwitchInputs((current) => {
+            const sourceById = new Map(
+                previousIds.map((id, index) => [id, current[index] ?? null])
+            );
+            return controllerDraft.switches.map((item) =>
+                structuredClone(
+                    sourceById.has(item.id)
+                        ? sourceById.get(item.id) ?? null
+                        : item.input
+                )
+            );
+        });
+        switchIdsRef.current = controllerDraft.switches.map((item) => item.id);
+    }, [controllerDraft.switches]);
 
     useEffect(() => subscribeMultiFXRuntimeState((runtime) => {
         setControllerLearn(runtime.controllerLearn);
+        setModuleScan(runtime.controllerModuleScan);
     }), []);
 
     useEffect(() => {
         learnSessionRef.current = learnSession;
     }, [learnSession]);
+
+    useEffect(() => {
+        if (moduleScan.message) setStatus(moduleScan.message);
+    }, [moduleScan.status, moduleScan.message]);
 
     useEffect(() => () => {
         const session = learnSessionRef.current;
@@ -524,6 +616,58 @@ export default function MultiFXControllerHardwareSettings({
         });
     };
 
+    /** Ask firmware to probe only identifiable I2C expansion address ranges. */
+    const scanI2cModules = async () => {
+        setStatus("Scanning the selected I2C bus…");
+        try {
+            const runtime = await updateMultiFXRuntimeState({
+                controllerModuleScanStart: {
+                    sdaPin: scanSdaPin,
+                    sclPin: scanSclPin
+                }
+            });
+            setModuleScan(runtime.controllerModuleScan);
+            setStatus(runtime.controllerModuleScan.message);
+        } catch (error) {
+            setStatus(error instanceof Error
+                ? error.message
+                : "I2C discovery could not start.");
+        }
+    };
+
+    /** Add one discovered address while preserving the user's unsaved draft. */
+    const addDiscoveredModule = (
+        address: number,
+        driver: "mcp23017" | "ads1015" | "ads1115"
+    ) => {
+        if (draft.modules.length >= MAX_CONTROLLER_MODULES) return;
+        if (draft.modules.some((module) =>
+            !isControllerMuxModule(module)
+            && module.address === address
+            && module.sdaPin === scanSdaPin
+            && module.sclPin === scanSclPin
+        )) {
+            setStatus("That detected address is already in the unsaved module list.");
+            return;
+        }
+        const sequence = nextSequence(
+            draft.modules.map((item) => item.id),
+            "module"
+        );
+        const created = createControllerModule(driver, sequence);
+        if (isControllerMuxModule(created)) return;
+        updateDraft({
+            ...draft,
+            modules: [...draft.modules, {
+                ...created,
+                sdaPin: scanSdaPin,
+                sclPin: scanSclPin,
+                address
+            }]
+        });
+        setStatus("Detected module added to unsaved changes. Confirm its wiring, then Save & Apply.");
+    };
+
     /** Replace one analog control in the immutable page draft. */
     const replaceAnalog = (
         index: number,
@@ -626,6 +770,13 @@ export default function MultiFXControllerHardwareSettings({
     const availableDriverIds = new Set(
         reportedHardware.drivers.map((item) => item.id)
     );
+    const selectedSwitchIndex = Math.max(
+        0,
+        controllerDraft.switches.findIndex(
+            (item) => item.id === selectedSwitchId
+        )
+    );
+    const selectedSwitch = controllerDraft.switches[selectedSwitchIndex];
 
     return (
         <div style={rootStyle}>
@@ -679,9 +830,9 @@ export default function MultiFXControllerHardwareSettings({
                     </div>
                 </div>
                 <div style={helpStyle}>
-                    This restores your current 4 pots and encoder. Switch inputs remain on the
-                    Controller Settings page so their unsaved actions and layout stay intact.
-                    The template is only a recommended starting point; compatible pins remain user-selectable.
+                    This restores your current 4 pots and encoder without changing
+                    the switch/button configuration. The template is only a recommended
+                    starting point; compatible pins remain user-selectable.
                 </div>
             </section>
 
@@ -689,47 +840,164 @@ export default function MultiFXControllerHardwareSettings({
                 <div>
                     <div style={sectionHeadingStyle}>SWITCHES & BUTTONS</div>
                     <div style={helpStyle}>
-                        Choose the digital pin or expansion-module channel for each switch.
-                        Switch actions, names, and screen positions remain in Controller Settings.
+                        Add each logical switch here, name it, choose what it does,
+                        and assign its physical pin or expansion-module channel.
+                        Screen position remains in Layout.
                     </div>
                 </div>
-                <div style={switchHardwareGridStyle}>
-                    {controllerDraft.switches.map((item, index) => (
-                        <div key={item.id} style={switchHardwareCardStyle}>
-                            <SourceSelect
-                                label={item.label}
-                                value={switchInputs[index] ?? null}
-                                options={digitalOptions}
-                                optional
-                                onChange={(source) => setSwitchInputs((current) => {
-                                    const next = [...current];
-                                    next[index] = source;
-                                    setStatus("Unsaved changes.");
-                                    return next;
-                                })}
-                            />
+                <div style={switchEditorLayoutStyle}>
+                    <div style={switchPickerStyle}>
+                        {controllerDraft.switches.map((item, index) => (
+                            <button
+                                key={item.id}
+                                type="button"
+                                onClick={() => onSelectSwitch(item.id)}
+                                style={{
+                                    ...switchPickerButtonStyle,
+                                    borderColor: item.id === selectedSwitchId
+                                        ? MFX_COLORS.cyan
+                                        : MFX_COLORS.border,
+                                    boxShadow: item.id === selectedSwitchId
+                                        ? `0 0 0 2px ${MFX_COLORS.cyanSurface}`
+                                        : "none"
+                                }}
+                            >
+                                <strong style={{ color: MFX_COLORS.cyan }}>
+                                    {item.label}
+                                </strong>
+                                <span style={switchSummaryStyle}>
+                                    {hardwareActionLabel(item.action)}
+                                </span>
+                                <span style={switchSourceSummaryStyle}>
+                                    {controllerInputSourceLabel(
+                                        switchInputs[index] ?? null,
+                                        draft.modules
+                                    )}
+                                </span>
+                            </button>
+                        ))}
+                        <div style={addRowStyle}>
                             <button
                                 type="button"
-                                onClick={() => learnSession?.kind === "switch" && learnSession.targetId === item.id
-                                    ? void cancelLearn(learnSession)
-                                    : void startLearn("switch", index)}
-                                disabled={saving || (
-                                    learnSession !== null && (
-                                        learnSession.kind !== "switch" || learnSession.targetId !== item.id
-                                    )
-                                ) || (
-                                    learnSession === null && (
-                                        !reportedHardware.connected
-                                        || (reportedHardware.protocolVersion ?? 0) < 2
-                                        || digitalOptions.length === 0
-                                    )
-                                )}
-                                style={learnButtonStyle}
+                                onClick={() => {
+                                    onAddSwitch();
+                                    setStatus("Unsaved changes.");
+                                }}
+                                disabled={controllerDraft.switches.length >= MAX_FOOTSWITCHES}
+                                style={accentButtonStyle}
                             >
-                                {learnSession?.kind === "switch" && learnSession.targetId === item.id ? "CANCEL" : "LEARN"}
+                                + SWITCH
+                            </button>
+                            <button
+                                type="button"
+                                onClick={() => {
+                                    onRemoveSwitch();
+                                    setStatus("Unsaved changes.");
+                                }}
+                                disabled={!selectedSwitch}
+                                style={dangerButtonStyle}
+                            >
+                                REMOVE
                             </button>
                         </div>
-                    ))}
+                    </div>
+
+                    {selectedSwitch ? (
+                        <div style={selectedSwitchEditorStyle}>
+                            <label style={fieldStyle}>
+                                <span style={fieldLabelStyle}>Switch label</span>
+                                <input
+                                    value={selectedSwitch.label}
+                                    onChange={(event) => {
+                                        onSwitchLabelChange(event.target.value);
+                                        setStatus("Unsaved changes.");
+                                    }}
+                                    style={inputStyle}
+                                />
+                            </label>
+
+                            <div style={sourceAndLearnStyle}>
+                                <SourceSelect
+                                    label="Physical input"
+                                    value={switchInputs[selectedSwitchIndex] ?? null}
+                                    options={digitalOptions}
+                                    optional
+                                    onChange={(source) => setSwitchInputs((current) => {
+                                        const next = [...current];
+                                        next[selectedSwitchIndex] = source;
+                                        setStatus("Unsaved changes.");
+                                        return next;
+                                    })}
+                                />
+                                <button
+                                    type="button"
+                                    onClick={() => learnSession?.kind === "switch"
+                                        && learnSession.targetId === selectedSwitch.id
+                                        ? void cancelLearn(learnSession)
+                                        : void startLearn("switch", selectedSwitchIndex)}
+                                    disabled={saving || (
+                                        learnSession !== null && (
+                                            learnSession.kind !== "switch"
+                                            || learnSession.targetId !== selectedSwitch.id
+                                        )
+                                    ) || (
+                                        learnSession === null && (
+                                            !reportedHardware.connected
+                                            || (reportedHardware.protocolVersion ?? 0) < 2
+                                            || digitalOptions.length === 0
+                                        )
+                                    )}
+                                    style={learnButtonStyle}
+                                >
+                                    {learnSession?.kind === "switch"
+                                        && learnSession.targetId === selectedSwitch.id
+                                        ? "CANCEL"
+                                        : "LEARN"}
+                                </button>
+                            </div>
+
+                            <div style={twoColumnStyle}>
+                                <HardwareActionEditor
+                                    title="SHORT PRESS"
+                                    action={selectedSwitch.action}
+                                    onType={(type) => {
+                                        onSwitchActionChange("action", type);
+                                        setStatus("Unsaved changes.");
+                                    }}
+                                    onPresetIndex={(presetIndex) => {
+                                        onSwitchPresetIndexChange("action", presetIndex);
+                                        setStatus("Unsaved changes.");
+                                    }}
+                                />
+                                <HardwareActionEditor
+                                    title="LONG PRESS"
+                                    action={selectedSwitch.longPressAction
+                                        ?? { type: "none", text: "Unused" }}
+                                    onType={(type) => {
+                                        onSwitchActionChange("longPressAction", type);
+                                        setStatus("Unsaved changes.");
+                                    }}
+                                    onPresetIndex={(presetIndex) => {
+                                        onSwitchPresetIndexChange("longPressAction", presetIndex);
+                                        setStatus("Unsaved changes.");
+                                    }}
+                                />
+                            </div>
+
+                            <NumberField
+                                label="Long-press threshold (ms)"
+                                value={controllerDraft.longPressMs}
+                                min={MIN_LONG_PRESS_MS}
+                                max={MAX_LONG_PRESS_MS}
+                                onChange={(value) => {
+                                    onLongPressMsChange(value);
+                                    setStatus("Unsaved changes.");
+                                }}
+                            />
+                        </div>
+                    ) : (
+                        <div style={emptyStyle}>Add a switch to configure it.</div>
+                    )}
                 </div>
                 <div style={helpStyle}>
                     Press Learn, then press the matching physical switch or button.
@@ -772,6 +1040,111 @@ export default function MultiFXControllerHardwareSettings({
                             + MODULE
                         </button>
                     </div>
+                </div>
+                <div style={moduleDiscoveryStyle}>
+                    <div>
+                        <div style={fieldLabelStyle}>I2C AUTO-DETECTION</div>
+                        <div style={helpStyle}>
+                            Enter the SDA/SCL pins the modules are wired to.
+                            MCP23017 and ADS1x15 addresses can answer a scan;
+                            passive 74HC4051/CD74HC4067 multiplexers cannot
+                            identify themselves and must be added manually.
+                        </div>
+                    </div>
+                    <div style={moduleDiscoveryControlsStyle}>
+                        <NumberField
+                            label="SDA GPIO"
+                            value={scanSdaPin}
+                            min={0}
+                            max={126}
+                            onChange={setScanSdaPin}
+                        />
+                        <NumberField
+                            label="SCL GPIO"
+                            value={scanSclPin}
+                            min={0}
+                            max={126}
+                            onChange={setScanSclPin}
+                        />
+                        <button
+                            type="button"
+                            onClick={() => void scanI2cModules()}
+                            disabled={!reportedHardware.connected
+                                || !reportedHardware.moduleScanSupported
+                                || moduleScan.status === "scanning"}
+                            style={accentButtonStyle}
+                        >
+                            {moduleScan.status === "scanning"
+                                ? "SCANNING…"
+                                : "DETECT I2C MODULES"}
+                        </button>
+                    </div>
+                    {reportedHardware.connected
+                        && !reportedHardware.moduleScanSupported && (
+                        <div style={warningStyle}>
+                            The connected firmware predates I2C discovery.
+                            Upload the current controller sketch to enable it.
+                        </div>
+                    )}
+                    {moduleScan.message && (
+                        <div style={statusStyle}>{moduleScan.message}</div>
+                    )}
+                    {moduleScan.devices.map((device) => (
+                        <div
+                            key={`${device.family}:${device.address}`}
+                            style={detectedModuleStyle}
+                        >
+                            <span>
+                                <strong style={{ color: MFX_COLORS.cyan }}>
+                                    {device.family === "mcp23017"
+                                        ? "MCP23017"
+                                        : "ADS1x15"}
+                                </strong>
+                                {` at 0x${device.address
+                                    .toString(16).toUpperCase()}`}
+                            </span>
+                            <div style={addRowStyle}>
+                                {device.family === "mcp23017" ? (
+                                    <button
+                                        type="button"
+                                        onClick={() => addDiscoveredModule(
+                                            device.address,
+                                            "mcp23017"
+                                        )}
+                                        disabled={draft.modules.length >= MAX_CONTROLLER_MODULES}
+                                        style={normalButtonStyle}
+                                    >
+                                        ADD
+                                    </button>
+                                ) : (
+                                    <>
+                                        <button
+                                            type="button"
+                                            onClick={() => addDiscoveredModule(
+                                                device.address,
+                                                "ads1015"
+                                            )}
+                                            disabled={draft.modules.length >= MAX_CONTROLLER_MODULES}
+                                            style={normalButtonStyle}
+                                        >
+                                            ADD ADS1015
+                                        </button>
+                                        <button
+                                            type="button"
+                                            onClick={() => addDiscoveredModule(
+                                                device.address,
+                                                "ads1115"
+                                            )}
+                                            disabled={draft.modules.length >= MAX_CONTROLLER_MODULES}
+                                            style={normalButtonStyle}
+                                        >
+                                            ADD ADS1115
+                                        </button>
+                                    </>
+                                )}
+                            </div>
+                        </div>
+                    ))}
                 </div>
                 {draft.modules.length === 0 ? (
                     <div style={emptyStyle}>No expansion modules. Direct board pins remain available.</div>
@@ -1145,6 +1518,68 @@ function SelectField({ label, value, options, onChange }: SelectFieldProps) {
     );
 }
 
+/** Human-readable summary for the switch picker. */
+function hardwareActionLabel(action: ControllerSwitchAction): string {
+    switch (action.type) {
+        case "preset": return `Preset slot ${action.presetIndex + 1}`;
+        case "bankUp": return "Bank Up";
+        case "bankDown": return "Bank Down";
+        case "chainBypass": return "Chain Bypass";
+        case "snapshotMode": return "Snapshot Mode";
+        case "none": return action.text || "Unused";
+    }
+}
+
+/** Compact logical-action editor embedded beside the selected physical input. */
+function HardwareActionEditor({
+    title,
+    action,
+    onType,
+    onPresetIndex
+}: {
+    title: string;
+    action: ControllerSwitchAction;
+    onType: (type: HardwareActionKind) => void;
+    onPresetIndex: (presetIndex: number) => void;
+}) {
+    return (
+        <div style={actionEditorStyle}>
+            <div style={fieldLabelStyle}>{title}</div>
+            <select
+                value={action.type}
+                onChange={(event) => onType(
+                    event.target.value as HardwareActionKind
+                )}
+                style={inputStyle}
+            >
+                <option value="none">Unused</option>
+                <option value="preset">Preset slot</option>
+                <option value="bankUp">Bank Up</option>
+                <option value="bankDown">Bank Down</option>
+                <option value="chainBypass">Chain Bypass</option>
+                <option value="snapshotMode">Snapshot Mode</option>
+            </select>
+            {action.type === "preset" && (
+                <label style={fieldStyle}>
+                    <span style={fieldLabelStyle}>Preset slot</span>
+                    <input
+                        type="number"
+                        min={1}
+                        value={action.presetIndex + 1}
+                        onChange={(event) => {
+                            const value = Number(event.target.value);
+                            if (Number.isFinite(value)) {
+                                onPresetIndex(Math.max(0, Math.round(value) - 1));
+                            }
+                        }}
+                        style={inputStyle}
+                    />
+                </label>
+            )}
+        </div>
+    );
+}
+
 /** Compact checkbox field aligned with the other electrical settings. */
 function CheckboxField({
     label,
@@ -1176,8 +1611,8 @@ const rootStyle: React.CSSProperties = {
     maxHeight: "100%",
     boxSizing: "border-box",
     padding: "clamp(12px, 2vw, 24px)",
-    color: MFX_COLORS.text,
-    background: MFX_COLORS.background,
+    color: MFX_SURFACES.page.text,
+    background: MFX_SURFACES.page.background,
     display: "flex",
     flexDirection: "column",
     gap: 14,
@@ -1190,13 +1625,22 @@ const headerStyle: React.CSSProperties = { display: "flex", justifyContent: "spa
 const titleStyle: React.CSSProperties = { color: MFX_COLORS.cyan, fontSize: "clamp(1.1rem, 2vw, 1.55rem)", fontWeight: 900, letterSpacing: "0.08em" };
 const subtitleStyle: React.CSSProperties = { color: MFX_COLORS.muted, marginTop: 4, maxWidth: 760 };
 const connectionBadgeStyle = (connected: boolean): React.CSSProperties => ({ border: `1px solid ${connected ? MFX_COLORS.cyan : MFX_COLORS.border}`, color: connected ? MFX_COLORS.cyan : MFX_COLORS.muted, borderRadius: 999, padding: "7px 12px", fontSize: "0.76rem", fontWeight: 800 });
-const sectionStyle: React.CSSProperties = { border: `1px solid ${MFX_COLORS.border}`, background: MFX_COLORS.panel, borderRadius: 12, padding: "clamp(12px, 1.8vw, 20px)", display: "flex", flexDirection: "column", gap: 12 };
+const sectionStyle: React.CSSProperties = { border: "1px solid transparent", background: multiFXSurfaceBackground("panel"), color: MFX_SURFACES.panel.text, boxShadow: MFX_SURFACES.panel.shadow, borderRadius: 12, padding: "clamp(12px, 1.8vw, 20px)", display: "flex", flexDirection: "column", gap: 12 };
 const sectionHeadingStyle: React.CSSProperties = { color: MFX_COLORS.cyan, fontWeight: 900, letterSpacing: "0.06em" };
 const sectionTitleRowStyle: React.CSSProperties = { display: "flex", alignItems: "flex-end", justifyContent: "space-between", gap: 12, flexWrap: "wrap" };
 const twoColumnStyle: React.CSSProperties = { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(240px, 1fr))", gap: 12 };
 const responsiveFieldsStyle: React.CSSProperties = { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(170px, 1fr))", gap: 10, alignItems: "start" };
-const switchHardwareGridStyle: React.CSSProperties = { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(230px, 1fr))", gap: 10 };
-const switchHardwareCardStyle: React.CSSProperties = { display: "grid", gridTemplateColumns: "minmax(0, 1fr) auto", gap: 8, alignItems: "end", border: `1px solid ${MFX_COLORS.border}`, borderRadius: 8, padding: 10, background: MFX_COLORS.panelAlt };
+const moduleDiscoveryStyle: React.CSSProperties = { display: "flex", flexDirection: "column", gap: 9, padding: 11, border: `1px solid ${MFX_COLORS.border}`, borderRadius: 9, background: MFX_COLORS.background };
+const moduleDiscoveryControlsStyle: React.CSSProperties = { display: "grid", gridTemplateColumns: "minmax(110px, 160px) minmax(110px, 160px) minmax(180px, auto)", gap: 9, alignItems: "end" };
+const detectedModuleStyle: React.CSSProperties = { display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 9, padding: 9, border: `1px solid ${MFX_COLORS.border}`, borderRadius: 8, background: MFX_COLORS.panelAlt };
+const switchEditorLayoutStyle: React.CSSProperties = { display: "grid", gridTemplateColumns: "minmax(210px, .8fr) minmax(280px, 1.4fr)", gap: 12, alignItems: "start" };
+const switchPickerStyle: React.CSSProperties = { display: "flex", flexDirection: "column", gap: 7, minWidth: 0 };
+const switchPickerButtonStyle: React.CSSProperties = { width: "100%", minHeight: 66, display: "flex", flexDirection: "column", alignItems: "stretch", gap: 3, padding: 9, border: "1px solid", borderRadius: 8, background: MFX_COLORS.panelAlt, color: MFX_COLORS.text, textAlign: "left", font: "inherit", cursor: "pointer" };
+const switchSummaryStyle: React.CSSProperties = { fontSize: ".8rem", fontWeight: 850, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" };
+const switchSourceSummaryStyle: React.CSSProperties = { color: MFX_COLORS.muted, fontSize: ".7rem", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" };
+const selectedSwitchEditorStyle: React.CSSProperties = { display: "flex", flexDirection: "column", gap: 11, minWidth: 0, padding: 12, border: `1px solid ${MFX_COLORS.border}`, borderRadius: 9, background: MFX_COLORS.panelAlt };
+const sourceAndLearnStyle: React.CSSProperties = { display: "grid", gridTemplateColumns: "minmax(0, 1fr) auto", gap: 8, alignItems: "end" };
+const actionEditorStyle: React.CSSProperties = { display: "flex", flexDirection: "column", gap: 7, minWidth: 0, padding: 9, border: `1px solid ${MFX_COLORS.border}`, borderRadius: 8, background: MFX_COLORS.panel };
 const fieldStyle: React.CSSProperties = { display: "flex", flexDirection: "column", gap: 5, minWidth: 0 };
 const fieldLabelStyle: React.CSSProperties = { color: MFX_COLORS.muted, fontSize: "0.76rem", fontWeight: 800, letterSpacing: "0.03em" };
 const inputStyle: React.CSSProperties = { boxSizing: "border-box", width: "100%", minHeight: 38, color: MFX_COLORS.text, background: MFX_COLORS.panelAlt, border: `1px solid ${MFX_COLORS.border}`, borderRadius: 7, padding: "7px 9px" };

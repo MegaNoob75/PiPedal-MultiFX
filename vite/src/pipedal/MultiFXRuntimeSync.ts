@@ -3,9 +3,26 @@
  *
  * One singleton poller owns the bridge connection. Components subscribe to the
  * same normalized snapshot instead of running independent GET loops. Persistent
- * shared state is limited to controllerConfig and presetAssignments; Snapshot
- * Mode / Chain Bypass are transient runtime state and reset with the bridge.
+ * durable shared state is limited to controllerConfig, presetAssignments and
+ * the active theme; Snapshot Mode / Chain Bypass remain transient runtime
+ * state and reset with the bridge.
  */
+
+import {
+    applyMultiFXTheme,
+    loadMultiFXTheme,
+    MULTIFX_THEME_CHANGED_EVENT,
+    MultiFXThemeDefinition,
+    THEME_STORAGE_KEY,
+    validateMultiFXTheme
+} from "./MultiFXTheme";
+import {
+    loadMultiFXUIBehaviorSettings,
+    MULTIFX_UI_BEHAVIOR_CHANGED_EVENT,
+    MULTIFX_UI_BEHAVIOR_STORAGE_KEY,
+    MultiFXUIBehaviorSettings,
+    validateMultiFXUIBehaviorSettings
+} from "./MultiFXUIBehavior";
 
 export type MultiFXControllerInputCapability = "digital" | "analog";
 export type MultiFXControllerLearnCapability =
@@ -47,6 +64,7 @@ export type MultiFXControllerHardware = {
     boardId: string | null;
     boardName: string | null;
     drivers: MultiFXControllerDriver[];
+    moduleScanSupported: boolean;
     limits: {
         modules: number;
         analogControls: number;
@@ -65,6 +83,18 @@ export type MultiFXControllerLearn = {
     message: string;
 };
 
+export type MultiFXControllerModuleScan = {
+    status: "idle" | "scanning" | "complete" | "error";
+    token: number | null;
+    sdaPin: number | null;
+    sclPin: number | null;
+    devices: Array<{
+        address: number;
+        family: "mcp23017" | "ads1x15";
+    }>;
+    message: string;
+};
+
 export type MultiFXRuntimeState = {
     version: number;
     revision: number;
@@ -79,8 +109,11 @@ export type MultiFXRuntimeState = {
 
     controllerConfig?: unknown | null;
     presetAssignments?: unknown;
+    theme?: unknown | null;
+    uiSettings?: unknown | null;
     controllerHardware: MultiFXControllerHardware;
     controllerLearn: MultiFXControllerLearn;
+    controllerModuleScan: MultiFXControllerModuleScan;
 };
 
 export type MultiFXPresetAssignmentUpdate = {
@@ -98,6 +131,8 @@ export type MultiFXRuntimeStatePatch = Partial<Pick<
     | "chainBypassWasPresetChanged"
     | "chainBypassEnabledStates"
     | "controllerConfig"
+    | "theme"
+    | "uiSettings"
 >> & {
     presetAssignmentUpdate?: MultiFXPresetAssignmentUpdate;
     presetAssignmentSwap?: { bankId: number; leftSwitchId: string; rightSwitchId: string };
@@ -110,6 +145,7 @@ export type MultiFXRuntimeStatePatch = Partial<Pick<
         hardwareSwitch: number;
     };
     controllerLearnCancel?: { token: number };
+    controllerModuleScanStart?: { sdaPin: number; sclPin: number };
 };
 
 export const MULTIFX_RUNTIME_POLL_MS = 250;
@@ -235,6 +271,7 @@ function normalizeControllerHardware(
             ? source.boardName
             : null,
         drivers,
+        moduleScanSupported: Boolean(source.moduleScanSupported),
         limits: {
             modules: Math.max(0, Math.trunc(Number(rawLimits.modules) || 0)),
             analogControls: Math.max(0, Math.trunc(Number(rawLimits.analogControls) || 0)),
@@ -292,6 +329,40 @@ function normalizeControllerLearn(value: unknown): MultiFXControllerLearn {
     };
 }
 
+function normalizeControllerModuleScan(
+    value: unknown
+): MultiFXControllerModuleScan {
+    const source = value && typeof value === "object"
+        ? value as Record<string, unknown>
+        : {};
+    const statuses = new Set(["idle", "scanning", "complete", "error"]);
+    const rawDevices = Array.isArray(source.devices) ? source.devices : [];
+    const devices: MultiFXControllerModuleScan["devices"] = [];
+    for (const value of rawDevices) {
+        if (!value || typeof value !== "object") continue;
+        const device = value as Record<string, unknown>;
+        if (typeof device.address !== "number"
+            || !Number.isInteger(device.address)
+            || (device.family !== "mcp23017"
+                && device.family !== "ads1x15")) continue;
+        devices.push({
+            address: device.address,
+            family: device.family
+        });
+    }
+    return {
+        status: typeof source.status === "string"
+            && statuses.has(source.status)
+            ? source.status as MultiFXControllerModuleScan["status"]
+            : "idle",
+        token: numberOrNull(source.token),
+        sdaPin: numberOrNull(source.sdaPin),
+        sclPin: numberOrNull(source.sclPin),
+        devices,
+        message: typeof source.message === "string" ? source.message : ""
+    };
+}
+
 function normalizeRuntimeState(value: unknown): MultiFXRuntimeState {
     const source = value && typeof value === "object"
         ? value as Record<string, unknown>
@@ -331,10 +402,19 @@ function normalizeRuntimeState(value: unknown): MultiFXRuntimeState {
             source,
             "presetAssignments"
         ) ? source.presetAssignments : undefined,
+        theme: Object.prototype.hasOwnProperty.call(source, "theme")
+            ? source.theme
+            : undefined,
+        uiSettings: Object.prototype.hasOwnProperty.call(source, "uiSettings")
+            ? source.uiSettings
+            : undefined,
         controllerHardware: normalizeControllerHardware(
             source.controllerHardware
         ),
-        controllerLearn: normalizeControllerLearn(source.controllerLearn)
+        controllerLearn: normalizeControllerLearn(source.controllerLearn),
+        controllerModuleScan: normalizeControllerModuleScan(
+            source.controllerModuleScan
+        )
     };
 }
 
@@ -484,8 +564,7 @@ export async function updateMultiFXRuntimeState(
 }
 
 /* Controller configuration sync is centralized here too. */
-const CONTROLLER_STORAGE_KEY = "pipedal-multifx-controller-config-v3";
-const PREVIOUS_CONTROLLER_STORAGE_KEY = "pipedal-multifx-controller-config-v2";
+const CONTROLLER_STORAGE_KEY = "pipedal-multifx-controller-config-v4";
 const CONTROLLER_CHANGED_EVENT = "multifx-controller-config-changed";
 let applyingRemoteController = false;
 let controllerSyncStarted = false;
@@ -508,6 +587,105 @@ function sameJson(left: unknown, right: unknown): boolean {
     }
 }
 
+/* Theme synchronization mirrors controller configuration synchronization:
+   local saves publish to the bridge, while bridge revisions update every
+   connected browser without turning a remote apply into another POST. */
+let applyingRemoteTheme = false;
+let themeSyncStarted = false;
+let themeBootstrapSent = false;
+
+function applyRemoteTheme(value: unknown) {
+    const valid = validateMultiFXTheme(value);
+    if (!valid || sameJson(loadMultiFXTheme(), valid)) return;
+
+    applyingRemoteTheme = true;
+    try {
+        window.localStorage.setItem(
+            THEME_STORAGE_KEY,
+            JSON.stringify(valid, null, 2)
+        );
+        applyMultiFXTheme(valid);
+        window.dispatchEvent(new Event(MULTIFX_THEME_CHANGED_EVENT));
+    } finally {
+        applyingRemoteTheme = false;
+    }
+}
+
+function publishLocalTheme(theme: MultiFXThemeDefinition) {
+    void updateMultiFXRuntimeState({ theme }).catch(() => undefined);
+}
+
+function startThemeSync() {
+    if (themeSyncStarted || typeof window === "undefined") return;
+    themeSyncStarted = true;
+
+    window.addEventListener(MULTIFX_THEME_CHANGED_EVENT, () => {
+        if (!applyingRemoteTheme) publishLocalTheme(loadMultiFXTheme());
+    });
+
+    subscribeMultiFXRuntimeState((runtime) => {
+        if (runtime.theme !== undefined && runtime.theme !== null) {
+            applyRemoteTheme(runtime.theme);
+            return;
+        }
+        if (!themeBootstrapSent) {
+            themeBootstrapSent = true;
+            publishLocalTheme(loadMultiFXTheme());
+        }
+    });
+}
+
+/* Interaction preferences are shared independently of the visual theme. This
+   keeps pop-out/timing behavior identical without mixing system behavior into
+   a theme preset. */
+let applyingRemoteUIBehavior = false;
+let uiBehaviorSyncStarted = false;
+let uiBehaviorBootstrapSent = false;
+
+function applyRemoteUIBehavior(value: unknown) {
+    const valid = validateMultiFXUIBehaviorSettings(value);
+    if (!valid || sameJson(loadMultiFXUIBehaviorSettings(), valid)) return;
+
+    applyingRemoteUIBehavior = true;
+    try {
+        window.localStorage.setItem(
+            MULTIFX_UI_BEHAVIOR_STORAGE_KEY,
+            JSON.stringify(valid, null, 2)
+        );
+        window.dispatchEvent(new Event(MULTIFX_UI_BEHAVIOR_CHANGED_EVENT));
+    } finally {
+        applyingRemoteUIBehavior = false;
+    }
+}
+
+function publishLocalUIBehavior(settings: MultiFXUIBehaviorSettings) {
+    void updateMultiFXRuntimeState({ uiSettings: settings })
+        .catch(() => undefined);
+}
+
+function startUIBehaviorSync() {
+    if (uiBehaviorSyncStarted || typeof window === "undefined") return;
+    uiBehaviorSyncStarted = true;
+
+    window.addEventListener(MULTIFX_UI_BEHAVIOR_CHANGED_EVENT, () => {
+        if (!applyingRemoteUIBehavior) {
+            publishLocalUIBehavior(loadMultiFXUIBehaviorSettings());
+        }
+    });
+
+    subscribeMultiFXRuntimeState((runtime) => {
+        if (runtime.uiSettings !== undefined
+            && runtime.uiSettings !== null) {
+            applyRemoteUIBehavior(runtime.uiSettings);
+            return;
+        }
+        if (!uiBehaviorBootstrapSent) {
+            uiBehaviorBootstrapSent = true;
+            publishLocalUIBehavior(loadMultiFXUIBehaviorSettings());
+        }
+    });
+}
+
 function applyRemoteControllerConfig(value: unknown | null) {
     const current = readLocalControllerConfig();
     if (sameJson(current, value)) return;
@@ -521,7 +699,6 @@ function applyRemoteControllerConfig(value: unknown | null) {
                 CONTROLLER_STORAGE_KEY,
                 JSON.stringify(value, null, 2)
             );
-            window.localStorage.removeItem(PREVIOUS_CONTROLLER_STORAGE_KEY);
         }
         window.dispatchEvent(new Event(CONTROLLER_CHANGED_EVENT));
     } finally {
@@ -550,4 +727,6 @@ function startControllerSync() {
 if (typeof window !== "undefined") {
     startMultiFXRuntimeSync();
     startControllerSync();
+    startThemeSync();
+    startUIBehaviorSync();
 }

@@ -39,6 +39,16 @@ constexpr uint8_t CMD_CONFIG_ANALOG = 0x23;
 constexpr uint8_t CMD_CONFIG_ENCODER = 0x24;
 constexpr uint8_t CMD_CONFIG_COMMIT = 0x25;
 constexpr uint8_t CMD_CONFIG_RESULT = 0x26;
+constexpr uint8_t CMD_MODULE_SCAN = 0x30;
+constexpr uint8_t CMD_MODULE_SCAN_RESULT = 0x31;
+
+enum ModuleScanFamily : uint8_t {
+    MODULE_SCAN_MCP23017 = 1,
+    // ADS1015 and ADS1115 share addresses and their basic register protocol,
+    // so discovery deliberately reports the family and lets the user confirm
+    // the exact converter model before saving.
+    MODULE_SCAN_ADS1X15 = 2,
+};
 
 enum SourceType : uint8_t {
     SOURCE_GPIO = 0,

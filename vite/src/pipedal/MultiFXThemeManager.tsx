@@ -4,14 +4,28 @@ import {
     applyMultiFXTheme,
     BUILT_IN_THEMES,
     deleteCustomMultiFXTheme,
+    getMultiFXThemeStyleLabel,
     loadCustomMultiFXThemes,
     loadMultiFXTheme,
     MultiFXThemeDefinition,
+    MultiFXThemeControlRole,
+    MultiFXThemeControlState,
+    MultiFXThemePaint,
+    MultiFXThemeSurface,
     saveCustomMultiFXTheme,
     saveMultiFXTheme,
+    themePaintToCss,
     validateMultiFXTheme,
-    MFX_COLORS
+    MFX_COLORS,
+    MFX_SURFACES,
+    multiFXSurfaceBackground
 } from "./MultiFXTheme";
+import MultiFXFootswitchGraphic, {
+    MultiFXArcadeButtonGraphic
+} from "./MultiFXFootswitchGraphic";
+import "./MultiFXPerformanceAppearance.css";
+
+type ThemeBrowseMode = "STYLE" | "COLOR";
 
 type ThemeCategory =
     | "COLORFUL"
@@ -20,6 +34,22 @@ type ThemeCategory =
     | "AMP / VINTAGE"
     | "STUDIO / NEUTRAL"
     | "TERMINAL / HIGH CONTRAST";
+
+type ThemeEditorTab =
+    | "COLORS"
+    | "SURFACES"
+    | "TILES"
+    | "CONTROLS"
+    | "MOTION";
+
+const STYLE_CATEGORY_ORDER = [
+    "MODERN TILES",
+    "STUDIO TILES",
+    "METAL STOMPBOX",
+    "GLASS PANELS",
+    "ARCADE BUTTONS",
+    "MINIMAL"
+] as const;
 
 const CATEGORY_ORDER: ThemeCategory[] = [
     "COLORFUL",
@@ -69,20 +99,30 @@ export default function MultiFXThemeManager() {
     );
 
     const [message, setMessage] = useState("");
+    const [editorTab, setEditorTab] =
+        useState<ThemeEditorTab>("COLORS");
+    const [browseMode, setBrowseMode] =
+        useState<ThemeBrowseMode>("STYLE");
 
     const [customThemes, setCustomThemes] = useState<MultiFXThemeDefinition[]>(
         () => loadCustomMultiFXThemes()
     );
 
     const groupedBuiltIns = useMemo(() => {
-        const groups = new Map<ThemeCategory, MultiFXThemeDefinition[]>();
+        const categoryOrder: readonly string[] = browseMode === "STYLE"
+            ? STYLE_CATEGORY_ORDER
+            : CATEGORY_ORDER;
+        const groups = new Map<string, MultiFXThemeDefinition[]>();
 
-        for (const category of CATEGORY_ORDER) {
+        for (const category of categoryOrder) {
             groups.set(category, []);
         }
 
         for (const preset of BUILT_IN_THEMES) {
-            groups.get(getThemeCategory(preset))!.push(preset);
+            const group = browseMode === "STYLE"
+                ? getMultiFXThemeStyleLabel(preset)
+                : getThemeCategory(preset);
+            groups.get(group)?.push(preset);
         }
 
         for (const themes of groups.values()) {
@@ -93,8 +133,8 @@ export default function MultiFXThemeManager() {
             );
         }
 
-        return groups;
-    }, []);
+        return { categoryOrder, groups };
+    }, [browseMode]);
 
     const sortedCustomThemes = useMemo(
         () =>
@@ -145,6 +185,20 @@ export default function MultiFXThemeManager() {
         }));
     };
 
+    const updateAppearance = (
+        update: (next: MultiFXThemeDefinition) => void
+    ) => {
+        setTheme((current) => {
+            const next = cloneTheme(current);
+            next.name = current.name.startsWith("Custom")
+                ? current.name
+                : `Custom - ${current.name}`;
+            next.author = "User";
+            update(next);
+            return next;
+        });
+    };
+
     const previewTheme = (preset: MultiFXThemeDefinition) => {
         setTheme(cloneTheme(preset));
         setMessage(`Previewing "${preset.name}".`);
@@ -171,7 +225,7 @@ export default function MultiFXThemeManager() {
             ...cloneTheme(theme),
             name: customName,
             author: "User",
-            version: 1
+            version: 3
         };
 
         const next = saveCustomMultiFXTheme(customTheme);
@@ -245,12 +299,12 @@ export default function MultiFXThemeManager() {
                         padding:
                             "calc(8px * var(--mfx-ui-scale, 1)) calc(14px * var(--mfx-ui-scale, 1))",
                         borderRadius: 10,
-                        border: `1px solid ${MFX_COLORS.cyan}`,
-                        background: MFX_COLORS.panelAlt,
-                        color: MFX_COLORS.cyanText,
+                        border: "1px solid transparent",
+                        background: multiFXSurfaceBackground("toast"),
+                        color: MFX_SURFACES.toast.text,
                         fontWeight: 900,
                         textAlign: "center",
-                        boxShadow: "0 8px 22px rgba(0,0,0,0.68)",
+                        boxShadow: MFX_SURFACES.toast.shadow,
                         pointerEvents: "none"
                     }}
                 >
@@ -286,8 +340,10 @@ export default function MultiFXThemeManager() {
                             flexDirection: "column",
                             overflow: "hidden",
                             borderRadius: 10,
-                            border: `1px solid ${MFX_COLORS.border}`,
-                            background: MFX_COLORS.panel
+                            border: "1px solid transparent",
+                            background: multiFXSurfaceBackground("panel"),
+                            color: MFX_SURFACES.panel.text,
+                            boxShadow: MFX_SURFACES.panel.shadow
                         }}
                     >
                         <div
@@ -354,7 +410,29 @@ export default function MultiFXThemeManager() {
                                     }}
                                 >
                                     EXPORT
-                                </button>
+                                    </button>
+                            </div>
+
+                            <div
+                                style={{
+                                    display: "grid",
+                                    gridTemplateColumns: "1fr 1fr",
+                                    gap: 5,
+                                    marginTop: 7
+                                }}
+                            >
+                                {(["STYLE", "COLOR"] as const).map((mode) => (
+                                    <button
+                                        key={mode}
+                                        type="button"
+                                        onClick={() => setBrowseMode(mode)}
+                                        style={browseMode === mode
+                                            ? smallTabActiveStyle
+                                            : smallTabStyle}
+                                    >
+                                        BY {mode}
+                                    </button>
+                                ))}
                             </div>
                         </div>
 
@@ -377,9 +455,9 @@ export default function MultiFXThemeManager() {
                                         "calc(7px * var(--mfx-ui-scale, 1))"
                                 }}
                             >
-                                {CATEGORY_ORDER.map((category) => {
+                                {groupedBuiltIns.categoryOrder.map((category) => {
                                     const presets =
-                                        groupedBuiltIns.get(category) ?? [];
+                                        groupedBuiltIns.groups.get(category) ?? [];
 
                                     if (presets.length === 0) {
                                         return null;
@@ -490,8 +568,10 @@ export default function MultiFXThemeManager() {
                                 "calc(11px * var(--mfx-ui-scale, 1))",
                             boxSizing: "border-box",
                             borderRadius: 10,
-                            border: `1px solid ${MFX_COLORS.border}`,
-                            background: MFX_COLORS.panel
+                            border: "1px solid transparent",
+                            background: multiFXSurfaceBackground("panel"),
+                            color: MFX_SURFACES.panel.text,
+                            boxShadow: MFX_SURFACES.panel.shadow
                         }}
                     >
                         <div
@@ -608,7 +688,12 @@ export default function MultiFXThemeManager() {
                             />
                         </div>
 
-                        <div
+                        <ThemeEditorTabs
+                            selected={editorTab}
+                            onSelect={setEditorTab}
+                        />
+
+                        {editorTab === "COLORS" && <div
                             style={{
                                 flex: "1 1 auto",
                                 minHeight: 0,
@@ -712,12 +797,707 @@ export default function MultiFXThemeManager() {
                                     updateColor("danger", v)
                                 }
                             />
-                        </div>
+                        </div>}
+
+                        {editorTab === "SURFACES" && (
+                            <SurfaceEditor
+                                theme={theme}
+                                onChange={updateAppearance}
+                            />
+                        )}
+                        {editorTab === "TILES" && (
+                            <RoleEditor
+                                theme={theme}
+                                onChange={updateAppearance}
+                            />
+                        )}
+                        {editorTab === "CONTROLS" && (
+                            <ControlStyleEditor
+                                theme={theme}
+                                onChange={updateAppearance}
+                            />
+                        )}
+                        {editorTab === "MOTION" && (
+                            <MotionEditor
+                                theme={theme}
+                                onChange={updateAppearance}
+                            />
+                        )}
                     </div>
                 </div>
             </div>
         </div>
     );
+}
+
+function ThemeEditorTabs({
+    selected,
+    onSelect
+}: {
+    selected: ThemeEditorTab;
+    onSelect: (tab: ThemeEditorTab) => void;
+}) {
+    const tabs: ThemeEditorTab[] = [
+        "COLORS", "SURFACES", "TILES", "CONTROLS", "MOTION"
+    ];
+    return (
+        <div style={editorTabsStyle}>
+            {tabs.map((tab) => (
+                <button
+                    key={tab}
+                    type="button"
+                    onClick={() => onSelect(tab)}
+                    style={{
+                        ...editorTabStyle,
+                        border: `1px solid ${selected === tab
+                            ? MFX_COLORS.cyan
+                            : MFX_COLORS.border}`,
+                        color: selected === tab
+                            ? MFX_COLORS.cyanText
+                            : MFX_COLORS.muted,
+                        background: selected === tab
+                            ? MFX_COLORS.cyanSurface
+                            : MFX_COLORS.panelAlt
+                    }}
+                >
+                    {tab}
+                </button>
+            ))}
+        </div>
+    );
+}
+
+const SURFACE_LABELS: Record<
+    keyof MultiFXThemeDefinition["appearance"]["surfaces"],
+    string
+> = {
+    page: "App Background",
+    header: "Headers",
+    panel: "Panels / Editors",
+    popup: "Popups / Dialogs",
+    toast: "Toasts / Parameter Feedback",
+    menu: "Menus"
+};
+
+function SurfaceEditor({
+    theme,
+    onChange
+}: {
+    theme: MultiFXThemeDefinition;
+    onChange: (update: (next: MultiFXThemeDefinition) => void) => void;
+}) {
+    const keys = Object.keys(SURFACE_LABELS) as Array<
+        keyof typeof SURFACE_LABELS
+    >;
+    return (
+        <div style={editorScrollStyle}>
+            <div style={editorCardGridStyle}>
+                {keys.map((key) => (
+                    <SurfaceCard
+                        key={key}
+                        label={SURFACE_LABELS[key]}
+                        value={theme.appearance.surfaces[key]}
+                        onChange={(value) => onChange((next) => {
+                            next.appearance.surfaces[key] = value;
+                        })}
+                    />
+                ))}
+            </div>
+        </div>
+    );
+}
+
+function SurfaceCard({
+    label,
+    value,
+    onChange
+}: {
+    label: string;
+    value: MultiFXThemeSurface;
+    onChange: (value: MultiFXThemeSurface) => void;
+}) {
+    const update = (patch: Partial<MultiFXThemeSurface>) =>
+        onChange({ ...value, ...patch });
+    return (
+        <section style={editorCardStyle}>
+            <div style={editorCardHeadingStyle}>{label}</div>
+            <div style={twoColumnEditorStyle}>
+                <PaintField
+                    label="Background"
+                    value={value.background}
+                    onChange={(background) => update({ background })}
+                />
+                <PaintField
+                    label="Border"
+                    value={value.border}
+                    onChange={(border) => update({ border })}
+                />
+                <CompactColorField label="Text" value={value.text}
+                    onChange={(text) => update({ text })} />
+                <CompactColorField label="Labels" value={value.label}
+                    onChange={(labelValue) => update({ label: labelValue })} />
+                <CompactColorField label="Accent" value={value.accent}
+                    onChange={(accent) => update({ accent })} />
+                <TextEditorField label="Shadow" value={value.shadow}
+                    onChange={(shadow) => update({ shadow })} />
+            </div>
+        </section>
+    );
+}
+
+const ROLE_LABELS: Record<
+    keyof MultiFXThemeDefinition["appearance"]["roles"],
+    string
+> = {
+    preset: "Preset Tiles",
+    navigation: "Bank Up / Down",
+    utility: "Utility Actions",
+    snapshot: "Snapshots",
+    bypass: "Bypass",
+    danger: "Danger / Delete"
+};
+
+function RoleEditor({
+    theme,
+    onChange
+}: {
+    theme: MultiFXThemeDefinition;
+    onChange: (update: (next: MultiFXThemeDefinition) => void) => void;
+}) {
+    const keys = Object.keys(ROLE_LABELS) as Array<keyof typeof ROLE_LABELS>;
+    return (
+        <div style={editorScrollStyle}>
+            <section style={editorCardStyle}>
+                <div style={editorCardHeadingStyle}>LIGHTING BY FUNCTION</div>
+                <div style={{
+                    color: "var(--mfx-surface-panel-label)",
+                    fontSize: ".82rem",
+                    fontWeight: 700,
+                    lineHeight: 1.35
+                }}>
+                    Each ACTIVE Light / LED color drives that function&apos;s
+                    tile indicator, metal-switch light ring, and arcade-button
+                    illumination. The modified-preset light is set under
+                    Controls.
+                </div>
+            </section>
+            <div style={editorCardGridStyle}>
+                {keys.map((key) => (
+                    <RoleCard
+                        key={key}
+                        label={ROLE_LABELS[key]}
+                        value={theme.appearance.roles[key]}
+                        onChange={(value) => onChange((next) => {
+                            next.appearance.roles[key] = value;
+                        })}
+                    />
+                ))}
+            </div>
+        </div>
+    );
+}
+
+function RoleCard({
+    label,
+    value,
+    onChange
+}: {
+    label: string;
+    value: MultiFXThemeControlRole;
+    onChange: (value: MultiFXThemeControlRole) => void;
+}) {
+    const update = (
+        state: "normal" | "active",
+        nextState: MultiFXThemeControlState
+    ) => onChange({ ...value, [state]: nextState });
+    return (
+        <section style={editorCardStyle}>
+            <div style={editorCardHeadingStyle}>{label}</div>
+            {(["normal", "active"] as const).map((state) => (
+                <ControlStateEditor
+                    key={state}
+                    label={state.toUpperCase()}
+                    value={value[state]}
+                    onChange={(nextState) => update(state, nextState)}
+                />
+            ))}
+        </section>
+    );
+}
+
+function ControlStateEditor({
+    label,
+    value,
+    onChange
+}: {
+    label: string;
+    value: MultiFXThemeControlState;
+    onChange: (value: MultiFXThemeControlState) => void;
+}) {
+    const update = (patch: Partial<MultiFXThemeControlState>) =>
+        onChange({ ...value, ...patch });
+    return (
+        <div style={controlStateStyle}>
+            <div style={controlStateHeadingStyle}>{label}</div>
+            <div style={twoColumnEditorStyle}>
+                <PaintField label="Background" value={value.background}
+                    onChange={(background) => update({ background })} />
+                <PaintField label="Border" value={value.border}
+                    onChange={(border) => update({ border })} />
+                <CompactColorField label="Label" value={value.label}
+                    onChange={(labelValue) => update({ label: labelValue })} />
+                <CompactColorField label="Value" value={value.value}
+                    onChange={(valueColor) => update({ value: valueColor })} />
+                <CompactColorField label="Light / LED" value={value.indicator}
+                    onChange={(indicator) => update({ indicator })} />
+                <TextEditorField label="Shadow" value={value.shadow}
+                    onChange={(shadow) => update({ shadow })} />
+            </div>
+        </div>
+    );
+}
+
+function ControlStyleEditor({
+    theme,
+    onChange
+}: {
+    theme: MultiFXThemeDefinition;
+    onChange: (update: (next: MultiFXThemeDefinition) => void) => void;
+}) {
+    const controls = theme.appearance.controls;
+    const animationOptions = compatibleIndicatorAnimations(
+        controls.switchStyle,
+        controls.indicatorStyle
+    );
+    const patch = (value: Partial<typeof controls>) => onChange((next) => {
+        next.appearance.controls = {
+            ...next.appearance.controls,
+            ...value
+        };
+    });
+    const patchRoleLight = (
+        role: keyof MultiFXThemeDefinition["appearance"]["roles"],
+        indicator: string
+    ) => onChange((next) => {
+        next.appearance.roles[role].active.indicator = indicator;
+    });
+    return (
+        <div style={editorScrollStyle}>
+            <ControlStylePreview theme={theme} />
+            <section style={editorCardStyle}>
+                <div style={editorCardHeadingStyle}>GRAPHICAL STYLE</div>
+                <div style={twoColumnEditorStyle}>
+                    <SelectEditorField label="Switches" value={controls.switchStyle}
+                        options={[["tiles", "Tiles"], ["footswitch", "Metal footswitches"], ["arcade", "Arcade buttons"], ["glass", "Glass panels"], ["minimal", "Minimal"]]}
+                        onChange={(switchStyleValue) => {
+                            const switchStyle = switchStyleValue as typeof controls.switchStyle;
+                            const validAnimations = compatibleIndicatorAnimations(
+                                switchStyle,
+                                controls.indicatorStyle
+                            ).map(([value]) => value);
+                            patch({
+                                switchStyle,
+                                indicatorAnimation: validAnimations.includes(
+                                    controls.indicatorAnimation
+                                ) ? controls.indicatorAnimation : "none"
+                            });
+                        }} />
+                    <SelectEditorField label="Panel shape" value={controls.switchShape}
+                        options={[["rounded", "Rounded"], ["square", "Square"], ["pill", "Pill"], ["bevel", "Beveled"], ["hexagon", "Hexagonal"]]}
+                        onChange={(switchShape) => patch({ switchShape: switchShape as typeof controls.switchShape })} />
+                    <SelectEditorField label="Analog controls" value={controls.analogStyle}
+                        options={[["modern", "Modern"], ["vintage", "Vintage"], ["neon", "Neon"], ["minimal", "Minimal"]]}
+                        onChange={(analogStyle) => patch({ analogStyle: analogStyle as typeof controls.analogStyle })} />
+                    <SelectEditorField label="Indicator" value={controls.indicatorStyle}
+                        options={[["dot", "LED dot"], ["ring", "Light ring"], ["halo", "Halo"], ["bar", "LED bar"], ["none", "None"]]}
+                        onChange={(indicatorStyleValue) => {
+                            const indicatorStyle = indicatorStyleValue as typeof controls.indicatorStyle;
+                            const validAnimations = compatibleIndicatorAnimations(
+                                controls.switchStyle,
+                                indicatorStyle
+                            ).map(([value]) => value);
+                            patch({
+                                indicatorStyle,
+                                indicatorAnimation: validAnimations.includes(
+                                    controls.indicatorAnimation
+                                ) ? controls.indicatorAnimation : "none"
+                            });
+                        }} />
+                    <SelectEditorField label="Animation" value={controls.indicatorAnimation}
+                        options={animationOptions}
+                        onChange={(indicatorAnimation) => patch({ indicatorAnimation: indicatorAnimation as typeof controls.indicatorAnimation })} />
+                </div>
+            </section>
+            <section style={editorCardStyle}>
+                <div style={editorCardHeadingStyle}>STATE LIGHT COLORS</div>
+                <div style={threeColumnEditorStyle}>
+                    <CompactColorField label="Inactive light" value={controls.indicatorInactive}
+                        onChange={(indicatorInactive) => patch({ indicatorInactive })} />
+                    <CompactColorField label="Active preset" value={theme.appearance.roles.preset.active.indicator}
+                        onChange={(indicator) => patchRoleLight("preset", indicator)} />
+                    <CompactColorField label="Preset modified" value={controls.indicatorChanged}
+                        onChange={(indicatorChanged) => patch({ indicatorChanged })} />
+                    <CompactColorField label="Bypass enabled" value={theme.appearance.roles.bypass.active.indicator}
+                        onChange={(indicator) => patchRoleLight("bypass", indicator)} />
+                    <CompactColorField label="Bank pressed" value={theme.appearance.roles.navigation.active.indicator}
+                        onChange={(indicator) => patchRoleLight("navigation", indicator)} />
+                    <CompactColorField label="Snapshot active" value={theme.appearance.roles.snapshot.active.indicator}
+                        onChange={(indicator) => patchRoleLight("snapshot", indicator)} />
+                </div>
+            </section>
+            <section style={editorCardStyle}>
+                <div style={editorCardHeadingStyle}>GEOMETRY & MOTION</div>
+                <div style={threeColumnEditorStyle}>
+                    <NumberEditorField label="Border width" value={controls.borderWidth} min={0} max={8} step={1}
+                        onChange={(borderWidth) => patch({ borderWidth })} />
+                    <NumberEditorField label="Corner radius" value={controls.cornerRadius} min={0} max={40} step={1}
+                        onChange={(cornerRadius) => patch({ cornerRadius })} />
+                    <NumberEditorField label="Glow strength" value={controls.glowStrength} min={0} max={1} step={0.05}
+                        onChange={(glowStrength) => patch({ glowStrength })} />
+                    <NumberEditorField label="Disabled opacity" value={controls.disabledOpacity} min={0.1} max={1} step={0.05}
+                        onChange={(disabledOpacity) => patch({ disabledOpacity })} />
+                    <NumberEditorField label="Animation seconds" value={controls.animationSeconds} min={0.2} max={10} step={0.1}
+                        onChange={(animationSeconds) => patch({ animationSeconds })} />
+                </div>
+            </section>
+            {controls.switchStyle === "glass" && (
+                <section style={editorCardStyle}>
+                    <div style={editorCardHeadingStyle}>GLASS PANEL</div>
+                    <div style={twoColumnEditorStyle}>
+                        <NumberEditorField label="Background blur" value={controls.glassBlur} min={0} max={30} step={1}
+                            onChange={(glassBlur) => patch({ glassBlur })} />
+                        <NumberEditorField label="Highlight strength" value={controls.glassHighlight} min={0} max={1} step={0.05}
+                            onChange={(glassHighlight) => patch({ glassHighlight })} />
+                    </div>
+                </section>
+            )}
+        </div>
+    );
+}
+
+/** Offer only effects that read naturally on the selected physical graphic. */
+function compatibleIndicatorAnimations(
+    switchStyle: MultiFXThemeDefinition["appearance"]["controls"]["switchStyle"],
+    indicatorStyle: MultiFXThemeDefinition["appearance"]["controls"]["indicatorStyle"]
+): readonly (readonly [string, string])[] {
+    const quiet = [["none", "Off"]] as const;
+    const light = [
+        ...quiet,
+        ["pulse", "Pulse"],
+        ["breathe", "Breathe"]
+    ] as const;
+    if (switchStyle === "footswitch") {
+        return [...light, ["spin", "Spin around ring"]] as const;
+    }
+    if (switchStyle === "arcade") return light;
+    if (indicatorStyle === "ring") {
+        return [...light, ["spin", "Spin around ring"]] as const;
+    }
+    if (indicatorStyle === "bar") {
+        return [...light, ["chase", "Chase across bar"]] as const;
+    }
+    if (indicatorStyle === "none") return quiet;
+    return light;
+}
+
+/** Live examples use the same classes and CSS variables as Performance View. */
+function ControlStylePreview({
+    theme
+}: {
+    theme: MultiFXThemeDefinition;
+}) {
+    const tile = (
+        roleName: keyof MultiFXThemeDefinition["appearance"]["roles"],
+        active: boolean,
+        label: string,
+        value: string
+    ) => {
+        const state = theme.appearance.roles[roleName][
+            active ? "active" : "normal"
+        ];
+        const indicatorColor = active
+            ? state.indicator
+            : theme.appearance.controls.indicatorInactive;
+        return (
+            <button
+                type="button"
+                className="mfx-performance-switch"
+                data-mfx-role={roleName}
+                data-mfx-active={active ? "true" : "false"}
+                style={{
+                    position: "relative",
+                    minWidth: 0,
+                    minHeight: 92,
+                    overflow: "hidden",
+                    containerType: "size",
+                    padding: 8,
+                    border: "var(--mfx-control-border-width) solid transparent",
+                    borderRadius: "var(--mfx-control-radius)",
+                    background: `${themePaintToCss(state.background)} padding-box, ${themePaintToCss(state.border)} border-box`,
+                    color: state.value,
+                    boxShadow: state.shadow,
+                    font: "inherit"
+                }}
+            >
+                <MultiFXFootswitchGraphic color={indicatorColor} />
+                <MultiFXArcadeButtonGraphic color={indicatorColor} />
+                <span
+                    aria-hidden="true"
+                    className="mfx-performance-indicator"
+                    style={{
+                        position: "absolute",
+                        right: 7,
+                        top: 7,
+                        width: 14,
+                        height: 14,
+                        borderRadius: "50%",
+                        color: indicatorColor,
+                        background: indicatorColor,
+                        border: "2px solid currentColor",
+                        boxShadow: active
+                            ? "0 0 calc(14px * var(--mfx-control-glow-strength)) currentColor"
+                            : "none"
+                    }}
+                />
+                <span className="mfx-performance-switch__content" style={{
+                    position: "relative",
+                    zIndex: 1,
+                    display: "grid",
+                    height: "100%",
+                    gridTemplateRows: "auto minmax(0,1fr) auto",
+                    textAlign: "center"
+                }}>
+                    <span className="mfx-performance-switch__label-row mfx-performance-switch__label" style={{ color: state.label, fontSize: 10, fontWeight: 900 }}>
+                        {label}
+                    </span>
+                    <span className="mfx-performance-switch__value-row mfx-performance-switch__value" style={{ gridRow: 3, alignSelf: "end", color: state.value, fontSize: 13, fontWeight: 900 }}>
+                        {value}
+                    </span>
+                </span>
+            </button>
+        );
+    };
+
+    return (
+        <section style={editorCardStyle}>
+            <div style={editorCardHeadingStyle}>LIVE PERFORMANCE PREVIEW</div>
+            <div style={{
+                padding: 9,
+                borderRadius: 8,
+                border: "1px solid transparent",
+                background: multiFXSurfaceBackground("page")
+            }}>
+                <div style={{
+                    display: "grid",
+                    gridTemplateColumns: "repeat(auto-fit,minmax(110px,1fr))",
+                    gap: 8
+                }}>
+                    {tile("preset", true, "SW 1", "ACTIVE PRESET")}
+                    {tile("navigation", true, "SW 7", "BANK PRESSED")}
+                    {tile("bypass", true, "SW 5", "BYPASS ON")}
+                    {tile("snapshot", true, "SW 6", "SNAPSHOT")}
+                </div>
+                <div style={{
+                    display: "grid",
+                    gridTemplateColumns: "repeat(3,minmax(0,1fr))",
+                    gap: 8,
+                    marginTop: 8
+                }}>
+                    <GraphicPreviewCell label="POT">
+                        <div className="mfx-hardware-knob" aria-hidden="true">
+                            <div className="mfx-hardware-knob__pointer"
+                                style={{ transform: "rotate(35deg)" }} />
+                            <div className="mfx-hardware-knob__arc"
+                                style={{ background: "conic-gradient(from 225deg, var(--mfx-surface-panel-accent) 0deg 170deg, transparent 170deg 360deg)" }} />
+                        </div>
+                    </GraphicPreviewCell>
+                    <GraphicPreviewCell label="SLIDER">
+                        <div className="mfx-hardware-slider" aria-hidden="true">
+                            <div className="mfx-hardware-slider__fill" style={{ height: "62%" }} />
+                            <div className="mfx-hardware-slider__thumb" style={{ bottom: "calc(62% - 5px)" }} />
+                        </div>
+                    </GraphicPreviewCell>
+                    <GraphicPreviewCell label="BUTTON">
+                        <div className="mfx-hardware-button" data-active="true" aria-hidden="true" />
+                    </GraphicPreviewCell>
+                </div>
+            </div>
+        </section>
+    );
+}
+
+function GraphicPreviewCell({
+    label,
+    children
+}: {
+    label: string;
+    children: React.ReactNode;
+}) {
+    return (
+        <div style={{
+            minHeight: 82,
+            minWidth: 0,
+            containerType: "size",
+            display: "flex",
+            flexDirection: "column",
+            alignItems: "center",
+            justifyContent: "center",
+            gap: 4,
+            borderRadius: 7,
+            border: `1px solid ${MFX_COLORS.border}`,
+            background: MFX_SURFACES.panel.background,
+            color: MFX_SURFACES.panel.text
+        }}>
+            {children}
+            <span style={{
+                color: MFX_SURFACES.panel.label,
+                fontSize: 9,
+                fontWeight: 900
+            }}>
+                {label}
+            </span>
+        </div>
+    );
+}
+
+function MotionEditor({
+    theme,
+    onChange
+}: {
+    theme: MultiFXThemeDefinition;
+    onChange: (update: (next: MultiFXThemeDefinition) => void) => void;
+}) {
+    const motion = theme.appearance.motion;
+    const patch = (value: Partial<typeof motion>) => onChange((next) => {
+        next.appearance.motion = { ...next.appearance.motion, ...value };
+    });
+    return (
+        <div style={editorScrollStyle}>
+            <section style={editorCardStyle}>
+                <div style={editorCardHeadingStyle}>MOTION & FEEDBACK</div>
+                <div style={twoColumnEditorStyle}>
+                    <CheckboxEditorField label="Enable animations" value={motion.enabled}
+                        onChange={(enabled) => patch({ enabled })} />
+                    <CheckboxEditorField label="Respect reduced motion" value={motion.respectReducedMotion}
+                        onChange={(respectReducedMotion) => patch({ respectReducedMotion })} />
+                    <NumberEditorField label="Feedback duration (ms)" value={motion.feedbackDurationMs} min={500} max={10000} step={100}
+                        onChange={(feedbackDurationMs) => patch({ feedbackDurationMs })} />
+                </div>
+            </section>
+        </div>
+    );
+}
+
+function PaintField({
+    label,
+    value,
+    onChange
+}: {
+    label: string;
+    value: MultiFXThemePaint;
+    onChange: (value: MultiFXThemePaint) => void;
+}) {
+    const updateKind = (kind: string) => {
+        const colors = kind === "solid"
+            ? [value.colors[0]]
+            : value.colors.length >= 2
+                ? value.colors
+                : [value.colors[0], "#000000"];
+        onChange({ ...value, kind: kind as MultiFXThemePaint["kind"], colors });
+    };
+    const updateColorAt = (index: number, color: string) => {
+        const colors = [...value.colors];
+        colors[index] = color;
+        onChange({ ...value, colors });
+    };
+    return (
+        <div style={paintFieldStyle}>
+            <div style={compactFieldLabelStyle}>{label}</div>
+            <div style={{ ...paintPreviewStyle, background: themePaintToCss(value) }} />
+            <select value={value.kind} onChange={(event) => updateKind(event.target.value)} style={compactSelectStyle}>
+                <option value="solid">Solid</option>
+                <option value="linear">Linear</option>
+                <option value="radial">Radial</option>
+                <option value="conic">Conic</option>
+            </select>
+            <div style={paintColorRowStyle}>
+                {value.colors.map((color, index) => (
+                    <input key={index} type="color" value={color}
+                        aria-label={`${label} color ${index + 1}`}
+                        onChange={(event) => updateColorAt(index, event.target.value)}
+                        style={compactColorInputStyle} />
+                ))}
+                {value.kind !== "solid" && value.colors.length < 3 && (
+                    <button type="button" style={addColorButtonStyle}
+                        onClick={() => onChange({ ...value, colors: [...value.colors, value.colors[value.colors.length - 1]] })}>+</button>
+                )}
+                {value.kind !== "solid" && value.colors.length > 2 && (
+                    <button type="button" style={addColorButtonStyle}
+                        onClick={() => onChange({ ...value, colors: value.colors.slice(0, -1) })}>−</button>
+                )}
+            </div>
+            {value.kind === "linear" || value.kind === "conic" ? (
+                <NumberEditorField label="Angle" value={value.angle} min={0} max={360} step={5}
+                    onChange={(angle) => onChange({ ...value, angle })} />
+            ) : null}
+        </div>
+    );
+}
+
+function CompactColorField({ label, value, onChange }: {
+    label: string; value: string; onChange: (value: string) => void;
+}) {
+    const [textValue, setTextValue] = useState(value);
+    useEffect(() => setTextValue(value), [value]);
+    const commitText = () => {
+        if (/^#[0-9a-fA-F]{6}$/.test(textValue)) {
+            onChange(textValue.toUpperCase());
+        } else {
+            setTextValue(value);
+        }
+    };
+    return (
+        <label style={compactFieldStyle}>
+            <span style={compactFieldLabelStyle}>{label}</span>
+            <span style={compactColorRowStyle}>
+                <input type="color" value={value} onChange={(event) => onChange(event.target.value)} style={compactColorInputStyle} />
+                <input value={textValue} maxLength={7}
+                    onChange={(event) => setTextValue(event.target.value)}
+                    onBlur={commitText}
+                    onKeyDown={(event) => {
+                        if (event.key === "Enter") {
+                            commitText();
+                            event.currentTarget.blur();
+                        }
+                    }}
+                    style={compactTextInputStyle} />
+            </span>
+        </label>
+    );
+}
+
+function TextEditorField({ label, value, onChange }: {
+    label: string; value: string; onChange: (value: string) => void;
+}) {
+    return <label style={compactFieldStyle}><span style={compactFieldLabelStyle}>{label}</span><input value={value} onChange={(event) => onChange(event.target.value)} style={compactTextInputStyle} /></label>;
+}
+
+function SelectEditorField({ label, value, options, onChange }: {
+    label: string; value: string; options: readonly (readonly [string, string])[]; onChange: (value: string) => void;
+}) {
+    return <label style={compactFieldStyle}><span style={compactFieldLabelStyle}>{label}</span><select value={value} onChange={(event) => onChange(event.target.value)} style={compactSelectStyle}>{options.map(([option, text]) => <option key={option} value={option}>{text}</option>)}</select></label>;
+}
+
+function NumberEditorField({ label, value, min, max, step, onChange }: {
+    label: string; value: number; min: number; max: number; step: number; onChange: (value: number) => void;
+}) {
+    return <label style={compactFieldStyle}><span style={compactFieldLabelStyle}>{label}</span><input type="number" value={value} min={min} max={max} step={step} onChange={(event) => { const next = Number(event.target.value); if (Number.isFinite(next)) onChange(Math.min(max, Math.max(min, next))); }} style={compactTextInputStyle} /></label>;
+}
+
+function CheckboxEditorField({ label, value, onChange }: {
+    label: string; value: boolean; onChange: (value: boolean) => void;
+}) {
+    return <label style={{ ...compactFieldStyle, display: "flex", alignItems: "center", justifyContent: "space-between", minHeight: 46 }}><span style={compactFieldLabelStyle}>{label}</span><input type="checkbox" checked={value} onChange={(event) => onChange(event.target.checked)} /></label>;
 }
 
 function ThemeCategoryHeader({
@@ -736,7 +1516,7 @@ function ThemeCategoryHeader({
                     "calc(7px * var(--mfx-ui-scale, 1)) calc(5px * var(--mfx-ui-scale, 1)) calc(3px * var(--mfx-ui-scale, 1))",
                 borderBottom:
                     `1px solid ${MFX_COLORS.border}`,
-                color: MFX_COLORS.purpleLight,
+                color: MFX_SURFACES.panel.accent,
                 fontWeight: 900,
                 fontSize: "0.76rem",
                 letterSpacing: "0.055em"
@@ -794,16 +1574,35 @@ function ThemePresetButton({
                 minWidth: 0
             }}
         >
-            <div
-                style={{
-                    fontWeight: 900,
-                    fontSize: "0.88rem",
-                    whiteSpace: "nowrap",
-                    overflow: "hidden",
-                    textOverflow: "ellipsis"
-                }}
-            >
-                {preset.name}
+            <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
+                <div
+                    style={{
+                        flex: "1 1 auto",
+                        minWidth: 0,
+                        fontWeight: 900,
+                        fontSize: "0.88rem",
+                        whiteSpace: "nowrap",
+                        overflow: "hidden",
+                        textOverflow: "ellipsis"
+                    }}
+                >
+                    {preset.name}
+                </div>
+                <span
+                    style={{
+                        flex: "0 0 auto",
+                        padding: "2px 5px",
+                        borderRadius: 99,
+                        border: `1px solid ${preset.colors.border}`,
+                        background: preset.colors.panelAlt,
+                        color: preset.colors.text,
+                        fontSize: "0.5rem",
+                        fontWeight: 900,
+                        letterSpacing: ".035em"
+                    }}
+                >
+                    {getMultiFXThemeStyleLabel(preset)}
+                </span>
             </div>
 
             <ThemeSwatches theme={preset} />
@@ -1002,14 +1801,196 @@ function safeName(value: string): string {
     );
 }
 
+const editorTabsStyle: React.CSSProperties = {
+    flex: "0 0 auto",
+    display: "grid",
+    gridTemplateColumns: "repeat(5,minmax(0,1fr))",
+    gap: 6,
+    marginBottom: 8
+};
+
+const editorTabStyle: React.CSSProperties = {
+    minWidth: 0,
+    minHeight: 36,
+    padding: "4px 6px",
+    border: "1px solid",
+    borderRadius: 7,
+    font: "inherit",
+    fontSize: "0.68rem",
+    fontWeight: 900,
+    cursor: "pointer"
+};
+
+const smallTabStyle: React.CSSProperties = {
+    minHeight: 28,
+    padding: "3px 6px",
+    borderRadius: 6,
+    border: `1px solid ${MFX_COLORS.border}`,
+    background: MFX_COLORS.background,
+    color: MFX_COLORS.muted,
+    font: "inherit",
+    fontSize: "0.62rem",
+    fontWeight: 900,
+    cursor: "pointer"
+};
+
+const smallTabActiveStyle: React.CSSProperties = {
+    ...smallTabStyle,
+    border: `1px solid ${MFX_COLORS.cyan}`,
+    background: MFX_COLORS.cyanSurface,
+    color: MFX_COLORS.cyanText
+};
+
+const editorScrollStyle: React.CSSProperties = {
+    flex: "1 1 auto",
+    minHeight: 0,
+    overflowY: "auto",
+    overflowX: "hidden",
+    paddingRight: 3
+};
+
+const editorCardGridStyle: React.CSSProperties = {
+    display: "grid",
+    gridTemplateColumns: "repeat(2,minmax(0,1fr))",
+    alignItems: "start",
+    gap: 8
+};
+
+const editorCardStyle: React.CSSProperties = {
+    minWidth: 0,
+    marginBottom: 8,
+    padding: 9,
+    borderRadius: 9,
+    border: `1px solid ${MFX_COLORS.border}`,
+    background: MFX_COLORS.panelAlt
+};
+
+const editorCardHeadingStyle: React.CSSProperties = {
+    marginBottom: 7,
+    color: MFX_SURFACES.panel.accent,
+    fontSize: "0.74rem",
+    fontWeight: 950,
+    letterSpacing: "0.055em"
+};
+
+const twoColumnEditorStyle: React.CSSProperties = {
+    display: "grid",
+    gridTemplateColumns: "repeat(2,minmax(0,1fr))",
+    gap: 6
+};
+
+const threeColumnEditorStyle: React.CSSProperties = {
+    display: "grid",
+    gridTemplateColumns: "repeat(3,minmax(0,1fr))",
+    gap: 6
+};
+
+const controlStateStyle: React.CSSProperties = {
+    marginTop: 6,
+    paddingTop: 6,
+    borderTop: `1px solid ${MFX_COLORS.border}`
+};
+
+const controlStateHeadingStyle: React.CSSProperties = {
+    marginBottom: 5,
+    color: MFX_COLORS.cyan,
+    fontSize: "0.62rem",
+    fontWeight: 950
+};
+
+const compactFieldStyle: React.CSSProperties = {
+    minWidth: 0,
+    display: "grid",
+    gap: 4,
+    padding: 6,
+    borderRadius: 7,
+    border: `1px solid ${MFX_COLORS.border}`,
+    background: MFX_COLORS.panel
+};
+
+const compactFieldLabelStyle: React.CSSProperties = {
+    minWidth: 0,
+    overflow: "hidden",
+    whiteSpace: "nowrap",
+    textOverflow: "ellipsis",
+    color: MFX_COLORS.muted,
+    fontSize: "0.62rem",
+    fontWeight: 850
+};
+
+const compactColorRowStyle: React.CSSProperties = {
+    display: "flex",
+    alignItems: "center",
+    gap: 5,
+    minWidth: 0
+};
+
+const compactColorInputStyle: React.CSSProperties = {
+    flex: "0 0 34px",
+    width: 34,
+    height: 30,
+    padding: 0,
+    border: 0,
+    background: "transparent"
+};
+
+const compactTextInputStyle: React.CSSProperties = {
+    width: "100%",
+    minWidth: 0,
+    minHeight: 30,
+    padding: "3px 6px",
+    boxSizing: "border-box",
+    borderRadius: 5,
+    border: `1px solid ${MFX_COLORS.border}`,
+    background: MFX_COLORS.background,
+    color: MFX_COLORS.text,
+    font: "inherit",
+    fontSize: "0.68rem"
+};
+
+const compactSelectStyle: React.CSSProperties = {
+    ...compactTextInputStyle,
+    cursor: "pointer"
+};
+
+const paintFieldStyle: React.CSSProperties = {
+    ...compactFieldStyle,
+    alignContent: "start"
+};
+
+const paintPreviewStyle: React.CSSProperties = {
+    height: 24,
+    borderRadius: 5,
+    border: "1px solid rgba(255,255,255,.18)"
+};
+
+const paintColorRowStyle: React.CSSProperties = {
+    display: "flex",
+    alignItems: "center",
+    gap: 4
+};
+
+const addColorButtonStyle: React.CSSProperties = {
+    width: 28,
+    height: 28,
+    padding: 0,
+    borderRadius: 5,
+    border: `1px solid ${MFX_COLORS.border}`,
+    background: MFX_COLORS.background,
+    color: MFX_COLORS.cyan,
+    font: "inherit",
+    fontWeight: 950,
+    cursor: "pointer"
+};
+
 const screenStyle: React.CSSProperties = {
     position: "absolute",
     inset: 0,
     display: "flex",
     flexDirection: "column",
     overflow: "hidden",
-    background: MFX_COLORS.background,
-    color: MFX_COLORS.text
+    background: MFX_SURFACES.page.background,
+    color: MFX_SURFACES.page.text
 };
 
 const headerStyle: React.CSSProperties = {
@@ -1020,23 +2001,25 @@ const headerStyle: React.CSSProperties = {
         "calc(6px * var(--mfx-ui-scale, 1)) calc(70px * var(--mfx-ui-scale, 1)) calc(6px * var(--mfx-ui-scale, 1)) calc(78px * var(--mfx-ui-scale, 1))",
     boxSizing: "border-box",
     borderBottom: `1px solid ${MFX_COLORS.border}`,
-    background: MFX_COLORS.panel
+    background: MFX_SURFACES.header.background,
+    color: MFX_SURFACES.header.text,
+    boxShadow: MFX_SURFACES.header.shadow
 };
 
 const titleStyle: React.CSSProperties = {
-    color: MFX_COLORS.purpleLight,
+    color: MFX_SURFACES.header.accent,
     fontWeight: 900,
     letterSpacing: "0.05em"
 };
 
 const subtitleStyle: React.CSSProperties = {
     marginTop: 2,
-    color: MFX_COLORS.muted,
+    color: MFX_SURFACES.header.label,
     fontSize: "0.72rem"
 };
 
 const sectionTitleStyle: React.CSSProperties = {
-    color: MFX_COLORS.purpleLight,
+    color: MFX_SURFACES.panel.accent,
     fontWeight: 900,
     marginBottom: 8
 };

@@ -17,7 +17,11 @@ import {
     clearPresetAssignmentsForPreset,
     deletePresetAssignmentsForBank
 } from "./MultiFXPresetAssignments";
-import { MFX_COLORS } from "./MultiFXTheme";
+import {
+    MFX_COLORS,
+    MFX_SURFACES,
+    multiFXSurfaceBackground
+} from "./MultiFXTheme";
 
 type EditState = {
     mode: "newBank" | "renameBank" | "renamePreset";
@@ -368,8 +372,8 @@ function ConfirmDialog({ text, onCancel, onConfirm }: { text: string; onCancel: 
     return <div style={overlayStyle}><div style={dialogStyle}><strong>{text}</strong><div style={toolbarStyle}><button style={buttonStyle} onClick={onCancel}>CANCEL</button><button style={dangerButtonStyle} onClick={onConfirm}>DELETE</button></div></div></div>;
 }
 
-const rootStyle: React.CSSProperties = { position: "absolute", inset: 0, display: "flex", flexDirection: "column", background: MFX_COLORS.background, color: MFX_COLORS.text };
-const headerStyle: React.CSSProperties = { flex: "0 0 54px", display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, padding: "6px 12px", borderBottom: `1px solid ${MFX_COLORS.border}`, background: MFX_COLORS.panel };
+const rootStyle: React.CSSProperties = { position: "absolute", inset: 0, display: "flex", flexDirection: "column", background: MFX_SURFACES.page.background, color: MFX_SURFACES.page.text };
+const headerStyle: React.CSSProperties = { flex: "0 0 54px", display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, padding: "6px 12px", borderBottom: `1px solid ${MFX_COLORS.border}`, background: MFX_SURFACES.header.background, color: MFX_SURFACES.header.text, boxShadow: MFX_SURFACES.header.shadow };
 const mainStyle: React.CSSProperties = { flex: 1, minHeight: 0, display: "grid", gridTemplateColumns: "34% 66%" };
 const paneStyle: React.CSSProperties = { minWidth: 0, minHeight: 0, display: "flex", flexDirection: "column", borderRight: `1px solid ${MFX_COLORS.border}` };
 const toolsStyle: React.CSSProperties = { flex: "0 0 auto", padding: 6, borderBottom: `1px solid ${MFX_COLORS.border}`, background: MFX_COLORS.panel };
@@ -382,6 +386,6 @@ const rowStyle = (active: boolean): React.CSSProperties => ({ display: "block", 
 const presetRowStyle = (active: boolean): React.CSSProperties => ({ ...rowStyle(active), display: "flex", alignItems: "center", gap: 8 });
 const dragHandleStyle: React.CSSProperties = { ...buttonStyle, minWidth: 42, padding: 0, touchAction: "none" };
 const overlayStyle: React.CSSProperties = { position: "absolute", inset: 0, zIndex: 1500, display: "flex", alignItems: "center", justifyContent: "center", background: "rgba(0,0,0,0.7)" };
-const dialogStyle: React.CSSProperties = { width: "min(480px, 88vw)", padding: 18, borderRadius: 12, border: `2px solid ${MFX_COLORS.purple}`, background: MFX_COLORS.panel, display: "flex", flexDirection: "column", gap: 14 };
+const dialogStyle: React.CSSProperties = { width: "min(480px, 88vw)", padding: 18, borderRadius: 12, border: "2px solid transparent", background: multiFXSurfaceBackground("popup"), color: MFX_SURFACES.popup.text, boxShadow: MFX_SURFACES.popup.shadow, display: "flex", flexDirection: "column", gap: 14 };
 const inputStyle: React.CSSProperties = { minHeight: 46, padding: "0 10px", borderRadius: 8, border: `1px solid ${MFX_COLORS.border}`, background: MFX_COLORS.background, color: MFX_COLORS.text, font: "inherit" };
 const dragGhostStyle: React.CSSProperties = { position: "fixed", zIndex: 2000, pointerEvents: "none", maxWidth: 280, padding: "8px 12px", borderRadius: 8, border: `1px solid ${MFX_COLORS.cyan}`, background: MFX_COLORS.panel, color: MFX_COLORS.text, boxShadow: "0 8px 24px rgba(0,0,0,.65)" };

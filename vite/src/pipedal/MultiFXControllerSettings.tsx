@@ -1,8 +1,10 @@
-import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import React, { useEffect, useRef, useState } from "react";
 import {
     clearSavedControllerConfig,
     CONTROLLER_LAYOUT_ELEMENT_IDS,
     CONTROLLER_LAYOUT_ELEMENT_LABELS,
+    controllerPerformanceControlDescriptors,
+    ControllerPerformanceControlDescriptor,
     ControllerLayoutConfig,
     ControllerLayoutElementId,
     ControllerLayoutElementShape,
@@ -16,28 +18,39 @@ import {
     MAX_CONTROLLER_COLUMNS,
     MAX_CONTROLLER_ROWS,
     MAX_FOOTSWITCHES,
-    MAX_LONG_PRESS_MS,
     MIN_FREEFORM_HEADER_HEIGHT,
     MIN_FREEFORM_HEADER_WIDTH,
     MIN_FREEFORM_SWITCH_HEIGHT,
     MIN_FREEFORM_SWITCH_WIDTH,
-    MIN_LONG_PRESS_MS,
+    minimumPerformanceControlSize,
+    parsePerformanceLayoutFile,
+    PERFORMANCE_LAYOUT_FILE_FORMAT,
+    PERFORMANCE_LAYOUT_FILE_VERSION,
     saveControllerConfig
 } from "./ControllerConfig";
 import {
     ControllerHardwareConfig,
-    ControllerInputSource,
-    controllerInputSourceId
+    ControllerInputSource
 } from "./ControllerHardwareConfig";
 import MultiFXControllerHardwareSettings from "./MultiFXControllerHardwareSettings";
 import {
     getLatestMultiFXRuntimeState,
     MultiFXControllerHardware,
-    MultiFXControllerLearn,
-    subscribeMultiFXRuntimeState,
-    updateMultiFXRuntimeState
+    subscribeMultiFXRuntimeState
 } from "./MultiFXRuntimeSync";
-import { MFX_COLORS, MFX_HEADER_HEIGHT } from "./MultiFXTheme";
+import {
+    MFX_COLORS,
+    MFX_HEADER_HEIGHT,
+    MFX_SURFACES,
+    multiFXSurfaceBackground
+} from "./MultiFXTheme";
+import MultiFXFootswitchGraphic, {
+    MultiFXArcadeButtonGraphic
+} from "./MultiFXFootswitchGraphic";
+import {
+    PerformanceControlCard
+} from "./MultiFXPerformanceControls";
+import "./MultiFXPerformanceAppearance.css";
 
 type ActionKind =
     | "none"
@@ -46,11 +59,6 @@ type ActionKind =
     | "bankDown"
     | "chainBypass"
     | "snapshotMode";
-
-type SwitchLearnSession = {
-    token: number;
-    switchId: string;
-};
 
 const LAYOUT_SNAP_PIXELS_STORAGE_KEY =
     "pipedal-multifx-layout-snap-pixels-v1";
@@ -149,7 +157,8 @@ type DragTarget =
         id: ControllerLayoutElementId;
         mode: "move" | "resize";
     }
-    | { kind: "switch"; id: string; mode: "move" | "resize"; };
+    | { kind: "switch"; id: string; mode: "move" | "resize"; }
+    | { kind: "control"; id: string; mode: "move" | "resize"; };
 
 type DragState = DragTarget & {
     pointerId: number;
@@ -172,6 +181,10 @@ type PlacementTarget =
     }
     | {
         kind: "switch";
+        id: string;
+    }
+    | {
+        kind: "control";
         id: string;
     };
 
@@ -225,9 +238,7 @@ type GridDropCell = {
 
 
 function layoutTargetKey(target: DragTarget): string {
-    return target.kind === "element"
-        ? `element:${target.id}`
-        : `switch:${target.id}`;
+    return `${target.kind}:${target.id}`;
 }
 
 function parseLayoutTargetKey(
@@ -251,6 +262,14 @@ function parseLayoutTargetKey(
         };
     }
 
+    if (key.startsWith("control:")) {
+        return {
+            kind: "control",
+            id: key.substring("control:".length),
+            mode: "move"
+        };
+    }
+
     return undefined;
 }
 
@@ -258,13 +277,13 @@ function configTargetRect(
     config: ControllerLayoutConfig,
     target: DragTarget
 ): ControllerLayoutRect | undefined {
-    return target.kind === "element"
-        ? config.performanceLayout.elements[
-            target.id
-        ]?.rect
-        : config.performanceLayout.switches[
-            target.id
-        ];
+    if (target.kind === "element") {
+        return config.performanceLayout.elements[target.id]?.rect;
+    }
+    if (target.kind === "control") {
+        return config.performanceLayout.controls[target.id];
+    }
+    return config.performanceLayout.switches[target.id];
 }
 
 function setConfigTargetRect(
@@ -279,6 +298,20 @@ function setConfigTargetRect(
                 ...config.performanceLayout,
                 switches: {
                     ...config.performanceLayout.switches,
+                    [target.id]: { ...rect }
+                }
+            }
+        };
+    }
+
+
+    if (target.kind === "control") {
+        return {
+            ...config,
+            performanceLayout: {
+                ...config.performanceLayout,
+                controls: {
+                    ...config.performanceLayout.controls,
                     [target.id]: { ...rect }
                 }
             }
@@ -306,10 +339,6 @@ function setConfigTargetRect(
 
 function cloneConfig(config: ControllerLayoutConfig): ControllerLayoutConfig {
     return structuredClone(config);
-}
-
-function actionKind(action: ControllerSwitchAction): ActionKind {
-    return action.type;
 }
 
 function makeAction(
@@ -626,7 +655,13 @@ function freeformOccupiedRects(
                 Boolean(rect)
         );
 
-    return [...elementRects, ...switchRects];
+    const controlRects = Object.entries(layout.controls)
+        .filter(([id]) => !(
+            exclude?.kind === "control" && exclude.id === id
+        ))
+        .map(([, rect]) => rect);
+
+    return [...elementRects, ...switchRects, ...controlRects];
 }
 
 function preferredFreeformSwitchSize(
@@ -712,6 +747,25 @@ function placementSizeForTarget(
             ),
             minWidth: MIN_FREEFORM_HEADER_WIDTH,
             minHeight: MIN_FREEFORM_HEADER_HEIGHT
+        };
+    }
+
+
+    if (target.kind === "control") {
+        const descriptor = controllerPerformanceControlDescriptors(
+            config.hardware
+        ).find((control) => control.id === target.id);
+        const existing = config.performanceLayout.controls[target.id];
+        const vertical = descriptor?.kind === "slider"
+            || descriptor?.kind === "expression";
+        const minimum = minimumPerformanceControlSize(
+            descriptor?.kind ?? "pot"
+        );
+        return {
+            preferredWidth: existing?.width ?? (vertical ? 0.10 : 0.14),
+            preferredHeight: existing?.height ?? (vertical ? 0.28 : 0.20),
+            minWidth: minimum.width,
+            minHeight: minimum.height
         };
     }
 
@@ -990,6 +1044,24 @@ function applyFreeformPlacement(
         });
     }
 
+
+    if (target.kind === "control") {
+        return ensureControllerPerformanceLayout({
+            ...config,
+            performanceLayout: {
+                ...config.performanceLayout,
+                controls: {
+                    ...config.performanceLayout.controls,
+                    [target.id]: { ...rect }
+                },
+                unplacedControlIds:
+                    config.performanceLayout.unplacedControlIds.filter(
+                        (id) => id !== target.id
+                    )
+            }
+        });
+    }
+
     return ensureControllerPerformanceLayout({
         ...config,
         performanceLayout: {
@@ -1119,6 +1191,14 @@ function captureFreeformLayoutDefault(
         unplacedSwitchIds: [
             ...config.performanceLayout.unplacedSwitchIds
         ],
+        controls: Object.fromEntries(
+            Object.entries(config.performanceLayout.controls).map(
+                ([id, rect]) => [id, { ...rect }]
+            )
+        ),
+        unplacedControlIds: [
+            ...config.performanceLayout.unplacedControlIds
+        ],
         elements: structuredClone(
             config.performanceLayout.elements
         )
@@ -1189,6 +1269,14 @@ function applySavedFreeformDefault(
             unplacedSwitchIds: [
                 ...saved.unplacedSwitchIds
             ],
+            controls: Object.fromEntries(
+                Object.entries(saved.controls).map(
+                    ([id, rect]) => [id, { ...rect }]
+                )
+            ),
+            unplacedControlIds: [
+                ...saved.unplacedControlIds
+            ],
             elements: structuredClone(saved.elements)
         }
     });
@@ -1209,6 +1297,10 @@ function makeDefaultFreeformLayout(
             switches: {},
             unplacedSwitchIds: [
                 ...config.performanceLayout.unplacedSwitchIds
+            ],
+            controls: {},
+            unplacedControlIds: [
+                ...config.performanceLayout.unplacedControlIds
             ],
             elements: defaultElements
         }
@@ -1327,6 +1419,7 @@ export default function MultiFXControllerSettings({
     const [message, setMessage] = useState("");
     const [layoutEditorOpen, setLayoutEditorOpen] = useState(false);
     const [hardwareEditorOpen, setHardwareEditorOpen] = useState(false);
+    const [diagnosticsOpen, setDiagnosticsOpen] = useState(false);
     const handledBackRequest = useRef(backRequest);
 
     // Give nested Controller pages first chance to handle the shell's Back
@@ -1338,10 +1431,12 @@ export default function MultiFXControllerSettings({
             setLayoutEditorOpen(false);
         } else if (hardwareEditorOpen) {
             setHardwareEditorOpen(false);
+        } else if (diagnosticsOpen) {
+            setDiagnosticsOpen(false);
         } else {
             onClose?.();
         }
-    }, [backRequest, hardwareEditorOpen, layoutEditorOpen, onClose]);
+    }, [backRequest, diagnosticsOpen, hardwareEditorOpen, layoutEditorOpen, onClose]);
     const latestRuntime = getLatestMultiFXRuntimeState();
     const [controllerHardware, setControllerHardware] =
         useState<MultiFXControllerHardware>(() =>
@@ -1351,27 +1446,12 @@ export default function MultiFXControllerSettings({
                 boardId: null,
                 boardName: null,
                 drivers: [],
+                moduleScanSupported: false,
                 limits: { modules: 0, analogControls: 0, encoders: 0 },
                 inputs: [],
                 apply: { status: "idle", token: null, message: "" }
             }
         );
-    const [controllerLearn, setControllerLearn] =
-        useState<MultiFXControllerLearn>(() =>
-            latestRuntime?.controllerLearn ?? {
-                status: "idle",
-                token: null,
-                capability: null,
-                input: null,
-                secondaryInput: null,
-                message: ""
-            }
-        );
-    const [learnSession, setLearnSession] =
-        useState<SwitchLearnSession | null>(null);
-    const learnSessionRef = useRef<SwitchLearnSession | null>(null);
-    const [, setLearnFeedback] = useState("");
-
     useEffect(() => {
         let cancelled = false;
         void loadControllerConfig().then((result) => {
@@ -1387,21 +1467,7 @@ export default function MultiFXControllerSettings({
 
     useEffect(() => subscribeMultiFXRuntimeState((runtime) => {
         setControllerHardware(runtime.controllerHardware);
-        setControllerLearn(runtime.controllerLearn);
     }), []);
-
-    useEffect(() => {
-        learnSessionRef.current = learnSession;
-    }, [learnSession]);
-
-    useEffect(() => () => {
-        const session = learnSessionRef.current;
-        if (session) {
-            void updateMultiFXRuntimeState({
-                controllerLearnCancel: { token: session.token }
-            }).catch(() => undefined);
-        }
-    }, []);
 
     useEffect(() => {
         if (!message) return;
@@ -1411,119 +1477,6 @@ export default function MultiFXControllerSettings({
 
     const selected = config.switches.find((item) => item.id === selectedId);
 
-    const reportedDigitalInputs = useMemo(
-        () => controllerHardware.inputs.filter((input) =>
-            input.capabilities.includes("digital")
-            && !input.reserved
-        ),
-        [controllerHardware.inputs]
-    );
-
-    const cancelLearn = useCallback(async (
-        session: SwitchLearnSession | null = learnSession,
-        feedback = "Learn cancelled."
-    ) => {
-        if (!session) return;
-        learnSessionRef.current = null;
-        setLearnSession(null);
-        try {
-            const runtime = await updateMultiFXRuntimeState({
-                controllerLearnCancel: { token: session.token }
-            });
-            setLearnFeedback(
-                runtime.controllerLearn.status === "error"
-                    ? runtime.controllerLearn.message
-                    : feedback
-            );
-        } catch {
-            setLearnFeedback(
-                "Could not cancel Learn. It will still time out automatically."
-            );
-        }
-    }, [learnSession]);
-
-    useEffect(() => {
-        if (!learnSession) {
-            return;
-        }
-        if (controllerLearn.token !== learnSession.token) {
-            if (controllerLearn.status === "waiting") {
-                learnSessionRef.current = null;
-                setLearnSession(null);
-                setLearnFeedback(
-                    "Another Controller Settings session started Learn. This draft was not changed."
-                );
-            }
-            return;
-        }
-        if (controllerLearn.status === "waiting") {
-            setLearnFeedback("Waiting for switch press…");
-            return;
-        }
-        if (controllerLearn.status === "idle") return;
-
-        if (controllerLearn.status === "learned") {
-            const input = controllerLearn.input;
-            let learnedSource: ControllerInputSource | null = null;
-            if (input?.type === "gpio") {
-                learnedSource = { type: "gpio", pin: input.channel };
-            } else if (input?.moduleId) {
-                learnedSource = {
-                    type: "module",
-                    moduleId: input.moduleId,
-                    channel: input.channel
-                };
-            }
-            if (!learnedSource) {
-                setLearnFeedback(
-                    `Learned ${input?.label ?? "an input"}, but its source address was not recognized.`
-                );
-            } else {
-                const learnedId = controllerInputSourceId(learnedSource);
-                const conflict = config.switches.find((item) =>
-                    item.id !== learnSession.switchId
-                    && controllerInputSourceId(item.input) === learnedId
-                );
-                if (conflict) {
-                    setLearnFeedback(
-                        `${input?.label ?? "That input"} is already assigned to ${conflict.label}. No change was made.`
-                    );
-                } else {
-                    setConfig((current) => ensureControllerPerformanceLayout({
-                        ...current,
-                        switches: current.switches.map((item) =>
-                            item.id === learnSession.switchId
-                                ? { ...item, input: learnedSource }
-                                : item
-                        )
-                    }));
-                    setLearnFeedback(
-                        `${input?.label ?? "Input"} learned. Press SAVE to persist it.`
-                    );
-                }
-            }
-        } else {
-            setLearnFeedback(
-                controllerLearn.message
-                || (controllerLearn.status === "conflict"
-                    ? "That input is already assigned. No change was made."
-                    : "Learn ended without changing the physical input.")
-            );
-        }
-
-        const completed = learnSession;
-        learnSessionRef.current = null;
-        setLearnSession(null);
-        void updateMultiFXRuntimeState({
-            controllerLearnCancel: { token: completed.token }
-        }).catch(() => undefined);
-    }, [controllerLearn, learnSession, config.switches]);
-
-    useEffect(() => {
-        if (learnSession && learnSession.switchId !== selectedId) {
-            void cancelLearn(learnSession);
-        }
-    }, [selectedId, learnSession, cancelLearn]);
 
     const updateSelected = (patch: Partial<ControllerSwitchConfig>) => {
         if (!selected) return;
@@ -1764,9 +1717,6 @@ export default function MultiFXControllerSettings({
 
     const removeSelected = () => {
         if (!selected) return;
-        if (learnSession) {
-            void cancelLearn(learnSession, "");
-        }
 
         const nextSelectedId =
             config.switches.find(
@@ -1832,45 +1782,6 @@ export default function MultiFXControllerSettings({
         setSelectedId(nextSelectedId);
     };
 
-    const save = async () => {
-        if (learnSession) {
-            await cancelLearn(learnSession, "");
-        }
-        if ((controllerHardware.protocolVersion ?? 0) >= 2) {
-            const safePins = new Set(
-                reportedDigitalInputs
-                    .filter((input) => input.type === "gpio")
-                    .map((input) => input.channel)
-            );
-            const unsupported = config.switches.find((item) =>
-                item.input?.type === "gpio" && !safePins.has(item.input.pin)
-            );
-            if (unsupported) {
-                const pin = unsupported.input?.type === "gpio"
-                    ? unsupported.input.pin
-                    : "?";
-                setMessage(
-                    `${unsupported.label} uses GPIO ${pin}, which ${controllerHardware.boardName ?? "the connected controller"} did not report as a compatible digital input.`
-                );
-                return;
-            }
-        }
-        const normalized =
-            normalizeControllerPresetSlots(config);
-
-
-        const result = saveControllerConfig(normalized);
-        if (result.error) {
-            setMessage(result.error);
-            return;
-        }
-
-        setConfig(cloneConfig(result.config));
-        setMessage(
-            "Saved. Switch actions, physical inputs, hardware, and layout are shared with the MultiFX runtime."
-        );
-    };
-
     /**
      * Merge the Hardware page's private draft into the still-mounted logical
      * controller draft and persist the complete configuration atomically.
@@ -1879,7 +1790,6 @@ export default function MultiFXControllerSettings({
         hardware: ControllerHardwareConfig,
         switchInputs: readonly (ControllerInputSource | null)[]
     ): Promise<string | undefined> => {
-        if (learnSession) await cancelLearn(learnSession, "");
         const switches = config.switches.map((item, index) => ({
             ...item,
             input: switchInputs[index] ?? null
@@ -1895,10 +1805,21 @@ export default function MultiFXControllerSettings({
         return "Saved changes.";
     };
 
+    /**
+     * Hardware Setup edits logical switches in the mounted parent draft so its
+     * switch list and action editor stay in sync. Cancelling reloads the last
+     * durable configuration, which discards those edits as well as the page's
+     * private pin/hardware draft without disturbing an earlier successful save.
+     */
+    const cancelHardware = async () => {
+        const result = await loadControllerConfig();
+        const normalized = normalizeControllerPresetSlots(result.config);
+        setConfig(cloneConfig(normalized));
+        setSelectedId(normalized.switches[0]?.id ?? "");
+        setHardwareEditorOpen(false);
+    };
+
     const restore = async () => {
-        if (learnSession) {
-            await cancelLearn(learnSession, "");
-        }
         clearSavedControllerConfig();
         const result = await loadControllerConfig();
         const normalized =
@@ -1913,8 +1834,28 @@ export default function MultiFXControllerSettings({
             <MultiFXControllerHardwareSettings
                 controllerDraft={config}
                 reportedHardware={controllerHardware}
-                onCancel={() => setHardwareEditorOpen(false)}
+                selectedSwitchId={selectedId}
+                onSelectSwitch={setSelectedId}
+                onSwitchLabelChange={(label) => updateSelected({ label })}
+                onSwitchActionChange={updateAction}
+                onSwitchPresetIndexChange={updatePresetIndex}
+                onLongPressMsChange={(longPressMs) => setConfig((current) => ({
+                    ...current,
+                    longPressMs
+                }))}
+                onAddSwitch={addSwitch}
+                onRemoveSwitch={removeSelected}
+                onCancel={() => void cancelHardware()}
                 onSave={saveHardware}
+            />
+        );
+    }
+
+    if (diagnosticsOpen) {
+        return (
+            <ControllerDiagnostics
+                controllerConfig={config}
+                hardware={controllerHardware}
             />
         );
     }
@@ -1923,175 +1864,79 @@ export default function MultiFXControllerSettings({
         <div style={screenStyle}>
             <div style={headerStyle}>
                 <div>
-                    <div style={titleStyle}>CONTROLLER SETTINGS</div>
+                    <div style={titleStyle}>CONTROLLER</div>
                     <div style={subtitleStyle}>
-                        Define what each switch does and arrange the on-screen controller. Physical wiring is configured in Hardware Setup.
+                        Configure hardware, arrange Performance View, and inspect controller status.
                     </div>
                 </div>
-                <div style={{ display: "flex", alignItems: "center", gap: 9 }}>
-                    <div style={counterStyle}>
-                        {config.switches.length} / {MAX_FOOTSWITCHES}
-                    </div>
-                    <button type="button" onClick={() => setHardwareEditorOpen(true)} style={layoutButtonStyle}>
-                        HARDWARE SETUP
-                    </button>
+                <div style={connectionSummaryStyle}>
+                    <span style={{ color: controllerHardware.connected
+                        ? MFX_COLORS.cyan
+                        : MFX_COLORS.muted }}>
+                        {controllerHardware.connected ? "CONNECTED" : "OFFLINE"}
+                    </span>
+                    <span>{controllerHardware.boardName ?? "NO CONTROLLER"}</span>
                 </div>
             </div>
 
             {message && <div style={messageStyle}>{message}</div>}
 
-            <div style={bodyStyle}>
-                <section style={switchListPanelStyle}>
-                    <div style={sectionTopStyle}>
-                        <div>
-                            <div style={sectionTitleStyle}>SWITCHES</div>
-                            <div style={helpStyle}>
-                                Select a logical switch to define its short-press and long-press actions.
-                                Screen position is edited separately in Layout.
-                            </div>
-                        </div>
+            <div style={controllerHubBodyStyle}>
+                <button
+                    type="button"
+                    onClick={() => setHardwareEditorOpen(true)}
+                    style={controllerHubCardStyle}
+                >
+                    <span style={controllerHubCardTitleStyle}>HARDWARE SETUP</span>
+                    <span style={controllerHubCardTextStyle}>
+                        Add switches, buttons, pots and encoders; assign pins,
+                        actions, modules and Learn mappings.
+                    </span>
+                    <span style={controllerHubCardMetaStyle}>
+                        {config.switches.length} switches • {config.hardware.analogControls.length} analog • {config.hardware.encoders.length} encoders
+                    </span>
+                </button>
 
-                        <button
-                            type="button"
-                            onClick={() => setLayoutEditorOpen(true)}
-                            style={layoutButtonStyle}
-                        >
-                            LAYOUT
-                        </button>
-                    </div>
-
-                    <div style={switchListStyle}>
-                        {config.switches.map((item) => {
-                            const active = item.id === selectedId;
-                            return (
-                                <button
-                                    key={item.id}
-                                    type="button"
-                                    onClick={() => setSelectedId(item.id)}
-                                    style={{
-                                        ...switchCellStyle,
-                                        borderColor: active
-                                            ? MFX_COLORS.cyan
-                                            : MFX_COLORS.border,
-                                        boxShadow: active
-                                            ? `0 0 0 2px ${MFX_COLORS.cyanSurface}`
-                                            : "none"
-                                    }}
-                                >
-                                    <span style={switchNumberStyle}>{item.label}</span>
-                                    <span style={switchActionStyle}>
-                                        {actionLabel(item.action)}
-                                    </span>
-                                    {config.performanceLayout.mode === "freeform"
-                                        && config.performanceLayout.unplacedSwitchIds.includes(item.id) && (
-                                            <span style={switchGpioStyle}>UNPLACED</span>
-                                        )}
-                                </button>
-                            );
-                        })}
-                    </div>
-
-                    <div style={buttonRowStyle}>
-                        <button
-                            type="button"
-                            onClick={addSwitch}
-                            disabled={config.switches.length >= MAX_FOOTSWITCHES}
-                            style={buttonStyle}
-                        >
-                            + ADD SWITCH
-                        </button>
-                        <button
-                            type="button"
-                            onClick={removeSelected}
-                            disabled={!selected}
-                            style={dangerButtonStyle}
-                        >
-                            REMOVE
-                        </button>
-                    </div>
-
-                    <div style={layoutSummaryStyle}>
-                        PERFORMANCE LAYOUT: {config.performanceLayout.mode.toUpperCase()}
+                <button
+                    type="button"
+                    onClick={() => setLayoutEditorOpen(true)}
+                    style={controllerHubCardStyle}
+                >
+                    <span style={controllerHubCardTitleStyle}>PERFORMANCE LAYOUT</span>
+                    <span style={controllerHubCardTextStyle}>
+                        Arrange switches, physical controls and status panels on
+                        the touchscreen.
+                    </span>
+                    <span style={controllerHubCardMetaStyle}>
+                        {config.performanceLayout.mode.toUpperCase()}
                         {config.performanceLayout.mode === "grid"
                             ? ` • ${config.columns} × ${config.rows}`
-                            : " • drag/resizable"}
-                    </div>
-                </section>
+                            : " • drag and resize"}
+                    </span>
+                </button>
 
-                <aside style={editorPanelStyle}>
-                    {selected ? (
-                        <>
-                            <div style={sectionTitleStyle}>{selected.label}</div>
-
-                            <label style={fieldLabelStyle}>
-                                Label
-                                <input
-                                    value={selected.label}
-                                    onChange={(event) =>
-                                        updateSelected({ label: event.target.value })
-                                    }
-                                    style={inputStyle}
-                                />
-                            </label>
-
-                            <ActionEditor
-                                title="SHORT PRESS"
-                                action={selected.action}
-                                onType={(type) => updateAction("action", type)}
-                                onPresetIndex={(value) =>
-                                    updatePresetIndex("action", value)
-                                }
-                            />
-
-                            <ActionEditor
-                                title="LONG PRESS"
-                                action={
-                                    selected.longPressAction
-                                    ?? { type: "none", text: "Unused" }
-                                }
-                                onType={(type) =>
-                                    updateAction("longPressAction", type)
-                                }
-                                onPresetIndex={(value) =>
-                                    updatePresetIndex("longPressAction", value)
-                                }
-                            />
-
-                            <label style={fieldLabelStyle}>
-                                Long-press threshold
-                                <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
-                                    <BufferedIntegerInput
-                                        min={MIN_LONG_PRESS_MS}
-                                        max={MAX_LONG_PRESS_MS}
-                                        step={50}
-                                        value={config.longPressMs}
-                                        onValueChange={(value) =>
-                                            setConfig((current) => ({
-                                                ...current,
-                                                longPressMs: value
-                                            }))
-                                        }
-                                        style={{ ...inputStyle, width: 110 }}
-                                    />
-                                    <span style={helpStyle}>ms</span>
-                                </div>
-                            </label>
-                        </>
-                    ) : (
-                        <div style={helpStyle}>Select a switch to edit it.</div>
-                    )}
-                </aside>
+                <button
+                    type="button"
+                    onClick={() => setDiagnosticsOpen(true)}
+                    style={controllerHubCardStyle}
+                >
+                    <span style={controllerHubCardTitleStyle}>DIAGNOSTICS</span>
+                    <span style={controllerHubCardTextStyle}>
+                        Check connection, protocol, capabilities, configuration
+                        apply status and reported inputs.
+                    </span>
+                    <span style={controllerHubCardMetaStyle}>
+                        PROTOCOL {controllerHardware.protocolVersion ?? "—"} • {controllerHardware.inputs.length} INPUTS
+                    </span>
+                </button>
             </div>
 
             <div style={footerStyle}>
                 <div style={footerHelpStyle}>
-                    Performance View is always read-only. LAYOUT is the only place controls can move.
+                    Hardware defines what is connected. Layout controls only where it appears.
                 </div>
                 <button type="button" onClick={restore} style={secondaryButtonStyle}>
                     RESTORE DEFAULT
-                </button>
-                <button type="button" onClick={() => void save()} style={saveButtonStyle}>
-                    SAVE
                 </button>
             </div>
 
@@ -2105,6 +1950,85 @@ export default function MultiFXControllerSettings({
                     }}
                 />
             )}
+        </div>
+    );
+}
+
+/** Read-only controller health page kept beside Setup and Layout. */
+function ControllerDiagnostics({
+    controllerConfig,
+    hardware
+}: {
+    controllerConfig: ControllerLayoutConfig;
+    hardware: MultiFXControllerHardware;
+}) {
+    const digitalInputs = hardware.inputs.filter((input) =>
+        input.capabilities.includes("digital")
+    ).length;
+    const analogInputs = hardware.inputs.filter((input) =>
+        input.capabilities.includes("analog")
+    ).length;
+    const assignedInputs = hardware.inputs.filter((input) =>
+        Boolean(input.assignedTo)
+    ).length;
+    const cautionInputs = hardware.inputs.filter((input) =>
+        input.caution || input.reserved
+    ).length;
+
+    const values = [
+        ["Connection", hardware.connected ? "CONNECTED" : "OFFLINE"],
+        ["Board", hardware.boardName ?? hardware.boardId ?? "Not reported"],
+        ["Protocol", hardware.protocolVersion?.toString() ?? "—"],
+        ["Apply status", hardware.apply.status.toUpperCase()],
+        ["Logical switches", controllerConfig.switches.length.toString()],
+        ["Analog controls", controllerConfig.hardware.analogControls.length.toString()],
+        ["Encoders", controllerConfig.hardware.encoders.length.toString()],
+        ["Expansion modules", controllerConfig.hardware.modules.length.toString()],
+        ["Digital inputs", digitalInputs.toString()],
+        ["Analog inputs", analogInputs.toString()],
+        ["Assigned inputs", assignedInputs.toString()],
+        ["Reserved / caution", cautionInputs.toString()]
+    ];
+
+    return (
+        <div style={diagnosticsScreenStyle}>
+            <div style={headerStyle}>
+                <div>
+                    <div style={titleStyle}>CONTROLLER DIAGNOSTICS</div>
+                    <div style={subtitleStyle}>
+                        Live information reported by the bridge and connected firmware.
+                    </div>
+                </div>
+            </div>
+            <div style={diagnosticsBodyStyle}>
+                <div style={diagnosticsGridStyle}>
+                    {values.map(([label, value]) => (
+                        <div key={label} style={diagnosticValueStyle}>
+                            <span style={diagnosticLabelStyle}>{label}</span>
+                            <strong style={{ color: label === "Connection"
+                                && hardware.connected
+                                ? MFX_COLORS.cyan
+                                : MFX_COLORS.text }}>
+                                {value}
+                            </strong>
+                        </div>
+                    ))}
+                </div>
+                <section style={diagnosticMessageStyle}>
+                    <div style={sectionTitleStyle}>LAST CONFIGURATION RESULT</div>
+                    <div style={helpStyle}>
+                        {hardware.apply.message || "No hardware apply message has been reported."}
+                    </div>
+                </section>
+                <section style={diagnosticMessageStyle}>
+                    <div style={sectionTitleStyle}>DRIVERS REPORTED BY FIRMWARE</div>
+                    <div style={helpStyle}>
+                        {hardware.drivers.length > 0
+                            ? hardware.drivers.map((driver) => driver.label).join(" • ")
+                            : "No expansion drivers reported."}
+                    </div>
+                </section>
+            </div>
         </div>
     );
 }
@@ -2215,6 +2139,13 @@ function PerformanceLayoutEditor(props: {
                 return currentSelectedId;
             }
 
+            if (currentSelectedId.startsWith("control:")
+                && next.performanceLayout.controls[
+                    currentSelectedId.substring("control:".length)
+                ]) {
+                return currentSelectedId;
+            }
+
             return next.performanceLayout.mode === "freeform"
                 ? "element:currentBank"
                 : next.switches[0]?.id ?? "";
@@ -2258,16 +2189,10 @@ function PerformanceLayoutEditor(props: {
                     const finalRect = {
                         ...placementDrag.previewRect
                     };
-                    const target: PlacementTarget =
-                        placementDrag.kind === "element"
-                            ? {
-                                kind: "element",
-                                id: placementDrag.id
-                            }
-                            : {
-                                kind: "switch",
-                                id: placementDrag.id
-                            };
+                    const target: PlacementTarget = {
+                        kind: placementDrag.kind,
+                        id: placementDrag.id
+                    } as PlacementTarget;
 
                     setDraft((current) =>
                         applyFreeformPlacement(
@@ -2279,7 +2204,9 @@ function PerformanceLayoutEditor(props: {
                     setSelectedId(
                         target.kind === "element"
                             ? `element:${target.id}`
-                            : target.id
+                            : target.kind === "control"
+                                ? `control:${target.id}`
+                                : target.id
                     );
                     setLayoutMessage(
                         `${placementDrag.label} placed.`
@@ -2377,7 +2304,9 @@ function PerformanceLayoutEditor(props: {
                     setSelectedId(
                         drag.kind === "element"
                             ? `element:${drag.id}`
-                            : drag.id
+                            : drag.kind === "control"
+                                ? `control:${drag.id}`
+                                : drag.id
                     );
                     setLayoutMessage(
                         "Layout items swapped."
@@ -2429,8 +2358,14 @@ function PerformanceLayoutEditor(props: {
     }, []);
 
     const layout = draft.performanceLayout;
+    const hardwareControls = controllerPerformanceControlDescriptors(
+        draft.hardware
+    );
     const unplacedSwitches = draft.switches.filter(
         (item) => layout.unplacedSwitchIds.includes(item.id)
+    );
+    const unplacedHardwareControls = hardwareControls.filter(
+        (control) => layout.unplacedControlIds.includes(control.id)
     );
 
 
@@ -2512,16 +2447,10 @@ function PerformanceLayoutEditor(props: {
             return;
         }
 
-        const target: PlacementTarget =
-            placementDrag.kind === "element"
-                ? {
-                    kind: "element",
-                    id: placementDrag.id
-                }
-                : {
-                    kind: "switch",
-                    id: placementDrag.id
-                };
+        const target: PlacementTarget = {
+            kind: placementDrag.kind,
+            id: placementDrag.id
+        } as PlacementTarget;
 
         let centerX =
             (event.clientX - bounds.left) / bounds.width;
@@ -2579,7 +2508,9 @@ function PerformanceLayoutEditor(props: {
             setSelectedId(
                 target.kind === "element"
                     ? `element:${target.id}`
-                    : target.id
+                    : target.kind === "control"
+                        ? `control:${target.id}`
+                        : target.id
             );
             setLayoutMessage(
                 `${label} placed. Resize it if you want a different fit.`
@@ -2614,6 +2545,15 @@ function PerformanceLayoutEditor(props: {
                 id
             },
             CONTROLLER_LAYOUT_ELEMENT_LABELS[id]
+        );
+    };
+
+    const placeControl = (
+        control: ControllerPerformanceControlDescriptor
+    ) => {
+        placeTargetAutomatically(
+            { kind: "control", id: control.id },
+            control.label
         );
     };
 
@@ -2676,6 +2616,10 @@ function PerformanceLayoutEditor(props: {
             ? selectedId.substring(
                 "element:".length
             ) as ControllerLayoutElementId
+            : undefined;
+    const selectedControlId =
+        selectedId.startsWith("control:")
+            ? selectedId.substring("control:".length)
             : undefined;
 
     const updateSelectedElement = (
@@ -2971,10 +2915,59 @@ function PerformanceLayoutEditor(props: {
 
     const getRect = (
         target: DragTarget
-    ): ControllerLayoutRect | undefined =>
-        target.kind === "element"
-            ? draft.performanceLayout.elements[target.id].rect
-            : draft.performanceLayout.switches[target.id];
+    ): ControllerLayoutRect | undefined => {
+        if (target.kind === "element") {
+            return draft.performanceLayout.elements[target.id].rect;
+        }
+        if (target.kind === "control") {
+            return draft.performanceLayout.controls[target.id];
+        }
+        return draft.performanceLayout.switches[target.id];
+    };
+
+    /** Return a selected Freeform item to its palette without moving others. */
+    const removeSelectedFromFreeform = () => {
+        if (selectedElementId) {
+            setDraft((current) => ensureControllerPerformanceLayout({
+                ...current,
+                performanceLayout: {
+                    ...current.performanceLayout,
+                    elements: {
+                        ...current.performanceLayout.elements,
+                        [selectedElementId]: {
+                            ...current.performanceLayout.elements[selectedElementId],
+                            visible: false
+                        }
+                    }
+                }
+            }));
+        } else if (selectedControlId) {
+            setDraft((current) => {
+                const controls = { ...current.performanceLayout.controls };
+                delete controls[selectedControlId];
+                return ensureControllerPerformanceLayout({
+                    ...current,
+                    performanceLayout: {
+                        ...current.performanceLayout,
+                        controls
+                    }
+                });
+            });
+        } else if (selectedId) {
+            setDraft((current) => ensureControllerPerformanceLayout({
+                ...current,
+                performanceLayout: {
+                    ...current.performanceLayout,
+                    unplacedSwitchIds: Array.from(new Set([
+                        ...current.performanceLayout.unplacedSwitchIds,
+                        selectedId
+                    ]))
+                }
+            }));
+        }
+        setLayoutMessage("Item returned to the unplaced list.");
+        setSelectedId("");
+    };
 
     const setRect = (
         target: DragTarget,
@@ -2997,6 +2990,19 @@ function PerformanceLayoutEditor(props: {
                     performanceLayout: {
                         ...current.performanceLayout,
                         elements
+                    }
+                };
+            }
+
+            if (target.kind === "control") {
+                return {
+                    ...current,
+                    performanceLayout: {
+                        ...current.performanceLayout,
+                        controls: {
+                            ...current.performanceLayout.controls,
+                            [target.id]: rect
+                        }
                     }
                 };
             }
@@ -3024,7 +3030,13 @@ function PerformanceLayoutEditor(props: {
 
         event.preventDefault();
         event.stopPropagation();
-        setSelectedId(target.id);
+        setSelectedId(
+            target.kind === "element"
+                ? `element:${target.id}`
+                : target.kind === "control"
+                    ? `control:${target.id}`
+                    : target.id
+        );
 
         try {
             event.currentTarget.setPointerCapture(event.pointerId);
@@ -3065,13 +3077,25 @@ function PerformanceLayoutEditor(props: {
 
         const dx = (event.clientX - drag.startX) / bounds.width;
         const dy = (event.clientY - drag.startY) / bounds.height;
+        const draggedControl = drag.kind === "control"
+            ? controllerPerformanceControlDescriptors(
+                draft.hardware
+            ).find((control) => control.id === drag.id)
+            : undefined;
+        const controlMinimum = minimumPerformanceControlSize(
+            draggedControl?.kind ?? "pot"
+        );
         const minimumWidth = drag.kind === "element"
             ? MIN_FREEFORM_HEADER_WIDTH
-            : MIN_FREEFORM_SWITCH_WIDTH;
+            : drag.kind === "control"
+                ? controlMinimum.width
+                : MIN_FREEFORM_SWITCH_WIDTH;
         const minimumHeight = drag.kind === "element"
             ? MIN_FREEFORM_HEADER_HEIGHT
-            : MIN_FREEFORM_SWITCH_HEIGHT;
-        let next = { ...drag.startRect };
+            : drag.kind === "control"
+                ? controlMinimum.height
+                : MIN_FREEFORM_SWITCH_HEIGHT;
+        const next = { ...drag.startRect };
 
         const snapX = Math.max(1, snapPixels) / bounds.width;
         const snapY = Math.max(1, snapPixels) / bounds.height;
@@ -3162,7 +3186,12 @@ function PerformanceLayoutEditor(props: {
                         id: string;
                         rect: ControllerLayoutRect;
                     } => Boolean(entry.rect)
-                )
+                ),
+            ...Object.entries(draft.performanceLayout.controls)
+                .map(([id, rect]) => ({
+                    id: `control:${id}`,
+                    rect
+                }))
         ];
 
         const targetId = layoutTargetKey(drag);
@@ -3427,7 +3456,8 @@ function PerformanceLayoutEditor(props: {
         }
 
         const unplacedCount =
-            result.config.performanceLayout.unplacedSwitchIds.length;
+            result.config.performanceLayout.unplacedSwitchIds.length
+            + result.config.performanceLayout.unplacedControlIds.length;
 
         const savedMessage =
             result.config.performanceLayout.mode === "freeform"
@@ -3443,9 +3473,58 @@ function PerformanceLayoutEditor(props: {
         props.onSaved(result.config, savedMessage);
     };
 
+    /** Export only layout geometry/defaults; hardware and assignments stay local. */
+    const exportLayout = () => {
+        const payload = {
+            format: PERFORMANCE_LAYOUT_FILE_FORMAT,
+            version: PERFORMANCE_LAYOUT_FILE_VERSION,
+            performanceLayout: draft.performanceLayout,
+            layoutDefaults: draft.layoutDefaults
+        };
+        const blob = new Blob(
+            [JSON.stringify(payload, null, 2)],
+            { type: "application/json" }
+        );
+        const url = URL.createObjectURL(blob);
+        const link = document.createElement("a");
+        link.href = url;
+        link.download = "multifx-performance-layout.json";
+        link.click();
+        URL.revokeObjectURL(url);
+        setLayoutMessage("Layout exported.");
+    };
+
+    /**
+     * Import layout geometry against the current hardware/configuration. Using
+     * the full controller validator prevents stale switch/control IDs, invalid
+     * rectangles, or partial default records from entering browser storage.
+     */
+    const importLayout = async (file: File) => {
+        try {
+            const parsed = JSON.parse(await file.text()) as unknown;
+            const normalized = parsePerformanceLayoutFile(draft, parsed);
+            setDraft(normalized);
+            saveLastLayoutEditorMode(normalized.performanceLayout.mode);
+            setSelectedId(
+                normalized.performanceLayout.mode === "freeform"
+                    ? "element:currentBank"
+                    : normalized.switches[0]?.id ?? ""
+            );
+            setLayoutMessage("Layout imported. Choose SAVE LAYOUT to apply it.");
+        } catch (error) {
+            setLayoutMessage(
+                error instanceof Error
+                    ? `Import failed: ${error.message}`
+                    : "Import failed: invalid layout file."
+            );
+        }
+    };
+
     const selectedRect = selectedElementId
         ? layout.elements[selectedElementId].rect
-        : layout.switches[selectedId];
+        : selectedControlId
+            ? layout.controls[selectedControlId]
+            : layout.switches[selectedId];
 
     const byPosition = new Map<string, ControllerSwitchConfig>();
     draft.switches.forEach((item) => {
@@ -3463,6 +3542,12 @@ function PerformanceLayoutEditor(props: {
         freeformGhostTarget?.kind === "switch"
             ? draft.switches.find(
                 (item) => item.id === freeformGhostTarget.id
+            )
+            : undefined;
+    const freeformGhostControl =
+        freeformGhostTarget?.kind === "control"
+            ? hardwareControls.find(
+                (control) => control.id === freeformGhostTarget.id
             )
             : undefined;
 
@@ -3497,6 +3582,32 @@ function PerformanceLayoutEditor(props: {
                             FREEFORM
                         </button>
                     </div>
+
+                    <label style={{
+                        ...secondaryButtonStyle,
+                        display: "inline-flex",
+                        alignItems: "center",
+                        cursor: "pointer"
+                    }}>
+                        IMPORT
+                        <input
+                            type="file"
+                            accept="application/json,.json"
+                            style={{ display: "none" }}
+                            onChange={(event) => {
+                                const file = event.target.files?.[0];
+                                if (file) void importLayout(file);
+                                event.currentTarget.value = "";
+                            }}
+                        />
+                    </label>
+                    <button
+                        type="button"
+                        onClick={exportLayout}
+                        style={secondaryButtonStyle}
+                    >
+                        EXPORT
+                    </button>
 
                     <button
                         type="button"
@@ -3742,14 +3853,14 @@ function PerformanceLayoutEditor(props: {
                                 </label>
 
                                 <div style={{ ...sectionTitleStyle, marginTop: 16 }}>
-                                    UNPLACED CONTROLS
+                                    UNPLACED SWITCHES
                                 </div>
                                 <div style={{ ...helpStyle, marginTop: 5 }}>
                                     Drag a control onto the layout to preview its fit. The ghost shrinks automatically when needed; green fits, red is too small. PLACE searches for an open spot and shrinks the new control only as much as needed.
                                 </div>
                                 {unplacedSwitches.length === 0 ? (
                                     <div style={helpStyle}>
-                                        All controls are placed.
+                                        All switches are placed.
                                     </div>
                                 ) : (
                                     <div style={{
@@ -3830,6 +3941,84 @@ function PerformanceLayoutEditor(props: {
                                 )}
 
                                 <div style={{ ...sectionTitleStyle, marginTop: 16 }}>
+                                    HARDWARE CONTROLS
+                                </div>
+                                <div style={{ ...helpStyle, marginTop: 5 }}>
+                                    Place pots, sliders, expression pedals, encoders and encoder buttons. Their displayed function follows the active preset binding.
+                                </div>
+                                {unplacedHardwareControls.length === 0 ? (
+                                    <div style={helpStyle}>
+                                        All hardware controls are placed.
+                                    </div>
+                                ) : (
+                                    <div style={{
+                                        display: "flex",
+                                        flexDirection: "column",
+                                        gap: 6,
+                                        marginTop: 8
+                                    }}>
+                                        {unplacedHardwareControls.map((control) => (
+                                            <div
+                                                key={control.id}
+                                                style={{
+                                                    display: "flex",
+                                                    alignItems: "center",
+                                                    gap: 8,
+                                                    padding: "7px 8px",
+                                                    border: `1px solid ${MFX_COLORS.border}`,
+                                                    borderRadius: 7,
+                                                    background: MFX_COLORS.panelAlt
+                                                }}
+                                            >
+                                                <button
+                                                    type="button"
+                                                    onPointerDown={(event) =>
+                                                        beginPlacementDrag(
+                                                            event,
+                                                            { kind: "control", id: control.id },
+                                                            control.label
+                                                        )
+                                                    }
+                                                    onPointerMove={movePlacementDrag}
+                                                    style={{
+                                                        ...secondaryButtonStyle,
+                                                        flex: "1 1 auto",
+                                                        minWidth: 0,
+                                                        textAlign: "left",
+                                                        padding: "7px 8px",
+                                                        fontSize: "0.72rem",
+                                                        cursor: "grab",
+                                                        touchAction: "none"
+                                                    }}
+                                                >
+                                                    {control.label}
+                                                    <span style={{
+                                                        display: "block",
+                                                        marginTop: 2,
+                                                        color: MFX_COLORS.muted,
+                                                        fontSize: "0.58rem",
+                                                        fontWeight: 750
+                                                    }}>
+                                                        {control.kind.toUpperCase()} · CC {control.midiCc}
+                                                    </span>
+                                                </button>
+                                                <button
+                                                    type="button"
+                                                    onClick={() => placeControl(control)}
+                                                    style={{
+                                                        ...secondaryButtonStyle,
+                                                        padding: "5px 8px",
+                                                        fontSize: "0.68rem"
+                                                    }}
+                                                >
+                                                    PLACE
+                                                </button>
+                                            </div>
+                                        ))}
+                                    </div>
+                                )}
+
+                                <div style={{ ...sectionTitleStyle, marginTop: 16 }}>
                                     SELECTED
                                 </div>
                                 <div style={selectedInfoStyle}>
@@ -3837,6 +4026,10 @@ function PerformanceLayoutEditor(props: {
                                         ? CONTROLLER_LAYOUT_ELEMENT_LABELS[
                                             selectedElementId
                                         ]
+                                        : selectedControlId
+                                            ? hardwareControls.find(
+                                                (control) => control.id === selectedControlId
+                                            )?.label ?? selectedControlId
                                         : draft.switches.find(
                                             (item) => item.id === selectedId
                                         )?.label ?? selectedId}
@@ -3931,6 +4124,22 @@ function PerformanceLayoutEditor(props: {
                                         X {Math.round(selectedRect.x * 100)}% • Y {Math.round(selectedRect.y * 100)}%<br />
                                         W {Math.round(selectedRect.width * 100)}% • H {Math.round(selectedRect.height * 100)}%
                                     </div>
+                                )}
+
+                                {selectedRect && (
+                                    <button
+                                        type="button"
+                                        onClick={removeSelectedFromFreeform}
+                                        style={{
+                                            ...secondaryButtonStyle,
+                                            width: "100%",
+                                            marginTop: 8,
+                                            border: `1px solid ${MFX_COLORS.danger}`,
+                                            color: MFX_COLORS.danger
+                                        }}
+                                    >
+                                        REMOVE FROM LAYOUT
+                                    </button>
                                 )}
 
                                 <button
@@ -4059,11 +4268,11 @@ function PerformanceLayoutEditor(props: {
                                                     }
                                                     style={{
                                                         ...layoutPreviewSwitchStyle,
-                                                        borderColor: dropTarget
+                                                        border: `2px solid ${dropTarget
                                                             ? "#22c55e"
                                                             : active
                                                                 ? MFX_COLORS.cyan
-                                                                : MFX_COLORS.border,
+                                                                : MFX_COLORS.border}`,
                                                         boxShadow: dropTarget
                                                             ? "0 0 0 2px rgba(34,197,94,0.25)"
                                                             : "none",
@@ -4075,11 +4284,16 @@ function PerformanceLayoutEditor(props: {
                                                             : "grab",
                                                         touchAction: "none",
                                                         userSelect: "none",
-                                                        WebkitUserSelect: "none"
+                                                        WebkitUserSelect: "none",
+                                                        padding: 0,
+                                                        background: "transparent"
                                                     }}
                                                 >
-                                                    <strong>{item.label}</strong>
-                                                    <span>{actionLabel(item.action)}</span>
+                                                    <LayoutSwitchPreview
+                                                        label={item.label}
+                                                        value={actionLabel(item.action)}
+                                                        action={item.action}
+                                                    />
                                                 </button>
                                             );
                                         }
@@ -4099,17 +4313,17 @@ function PerformanceLayoutEditor(props: {
                                                 pointerEvents: "none",
                                                 opacity: 0.76,
                                                 boxSizing: "border-box",
-                                                borderColor: MFX_COLORS.cyan,
+                                                border: `2px solid ${MFX_COLORS.cyan}`,
                                                 boxShadow: "0 10px 28px rgba(0,0,0,0.42)",
-                                                cursor: "grabbing"
+                                                cursor: "grabbing",
+                                                padding: 0,
+                                                background: "transparent"
                                             }}
                                         >
-                                            <strong>
-                                                {gridDragVisual.label}
-                                            </strong>
-                                            <span>
-                                                {gridDragVisual.sublabel}
-                                            </span>
+                                            <LayoutSwitchPreview
+                                                label={gridDragVisual.label}
+                                                value={gridDragVisual.sublabel}
+                                            />
                                         </div>
                                     )}
                                 </div>
@@ -4207,7 +4421,32 @@ function PerformanceLayoutEditor(props: {
                                                         === `switch:${item.id}`
                                                 }
                                                 kind="switch"
+                                                action={item.action}
                                                 onSelect={() => setSelectedId(item.id)}
+                                                onBeginDrag={beginDrag}
+                                            />
+                                        );
+                                    })}
+
+                                    {hardwareControls.map((control) => {
+                                        const rect = layout.controls[control.id];
+                                        if (!rect) return null;
+                                        return (
+                                            <LayoutPreviewItem
+                                                key={`control:${control.id}`}
+                                                id={control.id}
+                                                label={control.label}
+                                                sublabel={`${control.kind.toUpperCase()} · CC ${control.midiCc}`}
+                                                rect={rect}
+                                                selected={selectedId === `control:${control.id}`}
+                                                swapTarget={swapTargetId === `control:${control.id}`}
+                                                dragging={
+                                                    freeformDragVisual?.targetKey
+                                                        === `control:${control.id}`
+                                                }
+                                                kind="control"
+                                                controlDescriptor={control}
+                                                onSelect={() => setSelectedId(`control:${control.id}`)}
                                                 onBeginDrag={beginDrag}
                                             />
                                         );
@@ -4234,6 +4473,21 @@ function PerformanceLayoutEditor(props: {
                                         )}
 
                                     {freeformDragVisual
+                                        && freeformGhostTarget?.kind === "control"
+                                        && freeformGhostControl && (
+                                            <LayoutPreviewItem
+                                                id={`ghost-control:${freeformGhostControl.id}`}
+                                                label={freeformGhostControl.label}
+                                                sublabel={`${freeformGhostControl.kind.toUpperCase()} · CC ${freeformGhostControl.midiCc}`}
+                                                rect={freeformDragVisual.rect}
+                                                selected={false}
+                                                kind="control"
+                                                controlDescriptor={freeformGhostControl}
+                                                ghost
+                                            />
+                                        )}
+
+                                    {freeformDragVisual
                                         && freeformGhostTarget?.kind === "switch"
                                         && freeformGhostSwitch && (
                                             <LayoutPreviewItem
@@ -4245,6 +4499,7 @@ function PerformanceLayoutEditor(props: {
                                                 rect={freeformDragVisual.rect}
                                                 selected={false}
                                                 kind="switch"
+                                                action={freeformGhostSwitch.action}
                                                 ghost
                                             />
                                         )}
@@ -4447,6 +4702,112 @@ function LayoutPreviewMarqueeText(props: {
     );
 }
 
+function layoutSwitchRole(action?: ControllerSwitchAction): string {
+    if (action?.type === "preset") return "preset";
+    if (action?.type === "bankUp" || action?.type === "bankDown") {
+        return "navigation";
+    }
+    if (action?.type === "snapshotMode") return "snapshot";
+    if (action?.type === "chainBypass") return "bypass";
+    return "utility";
+}
+
+/** The Layout editor uses the live Performance renderer so style, hardware,
+ * panel geometry, typography and indicator choices are true previews. */
+function LayoutSwitchPreview({
+    label,
+    value,
+    action
+}: {
+    label: string;
+    value: string;
+    action?: ControllerSwitchAction;
+}) {
+    const role = layoutSwitchRole(action);
+    const prefix = `var(--mfx-role-${role}-normal`;
+    const indicator = `${prefix}-indicator)`;
+    return (
+        <div
+            className="mfx-performance-switch"
+            data-mfx-role={role}
+            data-mfx-active="false"
+            style={{
+                position: "relative",
+                width: "100%",
+                height: "100%",
+                minWidth: 0,
+                minHeight: 0,
+                boxSizing: "border-box",
+                containerType: "size",
+                overflow: "hidden",
+                padding: 2,
+                border: "var(--mfx-control-border-width) solid transparent",
+                borderRadius: "var(--mfx-control-radius)",
+                background: `${prefix}-bg) padding-box, ${prefix}-border) border-box`,
+                boxShadow: `${prefix}-shadow)`,
+                color: `${prefix}-value)`,
+                pointerEvents: "none"
+            }}
+        >
+            <MultiFXFootswitchGraphic color={indicator} />
+            <MultiFXArcadeButtonGraphic color={indicator} />
+            <span
+                aria-hidden="true"
+                className="mfx-performance-indicator"
+                style={{
+                    position: "absolute",
+                    top: "clamp(1px, 3cqh, 6px)",
+                    right: "clamp(1px, 3cqw, 7px)",
+                    width: "clamp(5px, min(11cqw, 20cqh), 16px)",
+                    height: "clamp(5px, min(11cqw, 20cqh), 16px)",
+                    borderRadius: "50%",
+                    color: indicator,
+                    border: "clamp(1px, 1.2cqw, 2px) solid currentColor",
+                    background: "var(--mfx-control-indicator-inactive)",
+                    boxSizing: "border-box"
+                }}
+            />
+            <div
+                className="mfx-performance-switch__content"
+                style={{
+                    width: "100%",
+                    height: "100%",
+                    minWidth: 0,
+                    minHeight: 0,
+                    display: "grid",
+                    gridTemplateRows: "minmax(0,.82fr) minmax(0,1.78fr)",
+                    gap: 1
+                }}
+            >
+                <div
+                    className="mfx-performance-switch__label-row"
+                    style={{ minWidth: 0, minHeight: 0 }}
+                >
+                    <LayoutPreviewMarqueeText
+                        text={label.toUpperCase()}
+                        color={`${prefix}-label)`}
+                        fontSize={LAYOUT_PREVIEW_SWITCH_LABEL_TEXT_SIZE}
+                        fontWeight={900}
+                        align="center"
+                    />
+                </div>
+                <div
+                    className="mfx-performance-switch__value-row"
+                    style={{ minWidth: 0, minHeight: 0 }}
+                >
+                    <LayoutPreviewMarqueeText
+                        text={value}
+                        color={`${prefix}-value)`}
+                        fontSize={LAYOUT_PREVIEW_VALUE_TEXT_SIZE}
+                        fontWeight={900}
+                        align="center"
+                    />
+                </div>
+            </div>
+        </div>
+    );
+}
+
 function LayoutPreviewItem(props: {
     id: string;
     label: string;
@@ -4457,31 +4818,30 @@ function LayoutPreviewItem(props: {
     dragging?: boolean;
     ghost?: boolean;
     ghostValid?: boolean;
-    kind: "element" | "switch";
+    kind: "element" | "switch" | "control";
     shape?: ControllerLayoutElementShape;
     visualStyle?: ControllerLayoutElementStyle;
+    action?: ControllerSwitchAction;
+    controlDescriptor?: ControllerPerformanceControlDescriptor;
     onSelect?: () => void;
     onBeginDrag?: (
         event: React.PointerEvent<HTMLElement>,
         target: DragTarget
     ) => void;
 }) {
-    const baseTarget: DragTarget =
-        props.kind === "element"
-            ? {
-                kind: "element",
-                id: props.id.startsWith("element:")
-                    ? props.id.substring(
-                        "element:".length
-                    ) as ControllerLayoutElementId
-                    : props.id as ControllerLayoutElementId,
-                mode: "move"
-            }
-            : {
-                kind: "switch",
-                id: props.id,
-                mode: "move"
-            };
+    const baseTarget: DragTarget = props.kind === "element"
+        ? {
+            kind: "element",
+            id: props.id.startsWith("element:")
+                ? props.id.substring(
+                    "element:".length
+                ) as ControllerLayoutElementId
+                : props.id as ControllerLayoutElementId,
+            mode: "move"
+        }
+        : props.kind === "control"
+            ? { kind: "control", id: props.id, mode: "move" }
+            : { kind: "switch", id: props.id, mode: "move" };
 
     const shape = props.shape ?? "rounded";
     const visualStyle =
@@ -4504,6 +4864,7 @@ function LayoutPreviewItem(props: {
                     : MFX_COLORS.border;
 
     const renderShape = () => {
+        if (props.kind !== "element") return null;
         if (isMinimal) return null;
 
         if (
@@ -4626,9 +4987,9 @@ function LayoutPreviewItem(props: {
                 display: "flex",
                 flexDirection: "column",
                 alignItems:
-                    props.kind === "element"
-                        ? "center"
-                        : "flex-start",
+                    props.kind === "switch"
+                        ? "flex-start"
+                        : "center",
                 justifyContent: "center",
                 cursor: props.ghost
                     ? "grabbing"
@@ -4640,22 +5001,43 @@ function LayoutPreviewItem(props: {
                 WebkitUserSelect: "none",
                 overflow: "visible",
                 outline:
-                    isMinimal
-                    && (
+                    (
                         props.selected
                         || props.swapTarget
                         || (
                             props.ghost
                             && props.ghostValid !== undefined
                         )
-                    )
+                    ) && (isMinimal || props.kind !== "element")
                         ? `2px dashed ${borderColor}`
                         : "none",
-                outlineOffset: -2
+                outlineOffset: props.kind === "element" ? -2 : 2
             }}
         >
             {renderShape()}
 
+            {props.kind === "switch" ? (
+                <LayoutSwitchPreview
+                    label={props.label}
+                    value={props.sublabel ?? "UNASSIGNED"}
+                    action={props.action}
+                />
+            ) : props.kind === "control" && props.controlDescriptor ? (
+                <PerformanceControlCard
+                    descriptor={props.controlDescriptor}
+                    range={0.58}
+                    active
+                    functionLabel="LAYOUT PREVIEW"
+                    valueLabel={`CC ${props.controlDescriptor.midiCc}`}
+                    style={{
+                        position: "relative",
+                        inset: "auto",
+                        width: "100%",
+                        height: "100%",
+                        pointerEvents: "none"
+                    }}
+                />
+            ) : (
             <div
                 style={{
                     position: "relative",
@@ -4666,7 +5048,7 @@ function LayoutPreviewItem(props: {
                     minHeight: 0,
                     boxSizing: "border-box",
                     padding:
-                        props.kind === "switch"
+                        props.kind !== "element"
                             ? 2
                             : visualStyle === "minimal"
                                 ? 1
@@ -4678,10 +5060,7 @@ function LayoutPreviewItem(props: {
                         ? "minmax(0,1fr) minmax(0,1fr)"
                         : "minmax(0,1fr)",
                     gap: 1,
-                    textAlign:
-                        props.kind === "element"
-                            ? "center"
-                            : "left",
+                    textAlign: "center",
                     pointerEvents: "none",
                     overflow: "hidden"
                 }}
@@ -4693,15 +5072,17 @@ function LayoutPreviewItem(props: {
                     color={
                         props.kind === "element"
                             ? MFX_COLORS.muted
-                            : MFX_COLORS.cyan
+                            : props.kind === "control"
+                                ? MFX_COLORS.purple
+                                : MFX_COLORS.cyan
                     }
                     fontSize={
-                        props.kind === "switch"
+                        props.kind !== "element"
                             ? LAYOUT_PREVIEW_SWITCH_LABEL_TEXT_SIZE
                             : LAYOUT_PREVIEW_LABEL_TEXT_SIZE
                     }
                     fontWeight={900}
-                    align={props.kind === "element" ? "center" : "left"}
+                    align="center"
                 />
 
                 {props.sublabel && (
@@ -4710,10 +5091,12 @@ function LayoutPreviewItem(props: {
                         color={MFX_COLORS.text}
                         fontSize={LAYOUT_PREVIEW_VALUE_TEXT_SIZE}
                         fontWeight={900}
-                        align={props.kind === "element" ? "center" : "left"}
+                        align="center"
                     />
                 )}
-            </div>            {!props.ghost && props.onBeginDrag && (
+            </div>
+            )}
+            {!props.ghost && props.onBeginDrag && (
                 <div
                     aria-label="Resize"
                     onPointerDown={(event) => {
@@ -4731,105 +5114,14 @@ function LayoutPreviewItem(props: {
     );
 }
 
-function ActionEditor(props: {
-    title: string;
-    action: ControllerSwitchAction;
-    onType: (type: ActionKind) => void;
-    onPresetIndex: (presetIndex: number) => void;
-}) {
-    const presetSlotNumber =
-        props.action.type === "preset"
-            ? props.action.presetIndex + 1
-            : 1;
-    const [presetSlotText, setPresetSlotText] = useState(
-        () => String(presetSlotNumber)
-    );
-
-    useEffect(() => {
-        setPresetSlotText(String(presetSlotNumber));
-    }, [presetSlotNumber, props.action.type]);
-
-    const updatePresetSlotText = (value: string) => {
-        // Keep the text box independent while the user is editing so deleting
-        // the current value does not immediately force it back to 1.
-        setPresetSlotText(value);
-        if (value.trim() === "") return;
-
-        const numericValue = Number(value);
-        if (!Number.isFinite(numericValue)) return;
-
-        const normalizedSlot = Math.max(1, Math.round(numericValue));
-        props.onPresetIndex(normalizedSlot - 1);
-    };
-
-    const finishPresetSlotEdit = () => {
-        if (presetSlotText.trim() === "") {
-            setPresetSlotText(String(presetSlotNumber));
-            return;
-        }
-
-        const numericValue = Number(presetSlotText);
-        if (!Number.isFinite(numericValue) || numericValue < 1) {
-            setPresetSlotText(String(presetSlotNumber));
-            return;
-        }
-
-        const normalizedSlot = Math.max(1, Math.round(numericValue));
-        setPresetSlotText(String(normalizedSlot));
-        props.onPresetIndex(normalizedSlot - 1);
-    };
-
-    return (
-        <div style={actionBoxStyle}>
-            <div style={actionTitleStyle}>{props.title}</div>
-            <select
-                value={actionKind(props.action)}
-                onChange={(event) =>
-                    props.onType(event.target.value as ActionKind)
-                }
-                style={inputStyle}
-            >
-                <option value="none">Unused</option>
-                <option value="preset">Preset slot</option>
-                <option value="bankUp">Bank Up</option>
-                <option value="bankDown">Bank Down</option>
-                <option value="chainBypass">Chain Bypass</option>
-                <option value="snapshotMode">Snapshot Mode</option>
-            </select>
-
-            {props.action.type === "preset" && (
-                <label style={{ ...fieldLabelStyle, marginTop: 8 }}>
-                    Preset slot
-                    <input
-                        type="number"
-                        min={1}
-                        value={presetSlotText}
-                        onChange={(event) =>
-                            updatePresetSlotText(event.target.value)
-                        }
-                        onBlur={finishPresetSlotEdit}
-                        onKeyDown={(event) => {
-                            if (event.key === "Enter") {
-                                finishPresetSlotEdit();
-                                event.currentTarget.blur();
-                            }
-                        }}
-                        style={inputStyle}
-                    />
-                </label>
-            )}
-        </div>
-    );
-}
-
 const screenStyle: React.CSSProperties = {
     height: "100%",
     minHeight: 0,
     display: "flex",
     flexDirection: "column",
     overflow: "hidden",
-    background: MFX_COLORS.background,
-    color: MFX_COLORS.text
+    background: MFX_SURFACES.page.background,
+    color: MFX_SURFACES.page.text
 };
 
 const headerStyle: React.CSSProperties = {
@@ -4838,71 +5130,143 @@ const headerStyle: React.CSSProperties = {
     alignItems: "center",
     padding: "10px 14px",
     borderBottom: `1px solid ${MFX_COLORS.border}`,
-    background: MFX_COLORS.panel
+    background: MFX_SURFACES.header.background,
+    color: MFX_SURFACES.header.text,
+    boxShadow: MFX_SURFACES.header.shadow
 };
 
 const titleStyle: React.CSSProperties = {
-    color: MFX_COLORS.cyan,
+    color: MFX_SURFACES.header.accent,
     fontSize: "1rem",
     fontWeight: 950,
     letterSpacing: "0.08em"
 };
 
 const subtitleStyle: React.CSSProperties = {
-    color: MFX_COLORS.muted,
+    color: MFX_SURFACES.header.label,
     fontSize: "0.72rem",
     marginTop: 2
 };
 
-const counterStyle: React.CSSProperties = {
+const connectionSummaryStyle: React.CSSProperties = {
     marginLeft: "auto",
-    border: `1px solid ${MFX_COLORS.border}`,
-    borderRadius: 8,
-    padding: "5px 9px",
+    display: "flex",
+    flexDirection: "column",
+    alignItems: "flex-end",
+    gap: 2,
+    color: MFX_COLORS.muted,
+    fontSize: ".7rem",
+    fontWeight: 900
+};
+
+const controllerHubBodyStyle: React.CSSProperties = {
+    flex: "1 1 auto",
+    minHeight: 0,
+    overflowY: "auto",
+    display: "grid",
+    gridTemplateColumns: "repeat(auto-fit, minmax(250px, 1fr))",
+    alignContent: "start",
+    gap: 12,
+    padding: 14
+};
+
+const controllerHubCardStyle: React.CSSProperties = {
+    minHeight: 150,
+    display: "flex",
+    flexDirection: "column",
+    alignItems: "stretch",
+    justifyContent: "flex-start",
+    gap: 9,
+    padding: 16,
+    border: "1px solid transparent",
+    borderRadius: 12,
+    background: multiFXSurfaceBackground("panel"),
+    color: MFX_SURFACES.panel.text,
+    boxShadow: MFX_SURFACES.panel.shadow,
+    textAlign: "left",
+    font: "inherit",
+    cursor: "pointer"
+};
+
+const controllerHubCardTitleStyle: React.CSSProperties = {
+    color: MFX_SURFACES.panel.accent,
+    fontSize: "1rem",
+    fontWeight: 950,
+    letterSpacing: ".05em"
+};
+
+const controllerHubCardTextStyle: React.CSSProperties = {
+    color: MFX_SURFACES.panel.label,
+    lineHeight: 1.4
+};
+
+const controllerHubCardMetaStyle: React.CSSProperties = {
+    marginTop: "auto",
     color: MFX_COLORS.cyan,
+    fontSize: ".7rem",
     fontWeight: 900,
-    fontSize: "0.78rem"
+    letterSpacing: ".04em"
+};
+
+const diagnosticsScreenStyle: React.CSSProperties = {
+    ...screenStyle
+};
+
+const diagnosticsBodyStyle: React.CSSProperties = {
+    flex: "1 1 auto",
+    minHeight: 0,
+    overflowY: "auto",
+    display: "flex",
+    flexDirection: "column",
+    gap: 12,
+    padding: 14
+};
+
+const diagnosticsGridStyle: React.CSSProperties = {
+    display: "grid",
+    gridTemplateColumns: "repeat(auto-fit, minmax(170px, 1fr))",
+    gap: 10
+};
+
+const diagnosticValueStyle: React.CSSProperties = {
+    minHeight: 72,
+    display: "flex",
+    flexDirection: "column",
+    gap: 6,
+    padding: 11,
+    border: `1px solid ${MFX_COLORS.border}`,
+    borderRadius: 9,
+    background: MFX_SURFACES.panel.background,
+    color: MFX_SURFACES.panel.text
+};
+
+const diagnosticLabelStyle: React.CSSProperties = {
+    color: MFX_COLORS.muted,
+    fontSize: ".68rem",
+    fontWeight: 900,
+    letterSpacing: ".05em",
+    textTransform: "uppercase"
+};
+
+const diagnosticMessageStyle: React.CSSProperties = {
+    display: "flex",
+    flexDirection: "column",
+    gap: 7,
+    padding: 12,
+    border: `1px solid ${MFX_COLORS.border}`,
+    borderRadius: 9,
+    background: MFX_SURFACES.panel.background
 };
 
 const messageStyle: React.CSSProperties = {
     flex: "0 0 auto",
     padding: "6px 12px",
     textAlign: "center",
-    background: MFX_COLORS.cyanSurface,
-    color: MFX_COLORS.cyanText,
+    background: MFX_SURFACES.toast.background,
+    color: MFX_SURFACES.toast.text,
     borderBottom: `1px solid ${MFX_COLORS.cyan}`,
     fontSize: "0.76rem",
     fontWeight: 850
-};
-
-const bodyStyle: React.CSSProperties = {
-    flex: "1 1 auto",
-    minHeight: 0,
-    display: "grid",
-    gridTemplateColumns: "62% 38%",
-    overflow: "hidden"
-};
-
-const switchListPanelStyle: React.CSSProperties = {
-    minWidth: 0,
-    overflow: "auto",
-    padding: 12,
-    borderRight: `1px solid ${MFX_COLORS.border}`
-};
-
-const editorPanelStyle: React.CSSProperties = {
-    minWidth: 0,
-    overflowY: "auto",
-    padding: 12,
-    background: MFX_COLORS.panelAlt
-};
-
-const sectionTopStyle: React.CSSProperties = {
-    display: "flex",
-    justifyContent: "space-between",
-    gap: 12,
-    alignItems: "flex-start",
-    marginBottom: 10
 };
 
 const sectionTitleStyle: React.CSSProperties = {
@@ -4918,70 +5282,6 @@ const helpStyle: React.CSSProperties = {
     lineHeight: 1.35
 };
 
-const switchListStyle: React.CSSProperties = {
-    display: "grid",
-    gridTemplateColumns: "repeat(3, minmax(0, 1fr))",
-    gap: 8,
-    padding: 10,
-    border: `1px solid ${MFX_COLORS.border}`,
-    borderRadius: 12,
-    background: MFX_COLORS.panelAlt
-};
-
-const switchCellStyle: React.CSSProperties = {
-    minHeight: 82,
-    padding: 8,
-    border: "1px solid",
-    borderRadius: 10,
-    background: MFX_COLORS.panel,
-    color: MFX_COLORS.text,
-    display: "flex",
-    flexDirection: "column",
-    alignItems: "stretch",
-    justifyContent: "center",
-    textAlign: "left",
-    cursor: "pointer"
-};
-
-const switchNumberStyle: React.CSSProperties = {
-    color: MFX_COLORS.cyan,
-    fontSize: "0.72rem",
-    fontWeight: 950
-};
-
-const switchActionStyle: React.CSSProperties = {
-    color: MFX_COLORS.text,
-    marginTop: 5,
-    fontSize: "0.82rem",
-    fontWeight: 900,
-    overflow: "hidden",
-    textOverflow: "ellipsis",
-    whiteSpace: "nowrap"
-};
-
-const switchGpioStyle: React.CSSProperties = {
-    color: MFX_COLORS.muted,
-    marginTop: 6,
-    fontSize: "0.66rem"
-};
-
-const layoutSummaryStyle: React.CSSProperties = {
-    marginTop: 10,
-    padding: 8,
-    borderRadius: 8,
-    border: `1px solid ${MFX_COLORS.border}`,
-    background: MFX_COLORS.panel,
-    color: MFX_COLORS.muted,
-    fontSize: "0.68rem",
-    fontWeight: 850
-};
-
-const buttonRowStyle: React.CSSProperties = {
-    display: "flex",
-    gap: 8,
-    marginTop: 10
-};
-
 const buttonStyle: React.CSSProperties = {
     padding: "8px 10px",
     borderRadius: 8,
@@ -4990,21 +5290,6 @@ const buttonStyle: React.CSSProperties = {
     color: MFX_COLORS.cyanText,
     fontWeight: 900,
     cursor: "pointer"
-};
-
-const layoutButtonStyle: React.CSSProperties = {
-    ...buttonStyle,
-    minWidth: 112,
-    minHeight: 42,
-    fontSize: "0.82rem",
-    letterSpacing: "0.06em"
-};
-
-const dangerButtonStyle: React.CSSProperties = {
-    ...buttonStyle,
-    border: `1px solid ${MFX_COLORS.border}`,
-    background: MFX_COLORS.panel,
-    color: MFX_COLORS.text
 };
 
 const fieldLabelStyle: React.CSSProperties = {
@@ -5023,33 +5308,18 @@ const inputStyle: React.CSSProperties = {
     padding: "7px 8px",
     borderRadius: 7,
     border: `1px solid ${MFX_COLORS.border}`,
-    background: MFX_COLORS.background,
-    color: MFX_COLORS.text
+    background: MFX_SURFACES.page.background,
+    color: MFX_SURFACES.page.text
 };
 
 const noteStyle: React.CSSProperties = {
     marginTop: 6,
     padding: 7,
     borderRadius: 7,
-    border: `1px solid ${MFX_COLORS.border}`,
+    border: "1px solid transparent",
     color: MFX_COLORS.muted,
     fontSize: "0.66rem",
     lineHeight: 1.35
-};
-
-const actionBoxStyle: React.CSSProperties = {
-    marginTop: 12,
-    padding: 9,
-    borderRadius: 9,
-    border: `1px solid ${MFX_COLORS.border}`,
-    background: MFX_COLORS.panel
-};
-
-const actionTitleStyle: React.CSSProperties = {
-    color: MFX_COLORS.cyan,
-    fontSize: "0.68rem",
-    fontWeight: 950,
-    marginBottom: 6
 };
 
 const footerStyle: React.CSSProperties = {
@@ -5059,7 +5329,8 @@ const footerStyle: React.CSSProperties = {
     alignItems: "center",
     padding: "8px 12px",
     borderTop: `1px solid ${MFX_COLORS.border}`,
-    background: MFX_COLORS.panel
+    background: MFX_SURFACES.header.background,
+    color: MFX_SURFACES.header.text
 };
 
 const footerHelpStyle: React.CSSProperties = {
@@ -5158,7 +5429,8 @@ const layoutInspectorStyle: React.CSSProperties = {
     overflowY: "auto",
     padding: 12,
     borderRight: `1px solid ${MFX_COLORS.border}`,
-    background: MFX_COLORS.panelAlt
+    background: MFX_SURFACES.panel.background,
+    color: MFX_SURFACES.panel.text
 };
 
 const selectedInfoStyle: React.CSSProperties = {
@@ -5181,7 +5453,7 @@ const layoutPreviewPanelStyle: React.CSSProperties = {
     display: "flex",
     flexDirection: "column",
     padding: 10,
-    background: MFX_COLORS.background
+    background: MFX_SURFACES.page.background
 };
 
 const layoutPreviewTitleStyle: React.CSSProperties = {

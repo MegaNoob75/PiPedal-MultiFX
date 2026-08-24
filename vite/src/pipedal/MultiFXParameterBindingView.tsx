@@ -31,7 +31,11 @@ import {
     findMultiFXMidiSource,
     getMultiFXMidiSources
 } from "./MultiFXControllerMidi";
-import { MFX_COLORS } from "./MultiFXTheme";
+import {
+    MFX_COLORS,
+    MFX_SURFACES,
+    multiFXSurfaceBackground
+} from "./MultiFXTheme";
 
 interface MultiFXParameterBindingViewProps {
     item: PedalboardItem;
@@ -808,22 +812,23 @@ const pageStyle: React.CSSProperties = {
     gap: 12,
     padding: 12,
     boxSizing: "border-box",
-    color: MFX_COLORS.text,
-    background: MFX_COLORS.background
+    color: MFX_SURFACES.page.text,
+    background: MFX_SURFACES.page.background
 };
 
 const panelStyle: React.CSSProperties = {
     minWidth: 0,
     padding: 14,
     borderRadius: 12,
-    border: `1px solid ${MFX_COLORS.border}`,
-    background: MFX_COLORS.panel,
-    boxShadow: "0 8px 24px rgba(0,0,0,.24)",
+    border: "1px solid transparent",
+    background: multiFXSurfaceBackground("panel"),
+    color: MFX_SURFACES.panel.text,
+    boxShadow: MFX_SURFACES.panel.shadow,
     boxSizing: "border-box"
 };
 
 const sectionTitleStyle: React.CSSProperties = {
-    color: MFX_COLORS.purpleLight,
+    color: MFX_SURFACES.panel.accent,
     fontWeight: 950,
     fontSize: "0.78rem",
     letterSpacing: "0.08em"
@@ -831,7 +836,7 @@ const sectionTitleStyle: React.CSSProperties = {
 
 const sectionHelpStyle: React.CSSProperties = {
     marginTop: 4,
-    color: MFX_COLORS.muted,
+    color: MFX_SURFACES.panel.label,
     fontSize: "0.72rem"
 };
 

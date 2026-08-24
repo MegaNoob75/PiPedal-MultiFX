@@ -44,7 +44,7 @@ import {
     PiPedalModelFactory,
     PresetIndex
 } from "./PiPedalModel";
-import { MFX_COLORS } from "./MultiFXTheme";
+import { MFX_COLORS, MFX_SURFACES } from "./MultiFXTheme";
 import "./MultiFXEffectControls.css";
 
 const DEFAULT_SNAPSHOT_COLORS = [
@@ -480,8 +480,8 @@ export default function MultiFXSnapshotEditView({
                 display: "flex",
                 flexDirection: "column",
                 overflow: "hidden",
-                background: MFX_COLORS.background,
-                color: MFX_COLORS.text
+                background: MFX_SURFACES.page.background,
+                color: MFX_SURFACES.page.text
             }}
         >
             <div
@@ -494,13 +494,15 @@ export default function MultiFXSnapshotEditView({
                     padding:
                         "calc(10px * var(--mfx-ui-scale, 1)) calc(14px * var(--mfx-ui-scale, 1))",
                     borderBottom: `1px solid ${MFX_COLORS.border}`,
-                    background: MFX_COLORS.panel
+                    background: MFX_SURFACES.header.background,
+                    color: MFX_SURFACES.header.text,
+                    boxShadow: MFX_SURFACES.header.shadow
                 }}
             >
                 <div style={{ minWidth: 0 }}>
                     <div
                         style={{
-                            color: MFX_COLORS.purpleLight,
+                            color: MFX_SURFACES.header.accent,
                             fontSize: "0.72rem",
                             fontWeight: 900,
                             letterSpacing: "0.07em"

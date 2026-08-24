@@ -1,7 +1,7 @@
 import React, { useEffect, useMemo, useState } from "react";
 import { PiPedalModelFactory } from "./PiPedalModel";
 import { UiPlugin } from "./Lv2Plugin";
-import { MFX_COLORS } from "./MultiFXTheme";
+import { MFX_COLORS, MFX_SURFACES } from "./MultiFXTheme";
 
 interface MultiFXPluginBrowserProps {
     open: boolean;
@@ -82,8 +82,8 @@ export default function MultiFXPluginBrowser({
                 position: "fixed",
                 inset: 0,
                 zIndex: 25000,
-                background: MFX_COLORS.background,
-                color: MFX_COLORS.text,
+                background: MFX_SURFACES.page.background,
+                color: MFX_SURFACES.page.text,
                 display: "flex",
                 flexDirection: "column"
             }}
@@ -124,21 +124,23 @@ export default function MultiFXPluginBrowser({
                     alignItems: "center",
                     padding: "6px 70px 6px 78px",
                     borderBottom: `1px solid ${MFX_COLORS.border}`,
-                    background: MFX_COLORS.panel,
+                    background: MFX_SURFACES.header.background,
+                    color: MFX_SURFACES.header.text,
+                    boxShadow: MFX_SURFACES.header.shadow,
                     boxSizing: "border-box"
                 }}
             >
                 <div>
                     <div
                         style={{
-                            color: MFX_COLORS.purpleLight,
+                            color: MFX_SURFACES.header.accent,
                             fontWeight: 900,
                             letterSpacing: "0.05em"
                         }}
                     >
                         {title}
                     </div>
-                    <div style={{ color: MFX_COLORS.muted, fontSize: "0.72rem" }}>
+                    <div style={{ color: MFX_SURFACES.header.label, fontSize: "0.72rem" }}>
                         Choose the plugin yourself. Nothing is added until you press {actionLabel}.
                     </div>
                 </div>
@@ -150,7 +152,8 @@ export default function MultiFXPluginBrowser({
                     gap: 8,
                     padding: "10px 12px",
                     borderBottom: `1px solid ${MFX_COLORS.border}`,
-                    background: MFX_COLORS.panelAlt
+                    background: MFX_SURFACES.menu.background,
+                    color: MFX_SURFACES.menu.text
                 }}
             >
                 <input
@@ -291,7 +294,8 @@ export default function MultiFXPluginBrowser({
                     gap: 10,
                     padding: "8px 12px",
                     borderTop: `1px solid ${MFX_COLORS.border}`,
-                    background: MFX_COLORS.panel,
+                    background: MFX_SURFACES.header.background,
+                    color: MFX_SURFACES.header.text,
                     boxSizing: "border-box"
                 }}
             >

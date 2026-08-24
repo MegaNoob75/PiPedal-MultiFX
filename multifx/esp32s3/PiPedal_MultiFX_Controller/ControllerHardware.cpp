@@ -451,6 +451,49 @@ void ControllerHardware::beginModules() {
     }
 }
 
+uint8_t ControllerHardware::scanI2cDevices(
+    uint8_t sdaPin,
+    uint8_t sclPin,
+    uint8_t addresses[],
+    uint8_t families[],
+    uint8_t capacity
+) {
+    if (capacity == 0 || sdaPin == sclPin
+        || !boardPinSupports(sdaPin, CAP_OUTPUT)
+        || !boardPinSupports(sclPin, CAP_OUTPUT)) {
+        return 0;
+    }
+
+#if defined(ARDUINO_ARCH_ESP32)
+    Wire.begin(sdaPin, sclPin);
+#else
+    // Other supported boards use the core's fixed/default I2C pins.
+    (void)sdaPin;
+    (void)sclPin;
+    Wire.begin();
+#endif
+    delay(3);
+
+    uint8_t count = 0;
+    for (uint8_t address = 0x20; address <= 0x4B && count < capacity; ++address) {
+        const bool mcpRange = address >= 0x20 && address <= 0x27;
+        const bool adsRange = address >= 0x48 && address <= 0x4B;
+        if (!mcpRange && !adsRange) continue;
+        Wire.beginTransmission(address);
+        if (Wire.endTransmission() != 0) continue;
+        addresses[count] = address;
+        families[count] = mcpRange
+            ? MODULE_SCAN_MCP23017
+            : MODULE_SCAN_ADS1X15;
+        ++count;
+    }
+
+    // Scanning can temporarily select a different ESP32 bus pin pair. Restore
+    // the saved controller configuration before normal sampling resumes.
+    beginModules();
+    return count;
+}
+
 void ControllerHardware::beginDigitalSource(
     const SourceAddress &source,
     bool pullup

@@ -1,5 +1,5 @@
 {
-  "schemaVersion": 2,
+  "schemaVersion": 3,
   "columns": 4,
   "rows": 2,
   "gap": 10,
@@ -20,35 +20,6 @@
     "marqueeDelaySeconds": 2.5,
     "marqueePixelsPerSecond": 45,
     "marqueeEndPauseSeconds": 1.0
-  },
-  "colors": {
-    "pageBackground": "#121212",
-    "pageText": "#ffffff",
-    "headerBackground": "#1e1e1e",
-    "headerBorder": "#333333",
-    "headerShadow": "0 4px 20px rgba(0,0,0,0.5)",
-    "bankTitleText": "#A770E4",
-    "bankNameText": "#ffffff",
-    "activePresetLabelText": "#aaaaaa",
-    "activePresetNameText": "#22c55e",
-    "headerDivider": "#333333",
-    "switchBackground": "#1e1e1e",
-    "switchBorder": "#333333",
-    "switchLabelText": "#888888",
-    "switchValueText": "#ffffff",
-    "bankSwitchBackground": "#2a1b40",
-    "bankSwitchBorder": "#A770E4",
-    "bankSwitchLabelText": "#b99adf",
-    "bankSwitchValueText": "#ffffff",
-    "activeSwitchBackground": "#22c55e",
-    "activeSwitchBorder": "#4ade80",
-    "activeSwitchLabelText": "#d9ffe5",
-    "activeSwitchValueText": "#071a0c",
-    "activeSwitchShadow": "0 0 20px rgba(34,197,94,0.45)",
-    "disabledSwitchOpacity": 0.48,
-    "configErrorBackground": "#3b1111",
-    "configErrorBorder": "#ef4444",
-    "configErrorText": "#fecaca"
   },
   "switches": [
     {
@@ -249,6 +220,15 @@
     "mode": "grid",
     "switches": {},
     "unplacedSwitchIds": [],
+    "controls": {},
+    "unplacedControlIds": [
+      "pot1",
+      "pot2",
+      "pot3",
+      "pot4",
+      "encoder1:turn",
+      "encoder1:button"
+    ],
     "elements": {
       "currentBank": {
         "id": "currentBank",

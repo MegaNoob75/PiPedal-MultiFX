@@ -20,7 +20,11 @@ import React, { useEffect, useState } from "react";
 import { createPortal } from "react-dom";
 import { Pedalboard, Snapshot } from "./Pedalboard";
 import { PiPedalModelFactory } from "./PiPedalModel";
-import { MFX_COLORS } from "./MultiFXTheme";
+import {
+    MFX_COLORS,
+    MFX_SURFACES,
+    multiFXSurfaceBackground
+} from "./MultiFXTheme";
 
 const DEFAULT_SNAPSHOT_COLORS = [
     "#22C55E",
@@ -678,8 +682,8 @@ const screenStyle: React.CSSProperties = {
     overflow: "hidden",
     padding: "calc(12px * var(--mfx-ui-scale, 1))",
     boxSizing: "border-box",
-    background: MFX_COLORS.background,
-    color: MFX_COLORS.text
+    background: MFX_SURFACES.page.background,
+    color: MFX_SURFACES.page.text
 };
 
 const headerStyle: React.CSSProperties = {
@@ -688,13 +692,15 @@ const headerStyle: React.CSSProperties = {
     gap: 18,
     padding: "10px 14px",
     borderRadius: 12,
-    border: `1px solid ${MFX_COLORS.border}`,
-    background: MFX_COLORS.panel,
+    border: "1px solid transparent",
+    background: multiFXSurfaceBackground("header"),
+    color: MFX_SURFACES.header.text,
+    boxShadow: MFX_SURFACES.header.shadow,
     flex: "0 0 auto"
 };
 
 const eyebrowStyle: React.CSSProperties = {
-    color: MFX_COLORS.purpleLight,
+    color: MFX_SURFACES.header.accent,
     fontWeight: 900,
     fontSize: "0.72rem",
     letterSpacing: "0.08em"
@@ -713,7 +719,7 @@ const presetNameStyle: React.CSSProperties = {
 const helpStyle: React.CSSProperties = {
     marginLeft: "auto",
     maxWidth: "55%",
-    color: MFX_COLORS.muted,
+    color: MFX_SURFACES.header.label,
     fontSize: "0.72rem",
     fontWeight: 700,
     textAlign: "right"
@@ -746,7 +752,9 @@ const cardStyle: React.CSSProperties = {
     minHeight: 0,
     padding: "calc(11px * var(--mfx-ui-scale, 1))",
     borderRadius: 12,
-    background: MFX_COLORS.panel,
+    background: MFX_SURFACES.panel.background,
+    color: MFX_SURFACES.panel.text,
+    boxShadow: MFX_SURFACES.panel.shadow,
     display: "flex",
     flexDirection: "column",
     overflow: "hidden",
@@ -761,7 +769,7 @@ const cardTopStyle: React.CSSProperties = {
 };
 
 const slotStyle: React.CSSProperties = {
-    color: MFX_COLORS.purpleLight,
+    color: MFX_SURFACES.panel.accent,
     fontWeight: 900,
     fontSize: "0.66rem",
     letterSpacing: "0.06em"
@@ -853,11 +861,11 @@ const toastStyle: React.CSSProperties = {
     padding:
         "calc(8px * var(--mfx-ui-scale, 1)) calc(14px * var(--mfx-ui-scale, 1))",
     borderRadius: 10,
-    border: `1px solid ${MFX_COLORS.cyan}`,
-    background: MFX_COLORS.panelAlt,
-    color: MFX_COLORS.cyanText,
+    border: "1px solid transparent",
+    background: multiFXSurfaceBackground("toast"),
+    color: MFX_SURFACES.toast.text,
     fontWeight: 900,
     textAlign: "center",
-    boxShadow: "0 8px 22px rgba(0,0,0,0.68)",
+    boxShadow: MFX_SURFACES.toast.shadow,
     pointerEvents: "none"
 };

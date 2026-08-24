@@ -23,7 +23,11 @@
 
 import { useState } from "react";
 import { PiPedalModelFactory } from "./PiPedalModel";
-import { MFX_COLORS, MFX_HEADER_HEIGHT } from "./MultiFXTheme";
+import {
+    MFX_COLORS,
+    MFX_HEADER_HEIGHT,
+    MFX_SURFACES
+} from "./MultiFXTheme";
 
 export default function MultiFXAboutView() {
     const model = PiPedalModelFactory.getInstance();
@@ -78,7 +82,7 @@ export default function MultiFXAboutView() {
                         style={{
                             flex: "1 1 auto",
                             textAlign: "center",
-                            color: MFX_COLORS.purpleLight,
+                            color: MFX_SURFACES.header.accent,
                             fontWeight: 900,
                             letterSpacing: "0.06em"
                         }}
@@ -273,7 +277,7 @@ export default function MultiFXAboutView() {
                     style={{
                         flex: "1 1 auto",
                         textAlign: "right",
-                        color: MFX_COLORS.purpleLight,
+                        color: MFX_SURFACES.panel.accent,
                         fontWeight: 900,
                         letterSpacing: "0.05em"
                     }}
@@ -295,7 +299,7 @@ export default function MultiFXAboutView() {
                     >
                         <div
                             style={{
-                                color: MFX_COLORS.purpleLight,
+                                color: MFX_SURFACES.panel.accent,
                                 fontSize: "1.7rem",
                                 fontWeight: 900,
                                 letterSpacing: "0.04em"
@@ -397,7 +401,7 @@ function Section({
             <div
                 style={{
                     marginBottom: 12,
-                    color: MFX_COLORS.purpleLight,
+                    color: MFX_SURFACES.panel.accent,
                     fontWeight: 900,
                     fontSize: "1.08rem",
                     letterSpacing: "0.04em"
@@ -507,8 +511,8 @@ const pageStyle: React.CSSProperties = {
     display: "flex",
     flexDirection: "column",
     overflow: "hidden",
-    background: MFX_COLORS.background,
-    color: MFX_COLORS.text
+    background: MFX_SURFACES.page.background,
+    color: MFX_SURFACES.page.text
 };
 
 const legalHeaderStyle: React.CSSProperties = {
@@ -520,7 +524,9 @@ const legalHeaderStyle: React.CSSProperties = {
     padding: "6px 12px",
     boxSizing: "border-box",
     borderBottom: `1px solid ${MFX_COLORS.border}`,
-    background: MFX_COLORS.panel
+    background: MFX_SURFACES.header.background,
+    color: MFX_SURFACES.header.text,
+    boxShadow: MFX_SURFACES.header.shadow
 };
 
 const scrollStyle: React.CSSProperties = {
