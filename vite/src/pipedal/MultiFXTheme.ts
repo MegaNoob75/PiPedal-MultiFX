@@ -59,6 +59,120 @@ export type MultiFXIndicatorAnimation =
     | "spin"
     | "chase";
 
+/**
+ * Stable font identifiers are stored in theme files instead of raw CSS.
+ * This keeps imported themes safe and lets us improve a font's fallback
+ * stack later without rewriting every saved theme.
+ */
+export type MultiFXFontFamilyId =
+    | "system-ui"
+    | "roboto"
+    | "cooper-hewitt"
+    | "questrial"
+    | "comfortaa"
+    | "inter"
+    | "open-sans"
+    | "lato"
+    | "montserrat"
+    | "oswald"
+    | "source-sans-3"
+    | "noto-sans"
+    | "nunito"
+    | "roboto-mono"
+    | "orbitron"
+    | "rajdhani"
+    | "arial"
+    | "verdana"
+    | "trebuchet"
+    | "tahoma"
+    | "georgia"
+    | "palatino"
+    | "times"
+    | "slab-serif"
+    | "courier"
+    | "console"
+    | "condensed"
+    | "heavy-display"
+    | "rounded"
+    | "lcd-7-classic"
+    | "lcd-7-modern"
+    | "lcd-14-classic"
+    | "lcd-14-modern";
+
+export interface MultiFXFontOption {
+    id: MultiFXFontFamilyId;
+    label: string;
+    group: "BUILT IN" | "SYSTEM" | "DIGITAL / LCD";
+    cssFamily: string;
+}
+
+/** Font selector catalog shared by the theme editor and CSS application. */
+export const MULTIFX_FONT_OPTIONS: readonly MultiFXFontOption[] = [
+    { id: "system-ui", label: "System UI", group: "SYSTEM", cssFamily: "system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" },
+    { id: "roboto", label: "Roboto", group: "BUILT IN", cssFamily: "Roboto, Arial, sans-serif" },
+    { id: "cooper-hewitt", label: "Cooper Hewitt", group: "BUILT IN", cssFamily: "'MFX Cooper Hewitt', Roboto, sans-serif" },
+    { id: "questrial", label: "Questrial", group: "BUILT IN", cssFamily: "'MFX Questrial', Roboto, sans-serif" },
+    { id: "comfortaa", label: "Comfortaa Rounded", group: "BUILT IN", cssFamily: "'MFX Comfortaa', Roboto, sans-serif" },
+    { id: "inter", label: "Inter", group: "BUILT IN", cssFamily: "Inter, Roboto, sans-serif" },
+    { id: "open-sans", label: "Open Sans", group: "BUILT IN", cssFamily: "'Open Sans', Roboto, sans-serif" },
+    { id: "lato", label: "Lato", group: "BUILT IN", cssFamily: "Lato, Roboto, sans-serif" },
+    { id: "montserrat", label: "Montserrat", group: "BUILT IN", cssFamily: "Montserrat, Roboto, sans-serif" },
+    { id: "oswald", label: "Oswald Condensed", group: "BUILT IN", cssFamily: "Oswald, Roboto, sans-serif" },
+    { id: "source-sans-3", label: "Source Sans 3", group: "BUILT IN", cssFamily: "'Source Sans 3', Roboto, sans-serif" },
+    { id: "noto-sans", label: "Noto Sans", group: "BUILT IN", cssFamily: "'Noto Sans', Roboto, sans-serif" },
+    { id: "nunito", label: "Nunito Rounded", group: "BUILT IN", cssFamily: "Nunito, Roboto, sans-serif" },
+    { id: "roboto-mono", label: "Roboto Mono", group: "BUILT IN", cssFamily: "'Roboto Mono', monospace" },
+    { id: "orbitron", label: "Orbitron Tech", group: "BUILT IN", cssFamily: "Orbitron, Roboto, sans-serif" },
+    { id: "rajdhani", label: "Rajdhani Display", group: "BUILT IN", cssFamily: "Rajdhani, Roboto, sans-serif" },
+    { id: "arial", label: "Arial / Helvetica", group: "SYSTEM", cssFamily: "Arial, Helvetica, sans-serif" },
+    { id: "verdana", label: "Verdana", group: "SYSTEM", cssFamily: "Verdana, Geneva, sans-serif" },
+    { id: "trebuchet", label: "Trebuchet", group: "SYSTEM", cssFamily: "'Trebuchet MS', Arial, sans-serif" },
+    { id: "tahoma", label: "Tahoma", group: "SYSTEM", cssFamily: "Tahoma, Verdana, sans-serif" },
+    { id: "georgia", label: "Georgia", group: "SYSTEM", cssFamily: "Georgia, 'Times New Roman', serif" },
+    { id: "palatino", label: "Palatino", group: "SYSTEM", cssFamily: "Palatino, 'Palatino Linotype', Georgia, serif" },
+    { id: "times", label: "Times", group: "SYSTEM", cssFamily: "'Times New Roman', Times, serif" },
+    { id: "slab-serif", label: "Slab Serif", group: "SYSTEM", cssFamily: "Rockwell, 'Roboto Slab', Georgia, serif" },
+    { id: "courier", label: "Courier Typewriter", group: "SYSTEM", cssFamily: "'Courier New', Courier, monospace" },
+    { id: "console", label: "Console Mono", group: "SYSTEM", cssFamily: "Consolas, 'Liberation Mono', monospace" },
+    { id: "condensed", label: "Condensed", group: "SYSTEM", cssFamily: "Bahnschrift, 'Arial Narrow', Roboto, sans-serif" },
+    { id: "heavy-display", label: "Heavy Display", group: "SYSTEM", cssFamily: "Impact, 'Arial Black', Roboto, sans-serif" },
+    { id: "rounded", label: "Rounded", group: "SYSTEM", cssFamily: "'Arial Rounded MT Bold', 'MFX Comfortaa', Roboto, sans-serif" },
+    { id: "lcd-7-classic", label: "LCD 7-Segment Classic", group: "DIGITAL / LCD", cssFamily: "'MFX DSEG7 Classic', monospace" },
+    { id: "lcd-7-modern", label: "LCD 7-Segment Modern", group: "DIGITAL / LCD", cssFamily: "'MFX DSEG7 Modern', monospace" },
+    { id: "lcd-14-classic", label: "LCD 14-Segment Classic", group: "DIGITAL / LCD", cssFamily: "'MFX DSEG14 Classic', monospace" },
+    { id: "lcd-14-modern", label: "LCD 14-Segment Modern", group: "DIGITAL / LCD", cssFamily: "'MFX DSEG14 Modern', monospace" }
+] as const;
+
+const MULTIFX_FONT_IDS = new Set<MultiFXFontFamilyId>(
+    MULTIFX_FONT_OPTIONS.map((option) => option.id)
+);
+
+export function multiFXFontFamilyToCss(id: MultiFXFontFamilyId): string {
+    return MULTIFX_FONT_OPTIONS.find((option) => option.id === id)
+        ?.cssFamily ?? MULTIFX_FONT_OPTIONS[0].cssFamily;
+}
+
+export interface MultiFXThemeTextStyle {
+    family: MultiFXFontFamilyId;
+    /** Percentage of the carefully chosen responsive base size. */
+    sizePercent: number;
+}
+
+export interface MultiFXThemeFonts {
+    interface: MultiFXThemeTextStyle;
+    heading: MultiFXThemeTextStyle;
+    label: MultiFXThemeTextStyle;
+    value: MultiFXThemeTextStyle;
+    switchLabel: MultiFXThemeTextStyle;
+    switchValue: MultiFXThemeTextStyle;
+    controlLabel: MultiFXThemeTextStyle;
+    controlFunction: MultiFXThemeTextStyle;
+    controlValue: MultiFXThemeTextStyle;
+    feedback: MultiFXThemeTextStyle;
+    /** Additional magnification used only by the enlarged hardware pop-out. */
+    controlPopupSizePercent: number;
+}
+
 export interface MultiFXThemeAppearance {
     surfaces: {
         page: MultiFXThemeSurface;
@@ -98,12 +212,13 @@ export interface MultiFXThemeAppearance {
         respectReducedMotion: boolean;
         feedbackDurationMs: number;
     };
+    fonts: MultiFXThemeFonts;
 }
 
 export interface MultiFXThemeDefinition {
     name: string;
     author: string;
-    version: 3;
+    version: 4;
     colors: {
         background: string;
         panel: string;
@@ -2651,7 +2766,78 @@ export function getMultiFXThemeStyleLabel(
     }
 }
 
-/** Build a complete version-3 visual system from one curated color palette. */
+const fontStyle = (
+    family: MultiFXFontFamilyId,
+    sizePercent = 100
+): MultiFXThemeTextStyle => ({ family, sizePercent });
+
+/**
+ * Give every built-in visual family an intentional typography pairing.
+ * Digital faces are reserved for values so ordinary words remain readable.
+ */
+function makeThemeFonts(profile: BuiltInThemeProfile): MultiFXThemeFonts {
+    const fonts: MultiFXThemeFonts = {
+        interface: fontStyle("roboto"),
+        heading: fontStyle("inter", 100),
+        label: fontStyle("roboto", 100),
+        value: fontStyle("roboto", 100),
+        switchLabel: fontStyle("roboto", 100),
+        switchValue: fontStyle("questrial", 100),
+        controlLabel: fontStyle("roboto", 115),
+        controlFunction: fontStyle("questrial", 120),
+        controlValue: fontStyle("roboto", 120),
+        feedback: fontStyle("roboto", 115),
+        controlPopupSizePercent: 145
+    };
+
+    switch (profile) {
+        case "stompbox":
+            fonts.heading.family = "cooper-hewitt";
+            fonts.switchLabel.family = "cooper-hewitt";
+            fonts.switchValue.family = "cooper-hewitt";
+            break;
+        case "glass":
+            fonts.interface.family = "questrial";
+            fonts.heading.family = "comfortaa";
+            fonts.switchLabel.family = "comfortaa";
+            fonts.switchValue.family = "questrial";
+            fonts.controlFunction.family = "questrial";
+            break;
+        case "arcade":
+            fonts.heading.family = "montserrat";
+            fonts.switchLabel.family = "comfortaa";
+            fonts.switchValue.family = "montserrat";
+            fonts.controlLabel.family = "comfortaa";
+            break;
+        case "studio":
+            fonts.interface.family = "cooper-hewitt";
+            fonts.heading.family = "cooper-hewitt";
+            fonts.label.family = "cooper-hewitt";
+            fonts.switchLabel.family = "cooper-hewitt";
+            fonts.switchValue.family = "roboto";
+            break;
+        case "minimal":
+            fonts.interface.family = "console";
+            fonts.heading.family = "orbitron";
+            fonts.label.family = "console";
+            fonts.value.family = "console";
+            fonts.switchLabel.family = "console";
+            fonts.switchValue.family = "lcd-14-modern";
+            fonts.controlLabel.family = "console";
+            fonts.controlFunction.family = "lcd-14-classic";
+            fonts.controlValue.family = "lcd-7-modern";
+            fonts.feedback.family = "lcd-14-modern";
+            fonts.switchValue.sizePercent = 112;
+            fonts.controlValue.sizePercent = 135;
+            break;
+        case "modern":
+        default:
+            break;
+    }
+    return fonts;
+}
+
+/** Build a complete version-4 visual system from one curated color palette. */
 function makeTheme(
     palette: MultiFXThemePaletteDefinition
 ): MultiFXThemeDefinition {
@@ -3007,7 +3193,7 @@ function makeTheme(
     return {
         name: palette.name,
         author: palette.author,
-        version: 3,
+        version: 4,
         colors: structuredClone(c),
         appearance: {
             surfaces: {
@@ -3026,7 +3212,8 @@ function makeTheme(
                 enabled: true,
                 respectReducedMotion: true,
                 feedbackDurationMs: 2600
-            }
+            },
+            fonts: makeThemeFonts(profile)
         }
     };
 }
@@ -3034,8 +3221,11 @@ function makeTheme(
 export const BUILT_IN_THEMES: MultiFXThemeDefinition[] =
     BUILT_IN_THEME_PALETTES.map(makeTheme);
 
-export const THEME_STORAGE_KEY = "pipedal-multifx-theme-v3";
+export const THEME_STORAGE_KEY = "pipedal-multifx-theme-v4";
 export const CUSTOM_THEMES_STORAGE_KEY =
+    "pipedal-multifx-custom-themes-v4";
+const LEGACY_THEME_STORAGE_KEY = "pipedal-multifx-theme-v3";
+const LEGACY_CUSTOM_THEMES_STORAGE_KEY =
     "pipedal-multifx-custom-themes-v3";
 export const MULTIFX_THEME_CHANGED_EVENT = "multifx-theme-changed";
 
@@ -3203,9 +3393,36 @@ function numberIn(value: unknown, min: number, max: number): boolean {
         && value <= max;
 }
 
+function validTextStyle(value: unknown): value is MultiFXThemeTextStyle {
+    return isRecord(value)
+        && hasOnlyKeys(value, ["family", "sizePercent"])
+        && MULTIFX_FONT_IDS.has(String(value.family) as MultiFXFontFamilyId)
+        && numberIn(value.sizePercent, 60, 220);
+}
+
+function validFonts(value: unknown): value is MultiFXThemeFonts {
+    if (!isRecord(value)
+        || !hasOnlyKeys(value, [
+            "interface", "heading", "label", "value", "switchLabel",
+            "switchValue", "controlLabel", "controlFunction",
+            "controlValue", "feedback", "controlPopupSizePercent"
+        ])) {
+        return false;
+    }
+    const textRoles = [
+        "interface", "heading", "label", "value", "switchLabel",
+        "switchValue", "controlLabel", "controlFunction",
+        "controlValue", "feedback"
+    ];
+    return textRoles.every((role) => validTextStyle(value[role]))
+        && numberIn(value.controlPopupSizePercent, 100, 250);
+}
+
 function validAppearance(value: unknown): value is MultiFXThemeAppearance {
     if (!isRecord(value)
-        || !hasOnlyKeys(value, ["surfaces", "roles", "controls", "motion"])
+        || !hasOnlyKeys(value, [
+            "surfaces", "roles", "controls", "motion", "fonts"
+        ])
         || !isRecord(value.surfaces)
         || !hasOnlyKeys(value.surfaces, [
             "page", "header", "panel", "popup", "toast", "menu"
@@ -3250,21 +3467,70 @@ function validAppearance(value: unknown): value is MultiFXThemeAppearance {
         ])
         || typeof value.motion.enabled !== "boolean"
         || typeof value.motion.respectReducedMotion !== "boolean"
-        || !numberIn(value.motion.feedbackDurationMs, 500, 10000)) {
+        || !numberIn(value.motion.feedbackDurationMs, 500, 10000)
+        || !validFonts(value.fonts)) {
         return false;
     }
     return true;
 }
 
+const LEGACY_FONT_REPLACEMENTS: Readonly<Record<string, MultiFXFontFamilyId>> = {
+    "nexa": "montserrat",
+    "pirulen": "orbitron",
+    "epf": "rajdhani",
+    "england-hand": "nunito"
+};
+
+/** Add typography defaults to version-3 themes and replace removed novelty
+ * font IDs in early version-4 themes with readable, open-license equivalents. */
+function upgradeLegacyTheme(value: unknown): unknown {
+    if (!isRecord(value) || (value.version !== 3 && value.version !== 4)) {
+        return value;
+    }
+    const next = structuredClone(value) as Record<string, unknown>;
+    if (!isRecord(next.appearance)) return next;
+    const appearance = next.appearance;
+    if (isRecord(appearance.fonts)) {
+        for (const role of [
+            "interface", "heading", "label", "value", "switchLabel",
+            "switchValue", "controlLabel", "controlFunction",
+            "controlValue", "feedback"
+        ]) {
+            const font = appearance.fonts[role];
+            if (!isRecord(font)) continue;
+            const replacement = LEGACY_FONT_REPLACEMENTS[String(font.family)];
+            if (replacement) font.family = replacement;
+        }
+        return next;
+    }
+    if (value.version !== 3) return next;
+
+    let profile: BuiltInThemeProfile = "modern";
+    if (isRecord(appearance.controls)) {
+        const style = String(appearance.controls.switchStyle);
+        if (style === "footswitch") profile = "stompbox";
+        else if (style === "glass") profile = "glass";
+        else if (style === "arcade") profile = "arcade";
+        else if (style === "minimal") profile = "minimal";
+        else if (appearance.controls.indicatorAnimation === "none") {
+            profile = "studio";
+        }
+    }
+    appearance.fonts = makeThemeFonts(profile);
+    next.version = 4;
+    return next;
+}
+
 export function validateMultiFXTheme(
     value: unknown
 ): MultiFXThemeDefinition | undefined {
-    if (!isRecord(value)
-        || !hasOnlyKeys(value, [
+    const upgraded = upgradeLegacyTheme(value);
+    if (!isRecord(upgraded)
+        || !hasOnlyKeys(upgraded, [
             "name", "author", "version", "colors", "appearance"
         ])) return undefined;
 
-    const source = value;
+    const source = upgraded;
     const colors = source.colors;
 
     if (
@@ -3273,7 +3539,7 @@ export function validateMultiFXTheme(
         || source.name.length > 80
         || typeof source.author !== "string"
         || source.author.length > 80
-        || source.version !== 3
+        || source.version !== 4
         || !isRecord(colors)
         || !hasOnlyKeys(colors, [
             "background", "panel", "panelAlt", "navigation",
@@ -3306,7 +3572,7 @@ export function validateMultiFXTheme(
     }
     if (!validAppearance(source.appearance)) return undefined;
 
-    return structuredClone(value) as unknown as MultiFXThemeDefinition;
+    return structuredClone(source) as unknown as MultiFXThemeDefinition;
 }
 
 /** Convert a validated paint token into one CSS background value. */
@@ -3324,10 +3590,19 @@ export function themePaintToCss(paint: MultiFXThemePaint): string {
 
 export function loadMultiFXTheme(): MultiFXThemeDefinition {
     try {
-        const stored = window.localStorage.getItem(THEME_STORAGE_KEY);
-        if (stored) {
+        for (const key of [THEME_STORAGE_KEY, LEGACY_THEME_STORAGE_KEY]) {
+            const stored = window.localStorage.getItem(key);
+            if (!stored) continue;
             const parsed = validateMultiFXTheme(JSON.parse(stored));
-            if (parsed) return parsed;
+            if (parsed) {
+                if (key !== THEME_STORAGE_KEY) {
+                    window.localStorage.setItem(
+                        THEME_STORAGE_KEY,
+                        JSON.stringify(parsed, null, 2)
+                    );
+                }
+                return parsed;
+            }
         }
     } catch {
         // Fall through to default.
@@ -3352,21 +3627,27 @@ export function saveMultiFXTheme(theme: MultiFXThemeDefinition): boolean {
 
 export function loadCustomMultiFXThemes(): MultiFXThemeDefinition[] {
     try {
-        const stored = window.localStorage.getItem(
-            CUSTOM_THEMES_STORAGE_KEY
-        );
+        const stored = window.localStorage.getItem(CUSTOM_THEMES_STORAGE_KEY)
+            ?? window.localStorage.getItem(LEGACY_CUSTOM_THEMES_STORAGE_KEY);
 
         if (!stored) return [];
 
         const parsed = JSON.parse(stored);
         if (!Array.isArray(parsed)) return [];
 
-        return parsed
+        const valid = parsed
             .map((item) => validateMultiFXTheme(item))
             .filter(
                 (item): item is MultiFXThemeDefinition =>
                     item !== undefined
             );
+        if (!window.localStorage.getItem(CUSTOM_THEMES_STORAGE_KEY)) {
+            window.localStorage.setItem(
+                CUSTOM_THEMES_STORAGE_KEY,
+                JSON.stringify(valid, null, 2)
+            );
+        }
+        return valid;
     } catch {
         return [];
     }
@@ -3422,9 +3703,22 @@ export function deleteCustomMultiFXTheme(
 
 export function clearSavedMultiFXTheme(): void {
     window.localStorage.removeItem(THEME_STORAGE_KEY);
+    window.localStorage.removeItem(LEGACY_THEME_STORAGE_KEY);
     applyMultiFXTheme(BUILT_IN_THEMES[0]);
     window.dispatchEvent(new Event(MULTIFX_THEME_CHANGED_EVENT));
 }
+
+const scaledPx = (value: number, percent: number): string =>
+    `${Number((value * percent / 100).toFixed(2))}px`;
+
+const responsiveFontSize = (
+    minimumPx: number,
+    preferredCqh: number,
+    maximumPx: number,
+    percent: number
+): string => `clamp(${scaledPx(minimumPx, percent)}, ${Number(
+    (preferredCqh * percent / 100).toFixed(2)
+)}cqh, ${scaledPx(maximumPx, percent)})`;
 
 export function applyMultiFXTheme(theme: MultiFXThemeDefinition): void {
     const c = theme.colors;
@@ -3518,6 +3812,114 @@ export function applyMultiFXTheme(theme: MultiFXThemeDefinition): void {
             "--mfx-feedback-duration-ms",
             String(appearance.motion.feedbackDurationMs)
         );
+
+        const fonts = appearance.fonts;
+        const fontRoles: readonly [string, MultiFXThemeTextStyle][] = [
+            ["interface", fonts.interface],
+            ["heading", fonts.heading],
+            ["label", fonts.label],
+            ["value", fonts.value],
+            ["switch-label", fonts.switchLabel],
+            ["switch-value", fonts.switchValue],
+            ["control-label", fonts.controlLabel],
+            ["control-function", fonts.controlFunction],
+            ["control-value", fonts.controlValue],
+            ["feedback", fonts.feedback]
+        ];
+        for (const [role, font] of fontRoles) {
+            target.style.setProperty(
+                `--mfx-font-${role}-family`,
+                multiFXFontFamilyToCss(font.family)
+            );
+            target.style.setProperty(
+                `--mfx-font-${role}-scale`,
+                String(font.sizePercent / 100)
+            );
+        }
+
+        target.style.setProperty(
+            "--mfx-font-interface-size",
+            scaledPx(16, fonts.interface.sizePercent)
+        );
+        target.style.setProperty(
+            "--mfx-font-heading-size",
+            scaledPx(16, fonts.heading.sizePercent)
+        );
+        target.style.setProperty(
+            "--mfx-font-label-size",
+            scaledPx(12, fonts.label.sizePercent)
+        );
+        target.style.setProperty(
+            "--mfx-font-value-size",
+            scaledPx(16, fonts.value.sizePercent)
+        );
+        target.style.setProperty(
+            "--mfx-font-switch-label-size",
+            responsiveFontSize(10, 14, 14, fonts.switchLabel.sizePercent)
+        );
+        target.style.setProperty(
+            "--mfx-font-switch-value-size",
+            responsiveFontSize(18, 28, 28, fonts.switchValue.sizePercent)
+        );
+        target.style.setProperty(
+            "--mfx-font-switch-secondary-size",
+            responsiveFontSize(8, 18, 11, fonts.switchLabel.sizePercent)
+        );
+        target.style.setProperty(
+            "--mfx-font-system-label-size",
+            responsiveFontSize(8, 16, 10, fonts.label.sizePercent)
+        );
+        target.style.setProperty(
+            "--mfx-font-system-value-size",
+            responsiveFontSize(9, 20, 12, fonts.value.sizePercent)
+        );
+        target.style.setProperty(
+            "--mfx-font-control-label-size",
+            responsiveFontSize(7, 8, 13, fonts.controlLabel.sizePercent)
+        );
+        target.style.setProperty(
+            "--mfx-font-control-function-size",
+            responsiveFontSize(7, 7, 12, fonts.controlFunction.sizePercent)
+        );
+        target.style.setProperty(
+            "--mfx-font-control-value-size",
+            responsiveFontSize(8, 10, 16, fonts.controlValue.sizePercent)
+        );
+
+        const popupScale = fonts.controlPopupSizePercent / 100;
+        target.style.setProperty(
+            "--mfx-font-control-label-popout-size",
+            scaledPx(
+                13 * popupScale,
+                fonts.controlLabel.sizePercent
+            )
+        );
+        target.style.setProperty(
+            "--mfx-font-control-function-popout-size",
+            scaledPx(
+                12 * popupScale,
+                fonts.controlFunction.sizePercent
+            )
+        );
+        target.style.setProperty(
+            "--mfx-font-control-value-popout-size",
+            scaledPx(
+                16 * popupScale,
+                fonts.controlValue.sizePercent
+            )
+        );
+        target.style.setProperty(
+            "--mfx-font-feedback-source-size",
+            scaledPx(10.72, fonts.feedback.sizePercent)
+        );
+        target.style.setProperty(
+            "--mfx-font-feedback-text-size",
+            scaledPx(16, fonts.feedback.sizePercent)
+        );
+        target.style.setProperty(
+            "--mfx-font-feedback-value-size",
+            scaledPx(19.2, fonts.feedback.sizePercent)
+        );
     }
 
     const root = document.documentElement;
@@ -3586,8 +3988,34 @@ export function clearAppliedMultiFXTheme(): void {
         "--mfx-control-disabled-opacity",
         "--mfx-control-glass-blur",
         "--mfx-control-glass-highlight",
-        "--mfx-feedback-duration-ms"
+        "--mfx-feedback-duration-ms",
+        "--mfx-font-interface-size",
+        "--mfx-font-heading-size",
+        "--mfx-font-label-size",
+        "--mfx-font-value-size",
+        "--mfx-font-switch-label-size",
+        "--mfx-font-switch-value-size",
+        "--mfx-font-switch-secondary-size",
+        "--mfx-font-system-label-size",
+        "--mfx-font-system-value-size",
+        "--mfx-font-control-label-size",
+        "--mfx-font-control-function-size",
+        "--mfx-font-control-value-size",
+        "--mfx-font-control-label-popout-size",
+        "--mfx-font-control-function-popout-size",
+        "--mfx-font-control-value-popout-size",
+        "--mfx-font-feedback-source-size",
+        "--mfx-font-feedback-text-size",
+        "--mfx-font-feedback-value-size"
     );
+
+    for (const role of [
+        "interface", "heading", "label", "value", "switch-label",
+        "switch-value", "control-label", "control-function",
+        "control-value", "feedback"
+    ]) {
+        keys.push(`--mfx-font-${role}-family`, `--mfx-font-${role}-scale`);
+    }
 
     for (const target of [document.documentElement, document.body]) {
         for (const key of keys) {

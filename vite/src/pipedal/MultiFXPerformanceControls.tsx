@@ -13,6 +13,7 @@ import {
     PointerEventHandler,
     useCallback,
     useEffect,
+    useLayoutEffect,
     useMemo,
     useRef,
     useState
@@ -60,6 +61,102 @@ interface ActiveControlAdjustment {
     startRange: number;
     bounds: DOMRect;
     keepPopoutOpen: boolean;
+}
+
+/**
+ * Keep a role's chosen font size and scroll only when its text is wider than
+ * the available control. This mirrors preset-tile behavior without shrinking
+ * a long effect or parameter name until it becomes unreadable.
+ */
+function ControlMarqueeText({
+    className,
+    text,
+    delaySeconds = 2.5,
+    pixelsPerSecond = 45,
+    endPauseSeconds = 1
+}: {
+    className: string;
+    text: string;
+    delaySeconds?: number;
+    pixelsPerSecond?: number;
+    endPauseSeconds?: number;
+}) {
+    const viewportRef = useRef<HTMLDivElement>(null);
+    const textRef = useRef<HTMLSpanElement>(null);
+    const [overflowDistance, setOverflowDistance] = useState(0);
+
+    useLayoutEffect(() => {
+        const viewport = viewportRef.current;
+        const textElement = textRef.current;
+        if (!viewport || !textElement) return;
+        let frame = 0;
+        const measure = () => {
+            frame = 0;
+            textElement.style.transform = "translateX(0)";
+            setOverflowDistance(Math.max(
+                0,
+                textElement.scrollWidth - viewport.clientWidth
+            ));
+        };
+        const scheduleMeasure = () => {
+            if (frame) window.cancelAnimationFrame(frame);
+            frame = window.requestAnimationFrame(measure);
+        };
+        const observer = new ResizeObserver(scheduleMeasure);
+        observer.observe(viewport);
+        observer.observe(textElement);
+        scheduleMeasure();
+        void document.fonts?.ready
+            .then(scheduleMeasure)
+            .catch(() => undefined);
+        return () => {
+            observer.disconnect();
+            if (frame) window.cancelAnimationFrame(frame);
+        };
+    }, [text]);
+
+    useEffect(() => {
+        const textElement = textRef.current;
+        if (!textElement || overflowDistance <= 0 || pixelsPerSecond <= 0) {
+            return;
+        }
+        const startPause = Math.max(0, delaySeconds);
+        const scrollSeconds = overflowDistance / pixelsPerSecond;
+        const endPause = Math.max(0, endPauseSeconds);
+        const totalSeconds = Math.max(
+            0.1,
+            startPause + scrollSeconds + endPause
+        );
+        const animation = textElement.animate([
+            { transform: "translateX(0)", offset: 0 },
+            {
+                transform: "translateX(0)",
+                offset: startPause / totalSeconds
+            },
+            {
+                transform: `translateX(-${overflowDistance}px)`,
+                offset: (startPause + scrollSeconds) / totalSeconds
+            },
+            { transform: `translateX(-${overflowDistance}px)`, offset: 1 }
+        ], {
+            duration: totalSeconds * 1000,
+            iterations: Infinity,
+            easing: "linear"
+        });
+        return () => animation.cancel();
+    }, [overflowDistance, delaySeconds, pixelsPerSecond, endPauseSeconds]);
+
+    return (
+        <div ref={viewportRef} className={className} aria-label={text}>
+            <span
+                ref={textRef}
+                className="mfx-performance-control__marquee-text"
+                aria-hidden="true"
+            >
+                {text}
+            </span>
+        </div>
+    );
 }
 
 /** Pots, sliders and expression pedals expose an absolute analog value. */
@@ -139,6 +236,8 @@ function resolveParameters(
                 symbol: binding.symbol,
                 effect: item.title || plugin?.name || "Effect",
                 parameter: control.name,
+                // Use PiPedal's canonical display formatting so important
+                // units such as dB, Hz, ms and percent remain visible.
                 value: control.formatDisplayValue(rawValue),
                 // Show the physical control's position inside the binding's
                 // configured Min/Max range. This also follows Reverse because
@@ -414,6 +513,15 @@ export default function MultiFXPerformanceControls({
                             valueLabel={primary?.value
                                 ?? `CC ${descriptor.midiCc}`}
                             assignmentCount={assignments.length}
+                            marqueeDelaySeconds={
+                                controllerConfig.sizing.marqueeDelaySeconds
+                            }
+                            marqueePixelsPerSecond={
+                                controllerConfig.sizing.marqueePixelsPerSecond
+                            }
+                            marqueeEndPauseSeconds={
+                                controllerConfig.sizing.marqueeEndPauseSeconds
+                            }
                             onPointerDown={isAdjustableAnalog(descriptor)
                                 ? (event) => beginControlAdjustment(
                                     event,
@@ -471,6 +579,15 @@ export default function MultiFXPerformanceControls({
                         valueLabel={popoutPrimary?.value
                             ?? `CC ${popoutDescriptor.midiCc}`}
                         assignmentCount={popoutAssignments.length}
+                        marqueeDelaySeconds={
+                            controllerConfig.sizing.marqueeDelaySeconds
+                        }
+                        marqueePixelsPerSecond={
+                            controllerConfig.sizing.marqueePixelsPerSecond
+                        }
+                        marqueeEndPauseSeconds={
+                            controllerConfig.sizing.marqueeEndPauseSeconds
+                        }
                         className="mfx-performance-control--popout"
                         onPointerDown={isAdjustableAnalog(popoutDescriptor)
                             ? (event) => beginControlAdjustment(
@@ -515,6 +632,9 @@ export function PerformanceControlCard({
     functionLabel,
     valueLabel,
     assignmentCount = 0,
+    marqueeDelaySeconds,
+    marqueePixelsPerSecond,
+    marqueeEndPauseSeconds,
     className,
     style,
     onPointerDown,
@@ -528,6 +648,9 @@ export function PerformanceControlCard({
     functionLabel: string;
     valueLabel: string;
     assignmentCount?: number;
+    marqueeDelaySeconds?: number;
+    marqueePixelsPerSecond?: number;
+    marqueeEndPauseSeconds?: number;
     className?: string;
     style?: CSSProperties;
     onPointerDown?: PointerEventHandler<HTMLDivElement>;
@@ -549,21 +672,34 @@ export function PerformanceControlCard({
             onPointerUp={onPointerUp}
             onPointerCancel={onPointerCancel}
         >
-            <div className="mfx-performance-control__source">
-                {descriptor.label}
-            </div>
+            <ControlMarqueeText
+                className="mfx-performance-control__source"
+                text={descriptor.label}
+                delaySeconds={marqueeDelaySeconds}
+                pixelsPerSecond={marqueePixelsPerSecond}
+                endPauseSeconds={marqueeEndPauseSeconds}
+            />
             <ControlGraphic
                 descriptor={descriptor}
                 range={range}
                 active={active}
             />
-            <div className="mfx-performance-control__function">
-                {functionLabel}
-                {assignmentCount > 1 ? ` +${assignmentCount - 1}` : ""}
-            </div>
-            <div className="mfx-performance-control__value">
-                {valueLabel}
-            </div>
+            <ControlMarqueeText
+                className="mfx-performance-control__function"
+                text={`${functionLabel}${assignmentCount > 1
+                    ? ` +${assignmentCount - 1}`
+                    : ""}`}
+                delaySeconds={marqueeDelaySeconds}
+                pixelsPerSecond={marqueePixelsPerSecond}
+                endPauseSeconds={marqueeEndPauseSeconds}
+            />
+            <ControlMarqueeText
+                className="mfx-performance-control__value"
+                text={valueLabel}
+                delaySeconds={marqueeDelaySeconds}
+                pixelsPerSecond={marqueePixelsPerSecond}
+                endPauseSeconds={marqueeEndPauseSeconds}
+            />
         </div>
     );
 }

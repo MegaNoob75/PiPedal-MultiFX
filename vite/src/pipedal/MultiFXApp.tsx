@@ -13,6 +13,7 @@ import MultiFXBankPresetView from "./MultiFXBankPresetView";
 import MultiFXEditView from "./MultiFXEditView";
 import MultiFXAboutView from "./MultiFXAboutView";
 import "./MultiFXForms.css";
+import "./MultiFXTypography.css";
 import MultiFXSettingsView from "./MultiFXSettingsView";
 import MultiFXSettingsHub from "./MultiFXSettingsHub";
 import MultiFXControllerSettings from "./MultiFXControllerSettings";
@@ -294,7 +295,9 @@ export default function MultiFXApp({ onExitToOriginal }: MultiFXAppProps) {
                     setMenuOpen((open) => !open);
                 }} style={mfxButtonStyle}>MFX</button>
 
-                <div style={shellTitleStyle}>{viewTitle[view]}</div>
+                <div className="mfx-app-title" style={shellTitleStyle}>
+                    {viewTitle[view]}
+                </div>
 
                 <div style={shellActionsStyle}>
                     {view === "edit" && !newPresetDraft && editSubpage === "chain" && (
@@ -330,7 +333,7 @@ export default function MultiFXApp({ onExitToOriginal }: MultiFXAppProps) {
                         snapshotExitRequest={snapshotExitRequest}
                     />
                 )}
-                {view === "banks" && <MultiFXBankPresetView onClose={goBack} />}
+                {view === "banks" && <MultiFXBankPresetView />}
                 {view === "edit" && (
                     <MultiFXEditView
                         backRequest={editBackRequest}

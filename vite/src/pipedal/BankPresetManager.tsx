@@ -43,13 +43,12 @@ type DragCandidate = {
 type ActiveDrag = DragCandidate & { x: number; y: number };
 
 export interface BankPresetManagerProps {
-    onClose: () => void;
     bankTools?: React.ReactNode;
 }
 
 const DRAG_HOLD_MS = 450;
 
-export default function BankPresetManager({ onClose, bankTools }: BankPresetManagerProps) {
+export default function BankPresetManager({ bankTools }: BankPresetManagerProps) {
     const model = PiPedalModelFactory.getInstance();
     const [banks, setBanks] = useState<BankIndex>(() => model.banks.get().clone());
     const [presets, setPresets] = useState<PresetIndex>(() => model.presets.get().clone());
@@ -294,12 +293,6 @@ export default function BankPresetManager({ onClose, bankTools }: BankPresetMana
 
     return (
         <div style={rootStyle}>
-            <header style={headerStyle}>
-                <strong>BANK / PRESET MANAGER</strong>
-                {busy && <span style={{ color: MFX_COLORS.muted }}>Updating…</span>}
-                <button type="button" onClick={onClose} style={accentButtonStyle}>←</button>
-            </header>
-
             <main style={mainStyle}>
                 <section style={paneStyle} onPointerDown={() => setFocusedPane("banks")}>
                     {bankTools && <div style={toolsStyle}>{bankTools}</div>}
@@ -309,6 +302,7 @@ export default function BankPresetManager({ onClose, bankTools }: BankPresetMana
                         <button style={buttonStyle} onClick={() => void moveBank(-1)}>↑</button>
                         <button style={buttonStyle} onClick={() => void moveBank(1)}>↓</button>
                         <button style={dangerButtonStyle} disabled={!selectedBank} onClick={() => setConfirmDeleteBank(true)}>DELETE</button>
+                        {busy && <span style={{ color: MFX_COLORS.muted }}>Updating…</span>}
                     </div>
                     <div style={listStyle}>
                         {banks.entries.map((bank) => (
@@ -373,7 +367,6 @@ function ConfirmDialog({ text, onCancel, onConfirm }: { text: string; onCancel: 
 }
 
 const rootStyle: React.CSSProperties = { position: "absolute", inset: 0, display: "flex", flexDirection: "column", background: MFX_SURFACES.page.background, color: MFX_SURFACES.page.text };
-const headerStyle: React.CSSProperties = { flex: "0 0 54px", display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, padding: "6px 12px", borderBottom: `1px solid ${MFX_COLORS.border}`, background: MFX_SURFACES.header.background, color: MFX_SURFACES.header.text, boxShadow: MFX_SURFACES.header.shadow };
 const mainStyle: React.CSSProperties = { flex: 1, minHeight: 0, display: "grid", gridTemplateColumns: "34% 66%" };
 const paneStyle: React.CSSProperties = { minWidth: 0, minHeight: 0, display: "flex", flexDirection: "column", borderRight: `1px solid ${MFX_COLORS.border}` };
 const toolsStyle: React.CSSProperties = { flex: "0 0 auto", padding: 6, borderBottom: `1px solid ${MFX_COLORS.border}`, background: MFX_COLORS.panel };

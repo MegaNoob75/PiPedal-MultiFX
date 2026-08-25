@@ -621,13 +621,13 @@ def _persistent_payload_locked():
 
 
 def _validate_theme(value):
-    """Accept one bounded v3 theme document for cross-display sharing."""
+    """Accept a bounded current or legacy theme for cross-display sharing."""
     if value is None:
         return None
     if not isinstance(value, dict):
         raise ValueError("theme must be an object")
-    if value.get("version") != 3:
-        raise ValueError("theme must use version 3")
+    if value.get("version") not in {3, 4}:
+        raise ValueError("theme must use version 3 or 4")
     if not isinstance(value.get("name"), str) or not value["name"].strip():
         raise ValueError("theme name is invalid")
     if not isinstance(value.get("colors"), dict) or not isinstance(value.get("appearance"), dict):

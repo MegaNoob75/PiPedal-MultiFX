@@ -16,13 +16,16 @@ import {
     saveMultiFXTheme,
     themePaintToCss,
     validateMultiFXTheme,
+    MULTIFX_FONT_OPTIONS,
     MFX_COLORS,
     MFX_SURFACES,
+    multiFXFontFamilyToCss,
     multiFXSurfaceBackground
 } from "./MultiFXTheme";
 import MultiFXFootswitchGraphic, {
     MultiFXArcadeButtonGraphic
 } from "./MultiFXFootswitchGraphic";
+import { syncMultiFXTheme } from "./MultiFXRuntimeSync";
 import "./MultiFXPerformanceAppearance.css";
 
 type ThemeBrowseMode = "STYLE" | "COLOR";
@@ -40,7 +43,8 @@ type ThemeEditorTab =
     | "SURFACES"
     | "TILES"
     | "CONTROLS"
-    | "MOTION";
+    | "MOTION"
+    | "FONTS";
 
 const STYLE_CATEGORY_ORDER = [
     "MODERN TILES",
@@ -99,6 +103,7 @@ export default function MultiFXThemeManager() {
     );
 
     const [message, setMessage] = useState("");
+    const [syncingTheme, setSyncingTheme] = useState(false);
     const [editorTab, setEditorTab] =
         useState<ThemeEditorTab>("COLORS");
     const [browseMode, setBrowseMode] =
@@ -213,6 +218,32 @@ export default function MultiFXThemeManager() {
         }
     };
 
+    /** Make the preview active here, then publish it to the Pi bridge. */
+    const syncTheme = async () => {
+        if (syncingTheme) return;
+        if (!saveMultiFXTheme(theme)) {
+            setMessage("Theme is invalid and could not be synced.");
+            return;
+        }
+
+        originalRef.current = cloneTheme(theme);
+        setSyncingTheme(true);
+        setMessage("Syncing theme to the controller...");
+        try {
+            await syncMultiFXTheme(theme);
+            setMessage(
+                `"${theme.name}" is active and synced to the controller.`
+            );
+        } catch (error) {
+            const detail = error instanceof Error
+                ? error.message
+                : String(error);
+            setMessage(`Theme is active locally, but sync failed: ${detail}`);
+        } finally {
+            setSyncingTheme(false);
+        }
+    };
+
     const saveCustom = () => {
         const customName = theme.name.trim();
 
@@ -225,7 +256,7 @@ export default function MultiFXThemeManager() {
             ...cloneTheme(theme),
             name: customName,
             author: "User",
-            version: 3
+            version: 4
         };
 
         const next = saveCustomMultiFXTheme(customTheme);
@@ -278,7 +309,9 @@ export default function MultiFXThemeManager() {
         <div style={screenStyle}>
             <div style={headerStyle}>
                 <div>
-                    <div style={titleStyle}>THEME MANAGER</div>
+                    <div className="mfx-font-heading" style={titleStyle}>
+                        THEME MANAGER
+                    </div>
                     <div style={subtitleStyle}>
                         Preview • set active • save custom • import/export
                     </div>
@@ -289,6 +322,7 @@ export default function MultiFXThemeManager() {
                 <div
                     role="status"
                     aria-live="polite"
+                    className="mfx-theme-feedback"
                     style={{
                         position: "fixed",
                         left: "50%",
@@ -577,6 +611,7 @@ export default function MultiFXThemeManager() {
                         <div
                             style={{
                                 display: "flex",
+                                flexWrap: "wrap",
                                 alignItems: "center",
                                 gap: "var(--mfx-gap, 8px)",
                                 marginBottom:
@@ -606,6 +641,22 @@ export default function MultiFXThemeManager() {
                                 }}
                             >
                                 SET THEME
+                            </button>
+
+                            <button
+                                type="button"
+                                onClick={() => void syncTheme()}
+                                disabled={syncingTheme}
+                                style={{
+                                    ...primaryButtonStyle,
+                                    minHeight:
+                                        "calc(40px * var(--mfx-ui-scale, 1))",
+                                    padding:
+                                        "calc(6px * var(--mfx-ui-scale, 1)) calc(12px * var(--mfx-ui-scale, 1))",
+                                    opacity: syncingTheme ? 0.62 : 1
+                                }}
+                            >
+                                {syncingTheme ? "SYNCING..." : "SYNC THEME"}
                             </button>
 
                             <button
@@ -823,6 +874,12 @@ export default function MultiFXThemeManager() {
                                 onChange={updateAppearance}
                             />
                         )}
+                        {editorTab === "FONTS" && (
+                            <FontsEditor
+                                theme={theme}
+                                onChange={updateAppearance}
+                            />
+                        )}
                     </div>
                 </div>
             </div>
@@ -838,7 +895,7 @@ function ThemeEditorTabs({
     onSelect: (tab: ThemeEditorTab) => void;
 }) {
     const tabs: ThemeEditorTab[] = [
-        "COLORS", "SURFACES", "TILES", "CONTROLS", "MOTION"
+        "COLORS", "SURFACES", "TILES", "CONTROLS", "MOTION", "FONTS"
     ];
     return (
         <div style={editorTabsStyle}>
@@ -1388,6 +1445,248 @@ function MotionEditor({
     );
 }
 
+type ThemeFontRole = Exclude<
+    keyof MultiFXThemeDefinition["appearance"]["fonts"],
+    "controlPopupSizePercent"
+>;
+
+const FONT_GROUP_ORDER = [
+    "BUILT IN", "DIGITAL / LCD", "SYSTEM"
+] as const;
+
+const FONT_SECTIONS: readonly {
+    heading: string;
+    roles: readonly (readonly [ThemeFontRole, string, string])[];
+}[] = [
+    {
+        heading: "GENERAL UI",
+        roles: [
+            ["interface", "Interface / menus", "Banks, presets and settings"],
+            ["heading", "Page headings", "PERFORMANCE"],
+            ["label", "General labels", "CURRENT BANK"],
+            ["value", "General values", "Oxford Clean"]
+        ]
+    },
+    {
+        heading: "PERFORMANCE SWITCHES",
+        roles: [
+            ["switchLabel", "Switch labels", "SW 1"],
+            ["switchValue", "Preset / action names", "ACTIVE PRESET"]
+        ]
+    },
+    {
+        heading: "POTS, SLIDERS & ENCODERS",
+        roles: [
+            ["controlLabel", "Physical control labels", "POT 1"],
+            ["controlFunction", "Assigned functions", "Delay · Feedback"],
+            ["controlValue", "Control values", "72.5%"]
+        ]
+    },
+    {
+        heading: "POPUPS & TOASTS",
+        roles: [
+            ["feedback", "Feedback text", "POT 1 · Feedback 72.5%"]
+        ]
+    }
+] as const;
+
+/** Typography editor keeps family and scale independent for each UI role. */
+function FontsEditor({
+    theme,
+    onChange
+}: {
+    theme: MultiFXThemeDefinition;
+    onChange: (update: (next: MultiFXThemeDefinition) => void) => void;
+}) {
+    const fonts = theme.appearance.fonts;
+    const patchRole = (
+        role: ThemeFontRole,
+        value: Partial<(typeof fonts)[ThemeFontRole]>
+    ) => onChange((next) => {
+        next.appearance.fonts[role] = {
+            ...next.appearance.fonts[role],
+            ...value
+        };
+    });
+
+    return (
+        <div style={editorScrollStyle}>
+            <section style={editorCardStyle}>
+                <div style={editorCardHeadingStyle}>LIVE FONT PREVIEW</div>
+                <div style={fontPreviewStyle}>
+                    <div style={{
+                        fontFamily: "var(--mfx-font-heading-family)",
+                        fontSize: "var(--mfx-font-heading-size)",
+                        fontWeight: 900,
+                        color: MFX_SURFACES.panel.accent
+                    }}>
+                        PERFORMANCE
+                    </div>
+                    <div style={fontPreviewGridStyle}>
+                        <div style={fontPreviewPanelStyle}>
+                            <div style={{
+                                fontFamily: "var(--mfx-font-switch-label-family)",
+                                fontSize: "var(--mfx-font-switch-label-size)",
+                                color: "var(--mfx-role-preset-active-label)",
+                                fontWeight: 900
+                            }}>
+                                SW 1
+                            </div>
+                            <div style={{
+                                fontFamily: "var(--mfx-font-switch-value-family)",
+                                fontSize: "var(--mfx-font-switch-value-size)",
+                                color: "var(--mfx-role-preset-active-value)",
+                                fontWeight: 900
+                            }}>
+                                Oxford Clean
+                            </div>
+                        </div>
+                        <div style={fontPreviewPanelStyle}>
+                            <div style={{
+                                fontFamily: "var(--mfx-font-control-label-family)",
+                                fontSize: "var(--mfx-font-control-label-size)",
+                                color: MFX_SURFACES.panel.label,
+                                fontWeight: 900
+                            }}>
+                                POT 1
+                            </div>
+                            <div style={{
+                                fontFamily: "var(--mfx-font-control-function-family)",
+                                fontSize: "var(--mfx-font-control-function-size)",
+                                fontWeight: 900
+                            }}>
+                                Delay · Feedback
+                            </div>
+                            <div style={{
+                                fontFamily: "var(--mfx-font-control-value-family)",
+                                fontSize: "var(--mfx-font-control-value-size)",
+                                color: MFX_SURFACES.panel.accent,
+                                fontWeight: 900
+                            }}>
+                                72.5%
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </section>
+
+            {FONT_SECTIONS.map((section) => (
+                <section key={section.heading} style={editorCardStyle}>
+                    <div style={editorCardHeadingStyle}>{section.heading}</div>
+                    <div style={fontRoleGridStyle}>
+                        {section.roles.map(([role, label, sample]) => (
+                            <FontRoleField
+                                key={role}
+                                label={label}
+                                sample={sample}
+                                value={fonts[role]}
+                                onFamily={(family) => patchRole(role, {
+                                    family: family as (typeof fonts)[ThemeFontRole]["family"]
+                                })}
+                                onSize={(sizePercent) => patchRole(role, {
+                                    sizePercent
+                                })}
+                            />
+                        ))}
+                    </div>
+                    {section.heading === "POTS, SLIDERS & ENCODERS" && (
+                        <div style={{ marginTop: 8 }}>
+                            <NumberEditorField
+                                label="Enlarged pop-out size (%)"
+                                value={fonts.controlPopupSizePercent}
+                                min={100}
+                                max={250}
+                                step={5}
+                                onChange={(controlPopupSizePercent) =>
+                                    onChange((next) => {
+                                        next.appearance.fonts.controlPopupSizePercent =
+                                            controlPopupSizePercent;
+                                    })}
+                            />
+                        </div>
+                    )}
+                </section>
+            ))}
+        </div>
+    );
+}
+
+function FontRoleField({
+    label,
+    sample,
+    value,
+    onFamily,
+    onSize
+}: {
+    label: string;
+    sample: string;
+    value: MultiFXThemeDefinition["appearance"]["fonts"][ThemeFontRole];
+    onFamily: (family: string) => void;
+    onSize: (size: number) => void;
+}) {
+    return (
+        <div style={fontRoleFieldStyle}>
+            <div style={{ minWidth: 0 }}>
+                <div style={compactFieldLabelStyle}>{label}</div>
+                <div style={{
+                    minWidth: 0,
+                    marginTop: 3,
+                    overflow: "hidden",
+                    whiteSpace: "nowrap",
+                    textOverflow: "ellipsis",
+                    fontFamily: multiFXFontFamilyToCss(value.family),
+                    fontSize: `${Math.max(11, 14 * value.sizePercent / 100)}px`,
+                    color: MFX_SURFACES.panel.text
+                }}>
+                    {sample}
+                </div>
+            </div>
+            <select
+                value={value.family}
+                onChange={(event) => onFamily(event.target.value)}
+                style={{
+                    ...compactSelectStyle,
+                    fontFamily: multiFXFontFamilyToCss(value.family)
+                }}
+                aria-label={`${label} font`}
+            >
+                {FONT_GROUP_ORDER.map((group) => (
+                    <optgroup key={group} label={group}>
+                        {MULTIFX_FONT_OPTIONS
+                            .filter((option) => option.group === group)
+                            .map((option) => (
+                                <option key={option.id} value={option.id}>
+                                    {option.label}
+                                </option>
+                            ))}
+                    </optgroup>
+                ))}
+            </select>
+            <label style={{ ...compactFieldStyle, minWidth: 86 }}>
+                <span style={compactFieldLabelStyle}>Size %</span>
+                <input
+                    type="number"
+                    min={60}
+                    max={220}
+                    step={5}
+                    value={value.sizePercent}
+                    onChange={(event) => {
+                        const next = Number(event.target.value);
+                        if (Number.isFinite(next)) {
+                            onSize(Math.min(220, Math.max(60, next)));
+                        }
+                    }}
+                    style={{
+                        ...compactTextInputStyle,
+                        minWidth: 62,
+                        fontVariantNumeric: "tabular-nums"
+                    }}
+                />
+            </label>
+        </div>
+    );
+}
+
 function PaintField({
     label,
     value,
@@ -1804,20 +2103,27 @@ function safeName(value: string): string {
 const editorTabsStyle: React.CSSProperties = {
     flex: "0 0 auto",
     display: "grid",
-    gridTemplateColumns: "repeat(5,minmax(0,1fr))",
-    gap: 6,
+    gridTemplateColumns: "repeat(6,minmax(0,1fr))",
+    gap: "clamp(2px, .55vw, 6px)",
+    width: "100%",
+    minWidth: 0,
+    overflowX: "hidden",
     marginBottom: 8
 };
 
 const editorTabStyle: React.CSSProperties = {
     minWidth: 0,
     minHeight: 36,
-    padding: "4px 6px",
+    padding: "4px clamp(1px, .5vw, 6px)",
     border: "1px solid",
     borderRadius: 7,
     font: "inherit",
-    fontSize: "0.68rem",
+    fontSize: "clamp(0.5rem, 1.15vw, 0.68rem)",
     fontWeight: 900,
+    letterSpacing: "-0.015em",
+    overflow: "hidden",
+    textOverflow: "clip",
+    whiteSpace: "nowrap",
     cursor: "pointer"
 };
 
@@ -1871,6 +2177,56 @@ const editorCardHeadingStyle: React.CSSProperties = {
     fontSize: "0.74rem",
     fontWeight: 950,
     letterSpacing: "0.055em"
+};
+
+const fontPreviewStyle: React.CSSProperties = {
+    display: "flex",
+    flexDirection: "column",
+    gap: 8,
+    minWidth: 0
+};
+
+const fontPreviewGridStyle: React.CSSProperties = {
+    display: "grid",
+    gridTemplateColumns: "repeat(2,minmax(0,1fr))",
+    gap: 8,
+    minWidth: 0
+};
+
+const fontPreviewPanelStyle: React.CSSProperties = {
+    minWidth: 0,
+    minHeight: 78,
+    padding: 8,
+    display: "flex",
+    flexDirection: "column",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 5,
+    overflow: "hidden",
+    textAlign: "center",
+    border: `1px solid ${MFX_COLORS.border}`,
+    borderRadius: 8,
+    background: MFX_SURFACES.panel.background
+};
+
+const fontRoleGridStyle: React.CSSProperties = {
+    display: "grid",
+    gridTemplateColumns:
+        "repeat(auto-fit,minmax(min(100%,360px),1fr))",
+    gap: 8,
+    minWidth: 0
+};
+
+const fontRoleFieldStyle: React.CSSProperties = {
+    minWidth: 0,
+    padding: 8,
+    display: "grid",
+    gridTemplateColumns: "minmax(0,1fr) minmax(92px,1.1fr) 86px",
+    alignItems: "end",
+    gap: 7,
+    border: `1px solid ${MFX_COLORS.border}`,
+    borderRadius: 8,
+    background: MFX_COLORS.background
 };
 
 const twoColumnEditorStyle: React.CSSProperties = {

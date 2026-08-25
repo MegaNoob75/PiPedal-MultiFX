@@ -191,10 +191,11 @@ class ControllerHardwareConfigTests(unittest.TestCase):
         """One saved theme becomes the durable source shared by all displays."""
         original_state = bridge._deepcopy(bridge.state)
         theme = {
-            "version": 3,
+            "version": 4,
             "name": "Stage Test",
             "colors": {"accent": "#33ddff"},
             "appearance": {"controls": {"switchStyle": "footswitch"}},
+            "typography": {"heading": {"family": "system", "size": 100}},
         }
         try:
             with mock.patch.object(bridge, "_save_persistent_locked") as save:
@@ -222,7 +223,7 @@ class ControllerHardwareConfigTests(unittest.TestCase):
         }
         try:
             with mock.patch.object(bridge, "_save_persistent_locked") as save:
-                with self.assertRaisesRegex(ValueError, "version 3"):
+                with self.assertRaisesRegex(ValueError, "version 3 or 4"):
                     bridge.update_state({
                         "theme": {
                             "version": 2,

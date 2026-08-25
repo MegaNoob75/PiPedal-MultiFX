@@ -587,10 +587,9 @@ function sameJson(left: unknown, right: unknown): boolean {
     }
 }
 
-/* Theme synchronization mirrors controller configuration synchronization:
-   local saves publish to the bridge, while bridge revisions update every
-   connected browser without turning a remote apply into another POST. */
-let applyingRemoteTheme = false;
+/* The bridge remains the shared source for themes received from another
+   display. Local theme edits stay local until the user explicitly presses
+   SYNC THEME, so unfinished previews are not pushed to every screen. */
 let themeSyncStarted = false;
 let themeBootstrapSent = false;
 
@@ -598,30 +597,26 @@ function applyRemoteTheme(value: unknown) {
     const valid = validateMultiFXTheme(value);
     if (!valid || sameJson(loadMultiFXTheme(), valid)) return;
 
-    applyingRemoteTheme = true;
-    try {
-        window.localStorage.setItem(
-            THEME_STORAGE_KEY,
-            JSON.stringify(valid, null, 2)
-        );
-        applyMultiFXTheme(valid);
-        window.dispatchEvent(new Event(MULTIFX_THEME_CHANGED_EVENT));
-    } finally {
-        applyingRemoteTheme = false;
-    }
+    window.localStorage.setItem(
+        THEME_STORAGE_KEY,
+        JSON.stringify(valid, null, 2)
+    );
+    applyMultiFXTheme(valid);
+    window.dispatchEvent(new Event(MULTIFX_THEME_CHANGED_EVENT));
 }
 
-function publishLocalTheme(theme: MultiFXThemeDefinition) {
-    void updateMultiFXRuntimeState({ theme }).catch(() => undefined);
+/** Send a complete, validated theme to the bridge and connected displays. */
+export async function syncMultiFXTheme(
+    theme: MultiFXThemeDefinition
+): Promise<MultiFXRuntimeState> {
+    const valid = validateMultiFXTheme(theme);
+    if (!valid) throw new Error("Theme is invalid and could not be synced.");
+    return updateMultiFXRuntimeState({ theme: valid });
 }
 
 function startThemeSync() {
     if (themeSyncStarted || typeof window === "undefined") return;
     themeSyncStarted = true;
-
-    window.addEventListener(MULTIFX_THEME_CHANGED_EVENT, () => {
-        if (!applyingRemoteTheme) publishLocalTheme(loadMultiFXTheme());
-    });
 
     subscribeMultiFXRuntimeState((runtime) => {
         if (runtime.theme !== undefined && runtime.theme !== null) {
@@ -630,7 +625,7 @@ function startThemeSync() {
         }
         if (!themeBootstrapSent) {
             themeBootstrapSent = true;
-            publishLocalTheme(loadMultiFXTheme());
+            void syncMultiFXTheme(loadMultiFXTheme()).catch(() => undefined);
         }
     });
 }

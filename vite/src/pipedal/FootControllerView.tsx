@@ -169,19 +169,19 @@ function MarqueeText({
 // changes the font size; long text marquees at the same role size. Controls
 // only step down when their own height is genuinely too small for that role.
 const MFX_PRIMARY_TEXT_SIZE =
-    "clamp(18px, min(28px, 50cqh), 28px)";
+    "var(--mfx-font-switch-value-size, clamp(18px, min(28px, 50cqh), 28px))";
 const MFX_SWITCH_LABEL_TEXT_SIZE =
-    "clamp(10px, min(14px, 23cqh), 14px)";
+    "var(--mfx-font-switch-label-size, clamp(10px, min(14px, 23cqh), 14px))";
 const MFX_LABEL_TEXT_SIZE =
-    "clamp(9px, min(12px, 20cqh), 12px)";
+    "var(--mfx-font-label-size, clamp(9px, min(12px, 20cqh), 12px))";
 const MFX_SECONDARY_TEXT_SIZE =
-    "clamp(8px, min(11px, 18cqh), 11px)";
+    "var(--mfx-font-switch-secondary-size, clamp(8px, min(11px, 18cqh), 11px))";
 const MFX_PLUS_TEXT_SIZE =
     "clamp(24px, min(34px, 60cqh), 34px)";
 const MFX_SYSTEM_LABEL_TEXT_SIZE =
-    "clamp(8px, min(10px, 16cqh), 10px)";
+    "var(--mfx-font-system-label-size, clamp(8px, min(10px, 16cqh), 10px))";
 const MFX_SYSTEM_VALUE_TEXT_SIZE =
-    "clamp(9px, min(12px, 20cqh), 12px)";
+    "var(--mfx-font-system-value-size, clamp(9px, min(12px, 20cqh), 12px))";
 
 type ResponsiveMarqueeTextProps = {
     className?: string;
@@ -2528,6 +2528,7 @@ export default function FootControllerView({
         }}>
             <div style={{ minWidth: 0, minHeight: 0 }}>
                 <ResponsiveMarqueeText
+                    className="mfx-performance-ui-label"
                     text="CURRENT BANK"
                     color={colors.bankTitleText}
                     fontSize={MFX_LABEL_TEXT_SIZE}
@@ -2563,6 +2564,7 @@ export default function FootControllerView({
                     }}
                 >
                     <ResponsiveMarqueeText
+                        className="mfx-performance-ui-value"
                         text={`${banks.getSelectedEntryName() || "No Bank"} \u25BE`}
                         color={colors.bankNameText}
                         fontSize={MFX_PRIMARY_TEXT_SIZE}
@@ -2681,6 +2683,7 @@ export default function FootControllerView({
         }}>
             <div style={{ minWidth: 0, minHeight: 0 }}>
                 <ResponsiveMarqueeText
+                    className="mfx-performance-ui-label"
                     text="ACTIVE PRESET"
                     color={colors.activePresetLabelText}
                     fontSize={MFX_LABEL_TEXT_SIZE}
@@ -2716,6 +2719,7 @@ export default function FootControllerView({
                     }}
                 >
                     <ResponsiveMarqueeText
+                        className="mfx-performance-ui-value"
                         text={`${currentPreset?.name || "No Preset"} \u25BE`}
                         color={colors.activePresetNameText}
                         fontSize={MFX_PRIMARY_TEXT_SIZE}
@@ -3077,6 +3081,7 @@ export default function FootControllerView({
                     {element.showLabel && (
                         <div style={{ minWidth: 0, minHeight: 0 }}>
                             <ResponsiveMarqueeText
+                                className="mfx-performance-ui-label"
                                 text={CONTROLLER_LAYOUT_ELEMENT_LABELS[element.id].toUpperCase()}
                                 color={colors.switchLabelText}
                                 fontSize={MFX_LABEL_TEXT_SIZE}
@@ -3101,6 +3106,7 @@ export default function FootControllerView({
                         {rows.flatMap(([label, value]) => [
                             <ResponsiveMarqueeText
                                 key={`${label}-label`}
+                                className="mfx-performance-ui-label"
                                 text={label}
                                 color={colors.switchLabelText}
                                 fontSize={MFX_SYSTEM_LABEL_TEXT_SIZE}
@@ -3112,6 +3118,7 @@ export default function FootControllerView({
                             />,
                             <ResponsiveMarqueeText
                                 key={`${label}-value`}
+                                className="mfx-performance-ui-value"
                                 text={value}
                                 color={colors.switchValueText}
                                 fontSize={MFX_SYSTEM_VALUE_TEXT_SIZE}
@@ -3152,6 +3159,7 @@ export default function FootControllerView({
                 {element.showLabel && (
                     <div style={{ minWidth: 0, minHeight: 0 }}>
                         <ResponsiveMarqueeText
+                            className="mfx-performance-ui-label"
                             text={CONTROLLER_LAYOUT_ELEMENT_LABELS[element.id].toUpperCase()}
                             color={colors.switchLabelText}
                             fontSize={MFX_LABEL_TEXT_SIZE}
@@ -3166,6 +3174,7 @@ export default function FootControllerView({
                 )}
                 <div style={{ minWidth: 0, minHeight: 0 }}>
                     <ResponsiveMarqueeText
+                        className="mfx-performance-ui-value"
                         text={valueText}
                         color={valueColor}
                         fontSize={MFX_PRIMARY_TEXT_SIZE}
@@ -3187,7 +3196,7 @@ export default function FootControllerView({
             background: colors.pageBackground,
             height: "100%",
             position: "relative",
-            fontFamily: "sans-serif",
+            fontFamily: "var(--mfx-font-interface-family, sans-serif)",
             display: "flex",
             flexDirection: "column",
             boxSizing: "border-box",

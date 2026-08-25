@@ -1,0 +1,170 @@
+/*
+ * Offline typography catalog for MultiFX themes.
+ *
+ * Every bundled face is served with the existing frontend, so a controller
+ * never needs internet access to reproduce a theme. System stacks remain in
+ * the selector as lightweight alternatives and always include a fallback.
+ */
+
+@import "@fontsource/inter/latin-400.css";
+@import "@fontsource/inter/latin-700.css";
+@import "@fontsource/open-sans/latin-400.css";
+@import "@fontsource/open-sans/latin-700.css";
+@import "@fontsource/lato/latin-400.css";
+@import "@fontsource/lato/latin-700.css";
+@import "@fontsource/montserrat/latin-400.css";
+@import "@fontsource/montserrat/latin-700.css";
+@import "@fontsource/oswald/latin-400.css";
+@import "@fontsource/oswald/latin-700.css";
+@import "@fontsource/source-sans-3/latin-400.css";
+@import "@fontsource/source-sans-3/latin-700.css";
+@import "@fontsource/noto-sans/latin-400.css";
+@import "@fontsource/noto-sans/latin-700.css";
+@import "@fontsource/nunito/latin-400.css";
+@import "@fontsource/nunito/latin-700.css";
+@import "@fontsource/roboto-mono/latin-400.css";
+@import "@fontsource/roboto-mono/latin-700.css";
+@import "@fontsource/orbitron/latin-400.css";
+@import "@fontsource/orbitron/latin-700.css";
+@import "@fontsource/rajdhani/latin-400.css";
+@import "@fontsource/rajdhani/latin-700.css";
+
+@font-face {
+    font-family: "MFX Cooper Hewitt";
+    src: url("/fonts/cooper/cooperhewitt-book-webfont.woff2") format("woff2");
+    font-style: normal;
+    font-weight: 400;
+    font-display: swap;
+}
+
+@font-face {
+    font-family: "MFX Cooper Hewitt";
+    src: url("/fonts/cooper/cooperhewitt-semibold-webfont.woff2") format("woff2");
+    font-style: normal;
+    font-weight: 600 950;
+    font-display: swap;
+}
+
+@font-face {
+    font-family: "MFX Questrial";
+    src: url("/fonts/questrial/questrial-regular-webfont.woff") format("woff");
+    font-style: normal;
+    font-weight: 100 950;
+    font-display: swap;
+}
+
+@font-face {
+    font-family: "MFX Comfortaa";
+    src: url("/fonts/comforta/Comfortaa-Regular.ttf") format("truetype");
+    font-style: normal;
+    font-weight: 400;
+    font-display: swap;
+}
+
+@font-face {
+    font-family: "MFX Comfortaa";
+    src: url("/fonts/comforta/Comfortaa-Bold.ttf") format("truetype");
+    font-style: normal;
+    font-weight: 600 950;
+    font-display: swap;
+}
+
+/* DSEG is SIL OFL 1.1 and supplies genuine clock-style 7-segment faces plus
+   readable 14-segment versions for parameter and preset names. */
+@font-face {
+    font-family: "MFX DSEG7 Classic";
+    src: url("../../node_modules/dseg/fonts/DSEG7-Classic/DSEG7Classic-Bold.woff2") format("woff2");
+    font-style: normal;
+    font-weight: 100 950;
+    font-display: swap;
+}
+
+@font-face {
+    font-family: "MFX DSEG7 Modern";
+    src: url("../../node_modules/dseg/fonts/DSEG7-Modern/DSEG7Modern-Bold.woff2") format("woff2");
+    font-style: normal;
+    font-weight: 100 950;
+    font-display: swap;
+}
+
+@font-face {
+    font-family: "MFX DSEG14 Classic";
+    src: url("../../node_modules/dseg/fonts/DSEG14-Classic/DSEG14Classic-Bold.woff2") format("woff2");
+    font-style: normal;
+    font-weight: 100 950;
+    font-display: swap;
+}
+
+@font-face {
+    font-family: "MFX DSEG14 Modern";
+    src: url("../../node_modules/dseg/fonts/DSEG14-Modern/DSEG14Modern-Bold.woff2") format("woff2");
+    font-style: normal;
+    font-weight: 100 950;
+    font-display: swap;
+}
+
+.mfx-app-root {
+    font-family: var(--mfx-font-interface-family, Roboto, sans-serif);
+    font-size: var(--mfx-font-interface-size, 16px);
+}
+
+.mfx-app-root button,
+.mfx-app-root input,
+.mfx-app-root select,
+.mfx-app-root textarea {
+    font-family: inherit;
+}
+
+.mfx-app-root label {
+    font-family: var(--mfx-font-label-family, Roboto, sans-serif);
+}
+
+.mfx-app-root input,
+.mfx-app-root select,
+.mfx-app-root textarea {
+    font-family: var(--mfx-font-value-family, Roboto, sans-serif);
+}
+
+.mfx-app-title,
+.mfx-font-heading,
+.mfx-app-root h1,
+.mfx-app-root h2,
+.mfx-app-root h3 {
+    font-family: var(--mfx-font-heading-family, Roboto, sans-serif);
+}
+
+.mfx-app-title,
+.mfx-font-heading {
+    font-size: var(--mfx-font-heading-size, 16px);
+}
+
+.mfx-font-label {
+    font-family: var(--mfx-font-label-family, Roboto, sans-serif);
+    font-size: var(--mfx-font-label-size, 12px);
+}
+
+.mfx-font-value {
+    font-family: var(--mfx-font-value-family, Roboto, sans-serif);
+    font-size: var(--mfx-font-value-size, 16px);
+}
+
+.mfx-performance-switch__label,
+.mfx-performance-switch__hold {
+    font-family: var(--mfx-font-switch-label-family, Roboto, sans-serif);
+}
+
+.mfx-performance-switch__value {
+    font-family: var(--mfx-font-switch-value-family, Roboto, sans-serif);
+}
+
+.mfx-performance-ui-label {
+    font-family: var(--mfx-font-label-family, Roboto, sans-serif);
+}
+
+.mfx-performance-ui-value {
+    font-family: var(--mfx-font-value-family, Roboto, sans-serif);
+}
+
+.mfx-theme-feedback {
+    font-family: var(--mfx-font-feedback-family, Roboto, sans-serif);
+}

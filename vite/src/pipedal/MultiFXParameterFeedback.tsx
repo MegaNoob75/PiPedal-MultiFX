@@ -217,6 +217,7 @@ export default function MultiFXParameterFeedback({
         <div
             role="status"
             aria-live="polite"
+            className="mfx-theme-feedback"
             style={{
                 position: "fixed",
                 left: "50%",
@@ -284,7 +285,7 @@ const headingRowStyle: React.CSSProperties = {
 };
 
 const sourceStyle: React.CSSProperties = {
-    fontSize: "0.67rem",
+    fontSize: "var(--mfx-font-feedback-source-size, 0.67rem)",
     fontWeight: 950,
     letterSpacing: "0.08em",
     overflow: "hidden",
@@ -294,6 +295,7 @@ const sourceStyle: React.CSSProperties = {
 
 const parameterStyle: React.CSSProperties = {
     marginTop: 2,
+    fontSize: "var(--mfx-font-feedback-text-size, 1rem)",
     fontWeight: 950,
     overflow: "hidden",
     whiteSpace: "nowrap",
@@ -302,7 +304,7 @@ const parameterStyle: React.CSSProperties = {
 
 const valueStyle: React.CSSProperties = {
     flex: "0 0 auto",
-    fontSize: "1.2rem",
+    fontSize: "var(--mfx-font-feedback-value-size, 1.2rem)",
     fontWeight: 950,
     whiteSpace: "nowrap"
 };

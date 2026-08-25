@@ -13,9 +13,7 @@ import {
     multiFXSurfaceBackground
 } from "./MultiFXTheme";
 
-type Props = { onClose: () => void };
-
-export default function MultiFXBankPresetView({ onClose }: Props) {
+export default function MultiFXBankPresetView() {
     const model = PiPedalModelFactory.getInstance();
     const fileInputRef = useRef<HTMLInputElement | null>(null);
     const [banks, setBanks] = useState<BankIndex>(() => model.banks.get().clone());
@@ -115,7 +113,7 @@ export default function MultiFXBankPresetView({ onClose }: Props) {
     );
 
     return <>
-        <BankPresetManager onClose={onClose} bankTools={tools} />
+        <BankPresetManager bankTools={tools} />
         {cloneOpen && selectedBank && (
             <div style={overlayStyle} onClick={() => !busy && setCloneOpen(false)}>
                 <div style={dialogStyle} onClick={(event) => event.stopPropagation()}>

@@ -75,30 +75,57 @@
 .mfx-performance-control__source,
 .mfx-performance-control__function,
 .mfx-performance-control__value {
+    display: flex;
+    align-items: center;
+    justify-content: center;
     width: 100%;
     min-width: 0;
     overflow: hidden;
     white-space: nowrap;
-    text-overflow: ellipsis;
     text-align: center;
     line-height: 1;
     font-weight: 900;
 }
 
+.mfx-performance-control__marquee-text {
+    display: inline-block;
+    flex: 0 0 auto;
+    min-width: max-content;
+    white-space: nowrap;
+    will-change: transform;
+}
+
 .mfx-performance-control__source {
     color: var(--mfx-surface-panel-label);
-    font-size: clamp(7px, 8cqh, 13px);
+    font-family: var(--mfx-font-control-label-family, Roboto, sans-serif);
+    font-size: var(--mfx-font-control-label-size, clamp(7px, 8cqh, 13px));
     letter-spacing: .06em;
 }
 
 .mfx-performance-control__function {
     color: var(--mfx-surface-panel-text);
-    font-size: clamp(7px, 7cqh, 12px);
+    font-family: var(--mfx-font-control-function-family, Roboto, sans-serif);
+    font-size: var(--mfx-font-control-function-size, clamp(7px, 7cqh, 12px));
 }
 
 .mfx-performance-control__value {
     color: var(--mfx-surface-panel-accent);
-    font-size: clamp(8px, 10cqh, 16px);
+    font-family: var(--mfx-font-control-value-family, Roboto, sans-serif);
+    font-size: var(--mfx-font-control-value-size, clamp(8px, 10cqh, 16px));
+}
+
+/* The enlarged control has its own multiplier. It deliberately does not use
+   container-query caps, since readability is the purpose of the pop-out. */
+.mfx-performance-control--popout .mfx-performance-control__source {
+    font-size: var(--mfx-font-control-label-popout-size, 19px);
+}
+
+.mfx-performance-control--popout .mfx-performance-control__function {
+    font-size: var(--mfx-font-control-function-popout-size, 18px);
+}
+
+.mfx-performance-control--popout .mfx-performance-control__value {
+    font-size: var(--mfx-font-control-value-popout-size, 23px);
 }
 
 .mfx-performance-control[data-assigned="false"] {
