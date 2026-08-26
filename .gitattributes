@@ -1,0 +1,8 @@
+# Shell scripts must use Unix line endings so Linux can read their shebangs.
+*.sh text eol=lf
+
+# GitHub Actions and project text formats also use stable Unix line endings.
+*.yml text eol=lf
+*.yaml text eol=lf
+*.py text eol=lf
+*.service text eol=lf

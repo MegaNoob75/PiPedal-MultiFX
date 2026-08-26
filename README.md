@@ -309,7 +309,7 @@ From inside the extracted package, launch the all-in-one menu:
 sudo ./mfxinstaller.sh
 ```
 
-Choose **Install or update MultiFX**. The older `install-multifx.sh` command is
+Choose **Install / change MultiFX version**. The older `install-multifx.sh` command is
 kept as a compatibility shortcut and now calls the same consolidated installer.
 
 The installer:
@@ -336,18 +336,27 @@ sudo ./mfxinstaller.sh
 The streamlined setup menu provides:
 
 ```text
-1) Install or update PiPedal
-2) Install or update MultiFX
-3) Remove MultiFX and restore original PiPedal
-4) Set up touchscreen display
-5) Complete setup: PiPedal + MultiFX + touchscreen
-6) Status and diagnostics
-7) Exit
+1) Install / change PiPedal version
+2) Install / change MultiFX version
+3) Complete setup: PiPedal + MultiFX + touchscreen
+4) Create full backup
+5) Restore backup
+6) Completely remove MultiFX
+7) Completely remove PiPedal + MultiFX
+8) Set up touchscreen display
+9) Status and diagnostics
+0) Exit
 ```
 
-The setup script downloads the latest stable official PiPedal package and the
-latest stable published MultiFX Raspberry Pi package. It detects the normal
-login user rather than assuming a particular home directory.
+The setup script lists compatible published PiPedal and MultiFX versions. The
+latest stable version is selected by default and marked **Latest**, while older
+versions and packaged prereleases can be selected for intentional downgrades.
+Menus support arrow keys, Enter and numbered choices. The script detects the
+normal login user rather than assuming a particular home directory.
+
+Backups are compressed under `~/mfxbackups` and include PiPedal presets,
+configuration, uploaded NAM/IR files, LV2 locations, MultiFX controller/runtime
+state, service definitions and touchscreen configuration.
 
 The optional touchscreen action reproduces the Raspberry Pi display setup used
 by the project: Labwc, an automatically maximized Chromium app window, and the
@@ -388,7 +397,11 @@ After installation, a stable uninstaller is also installed at:
 sudo /usr/local/sbin/uninstall-pipedal-multifx
 ```
 
-The uninstaller restores the PiPedal frontend that was backed up before MultiFX was first installed. PiPedal itself is not removed.
+The uninstaller first offers a compressed safety backup, restores the PiPedal
+frontend that existed before MultiFX, and then removes the bridge, controller
+configuration, services and all MultiFX runtime state. The setup tool and
+`~/mfxbackups` remain. PiPedal itself is not removed unless the separate full
+PiPedal removal option is selected.
 
 ### Important Runtime Paths
 
@@ -402,11 +415,14 @@ Controller factory/config file:
 MultiFX controller bridge:
   /usr/local/lib/pipedal-multifx/pipedal_encoder_bridge.py
 
-Persistent MultiFX state:
-  /var/lib/pipedal-multifx/state.json
-
-MultiFX install/backups:
+MultiFX state (removed by complete uninstall):
   /var/lib/pipedal-multifx/
+
+Installer restore data (removed by complete uninstall):
+  /var/lib/pipedal-multifx-installer/
+
+User-created compressed backups:
+  ~/mfxbackups/
 ```
 
 ### Troubleshooting

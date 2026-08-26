@@ -8,10 +8,20 @@ on:
   # Manual runs are useful for testing packaging without publishing a release.
   workflow_dispatch:
     inputs:
+      source_ref:
+        description: "Branch, tag or commit to package (example: multifx-v0.3.2)"
+        required: true
+        default: "dev"
+        type: string
       version:
         description: "Package version for this test build (example: 0.4.0)"
         required: true
         default: "0.4.0"
+        type: string
+      release_tag:
+        description: "Existing Release tag to receive assets; blank makes a test artifact only"
+        required: false
+        default: ""
         type: string
 
 permissions:
@@ -21,24 +31,33 @@ jobs:
   build-package:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      # Keep the newest installer/packaging tools even when building an older
+      # MultiFX tag. This makes backfilled downgrade packages use the current,
+      # safe installer instead of an obsolete copy from the old tag.
+      - name: Check out current packaging tools
+        uses: actions/checkout@v4
         with:
-          # A release event resolves to its tag. Manual tests use the selected
-          # branch in the Actions screen.
-          ref: ${{ github.event.release.tag_name || github.ref }}
+          ref: ${{ github.event.repository.default_branch }}
+          path: tooling
+
+      - name: Check out the MultiFX version being packaged
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.release.tag_name || inputs.source_ref }}
+          path: source
 
       - uses: actions/setup-node@v4
         with:
           node-version: "24"
           cache: npm
-          cache-dependency-path: vite/package-lock.json
+          cache-dependency-path: source/vite/package-lock.json
 
       - name: Install frontend dependencies
-        working-directory: vite
+        working-directory: source/vite
         run: npm ci
 
       - name: Build frontend
-        working-directory: vite
+        working-directory: source/vite
         run: npm run build
 
       - name: Assemble and verify Raspberry Pi package
@@ -49,7 +68,7 @@ jobs:
           set -euo pipefail
           VERSION="${RELEASE_VERSION#v}"
           VERSION="${VERSION#multifx-v}"
-          [[ "${VERSION}" =~ ^[0-9]+\.[0-9]+\.[0-9]+([.-][A-Za-z0-9.-]+)?$ ]] || {
+          [[ "${VERSION}" =~ ^[0-9]+\.[0-9]+([.][0-9]+)?([.-][A-Za-z0-9.-]+)?$ ]] || {
             echo "Version must look like 0.4.0 or multifx-v0.4.0: ${RELEASE_VERSION}"
             exit 1
           }
@@ -65,32 +84,39 @@ jobs:
             "${STAGE}/docs" \
             "${STAGE}/licenses/fonts"
 
-          cp -a vite/dist/. "${STAGE}/react/"
+          cp -a source/vite/dist/. "${STAGE}/react/"
           printf 'multifx-v%s\n' "${VERSION}" > "${STAGE}/MULTIFX_RELEASE"
-          cp README.md LICENSE.md "${STAGE}/"
-          cp docs/INSTALLATION.md "${STAGE}/docs/"
+          cp source/README.md source/LICENSE.md "${STAGE}/"
+          cp tooling/docs/INSTALLATION.md "${STAGE}/docs/"
           cp \
-            mfxinstaller.sh \
-            install-multifx.sh \
-            uninstall-multifx.sh \
+            tooling/mfxinstaller.sh \
+            tooling/install-multifx.sh \
+            tooling/uninstall-multifx.sh \
             "${STAGE}/"
           chmod +x "${STAGE}/"*.sh
           cp \
-            multifx/controller-config.json \
-            multifx/pipedal_encoder_bridge.py \
-            multifx/MULTIFX_CONTROLLER_PROTOCOL.txt \
+            source/multifx/controller-config.json \
+            source/multifx/pipedal_encoder_bridge.py \
             "${STAGE}/multifx/"
+          if test -f source/multifx/MULTIFX_CONTROLLER_PROTOCOL.txt; then
+            cp source/multifx/MULTIFX_CONTROLLER_PROTOCOL.txt \
+              "${STAGE}/multifx/"
+          fi
           cp \
-            multifx/systemd/system/pipedal-encoder.service \
-            multifx/systemd/system/pipedal-ydotoold.service \
+            source/multifx/systemd/system/pipedal-encoder.service \
+            source/multifx/systemd/system/pipedal-ydotoold.service \
             "${STAGE}/systemd/system/"
-          cp config/updatekey2.asc "${STAGE}/keys/pipedal-updatekey.asc"
-          for font_package in vite/node_modules/@fontsource/*; do
-            cp "${font_package}/LICENSE" \
-              "${STAGE}/licenses/fonts/$(basename "${font_package}")-OFL-1.1.txt"
-          done
-          cp vite/node_modules/dseg/DSEG-LICENSE.txt \
-            "${STAGE}/licenses/fonts/DSEG-OFL-1.1.txt"
+          cp tooling/config/updatekey2.asc "${STAGE}/keys/pipedal-updatekey.asc"
+          if compgen -G 'source/vite/node_modules/@fontsource/*' >/dev/null; then
+            for font_package in source/vite/node_modules/@fontsource/*; do
+              cp "${font_package}/LICENSE" \
+                "${STAGE}/licenses/fonts/$(basename "${font_package}")-OFL-1.1.txt"
+            done
+          fi
+          if test -f source/vite/node_modules/dseg/DSEG-LICENSE.txt; then
+            cp source/vite/node_modules/dseg/DSEG-LICENSE.txt \
+              "${STAGE}/licenses/fonts/DSEG-OFL-1.1.txt"
+          fi
 
           bash -n "${STAGE}/mfxinstaller.sh"
           bash -n "${STAGE}/install-multifx.sh"
@@ -106,7 +132,9 @@ jobs:
             "${STAGE}/keys/pipedal-updatekey.asc")"
           grep -q 'fpr:::::::::2D1F39DBB1F819412B678F88E9D7081E08E3D85C:' \
             <<< "${PIPEDAL_KEY_INFO}"
-          test -f "${STAGE}/licenses/fonts/DSEG-OFL-1.1.txt"
+          if test -f source/vite/node_modules/dseg/DSEG-LICENSE.txt; then
+            test -f "${STAGE}/licenses/fonts/DSEG-OFL-1.1.txt"
+          fi
 
           (
             cd release
@@ -126,12 +154,13 @@ jobs:
           retention-days: 30
 
       - name: Attach permanent assets to the published GitHub Release
-        if: github.event_name == 'release'
+        if: github.event_name == 'release' || inputs.release_tag != ''
         env:
           GH_TOKEN: ${{ github.token }}
-          RELEASE_TAG: ${{ github.event.release.tag_name }}
+          RELEASE_TAG: ${{ github.event.release.tag_name || inputs.release_tag }}
         run: |
           gh release upload "${RELEASE_TAG}" \
             "release/${PACKAGE_NAME}.zip" \
             "release/${PACKAGE_NAME}.zip.sha256" \
-            --clobber
+            --clobber \
+            --repo "${GITHUB_REPOSITORY}"

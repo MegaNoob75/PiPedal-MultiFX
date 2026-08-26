@@ -48,11 +48,12 @@ repository setting must permit that access.
    such as `multifx-v0.4.0`.
 7. Enter the release title and notes.
 8. Mark it as a prerelease only when it should not be selected by the normal
-   **Install or update MultiFX** menu option.
+   **Install / change MultiFX version** menu option.
 9. Select **Publish release**.
 
 Publishing the release starts the **Build MultiFX Raspberry Pi Package**
-workflow. The workflow checks out the release tag, installs exact frontend
+workflow. The workflow checks out the release tag for the UI/bridge and the
+current `main` branch for installer tooling, installs exact frontend
 dependencies with `npm ci`, builds the UI, assembles the Raspberry Pi package,
 checks the shell scripts and required files, creates the SHA-256 checksum, and
 attaches both permanent assets to the release.
@@ -72,16 +73,26 @@ The release is ready when every step is green and the release page lists both
 files. If the final upload step reports a permission error, recheck the
 one-time **Workflow permissions** setting above.
 
-## Test Packaging Without Publishing
+## Test Packaging or Backfill an Older Release
 
-The workflow can also be started manually from its Actions page. Enter a test
-version such as `0.4.0`. A manual run creates a downloadable Actions artifact
-retained for 30 days, but it deliberately does not create or update a public
-GitHub Release.
+The workflow can also be started manually from its Actions page. It asks for:
+
+- **source_ref** — branch, tag or commit containing the MultiFX version
+- **version** — version used in the package filename
+- **release_tag** — optional existing GitHub Release that should receive it
+
+Leave `release_tag` blank for a temporary test artifact. To make an older
+version available in the installer's downgrade list, enter its tag as both
+`source_ref` and `release_tag`, enter its numeric version, and run the workflow.
+The permanent ZIP/checksum assets are attached to that existing Release.
+
+Backfilled packages use the selected older UI/bridge source but the current
+installer from `main`. This prevents downgrading the management and safety code
+when the user downgrades MultiFX itself.
 
 ## How End-User Updates Work
 
-When the user chooses **Install or update MultiFX**, the setup utility:
+When the user chooses **Install / change MultiFX version**, the setup utility:
 
 1. Queries the repository's latest stable GitHub Release.
 2. Finds the Raspberry Pi ZIP and matching `.sha256` asset.
@@ -93,8 +104,9 @@ When the user chooses **Install or update MultiFX**, the setup utility:
 8. Restarts and checks the controller bridge.
 9. Installs the latest copy of the setup utility for future updates.
 
-The normal update option ignores prereleases. Advanced users can explicitly
-install the newest prerelease with:
+The version selector includes stable releases and packaged prereleases, clearly
+labels prereleases, and defaults to the latest stable release. Advanced users
+can also explicitly install the newest published release from the command line:
 
 ```bash
 sudo pipedal-multifx-setup multifx --latest-release

@@ -37,6 +37,8 @@ SCRIPT_FILE="${SCRIPT_DIR}/$(basename -- "${BASH_SOURCE[0]}")"
 INVOKED_AS="${0##*/}"
 
 ACTION="menu"
+PIPEDAL_SOURCE="latest-stable"
+PIPEDAL_REQUESTED_TAG=""
 MULTIFX_SOURCE="auto"
 REQUESTED_TAG=""
 LOCAL_PACKAGE=""
@@ -44,6 +46,11 @@ TARGET_USER_OVERRIDE=""
 RUN_FULL_UPGRADE=0
 ASSUME_YES=0
 APT_UPDATED=0
+REBOOT_NEEDED=0
+REBOOT_REASON=""
+MULTIFX_RESET_FOR_DOWNGRADE=0
+MULTIFX_CHANGE_IS_DOWNGRADE=0
+MULTIFX_CHRONOLOGY_KNOWN=0
 TEMP_DIRS=()
 
 die() {
@@ -55,7 +62,7 @@ cleanup() {
     local directory
     for directory in "${TEMP_DIRS[@]:-}"; do
         case "${directory}" in
-            /tmp/pipedal-install.*|/tmp/pipedal-multifx.*|/tmp/pipedal-transaction.*)
+            /tmp/pipedal-install.*|/tmp/pipedal-multifx.*|/tmp/pipedal-transaction.*|/tmp/pipedal-backup.*)
                 [ ! -e "${directory}" ] || rm -rf -- "${directory}"
                 ;;
         esac
@@ -82,14 +89,18 @@ Usage:
 
 Actions:
   menu        Interactive menu (default)
-  pipedal     Install or update the latest official stable PiPedal
-  multifx     Install or update PiPedal MultiFX
-  uninstall   Remove MultiFX and restore the stock PiPedal UI
+  pipedal     Install, upgrade or downgrade PiPedal
+  multifx     Install, upgrade or downgrade PiPedal MultiFX
+  backup      Back up PiPedal, MultiFX, presets, models and LV2 files
+  restore     Restore a backup selected from ~/mfxbackups
+  uninstall   Completely remove MultiFX and restore stock PiPedal
+  uninstall-pipedal  Completely remove PiPedal and MultiFX
   display     Configure the fullscreen touchscreen display
   all         Install/update PiPedal, MultiFX and the touchscreen display
   status      Show installed versions and service diagnostics
 
 Advanced options:
+  --pipedal-tag TAG  Install a specific published PiPedal release
   --tag TAG          Install a specific published MultiFX release
   --latest-release   Include MultiFX prereleases when choosing the newest release
   --local DIRECTORY  Install an extracted MultiFX Raspberry Pi package
@@ -98,8 +109,8 @@ Advanced options:
   -y, --yes          Accept confirmation prompts
   -h, --help         Show this help
 
-The normal menu intentionally installs the latest stable releases. Advanced
-release selection is available here without cluttering the touchscreen menu.
+The interactive menu lists published versions with the newest stable release
+selected by default and marked Latest. Arrow keys, Enter and item numbers work.
 USAGE
 }
 
@@ -111,6 +122,12 @@ parse_arguments() {
 
     while [ "$#" -gt 0 ]; do
         case "$1" in
+            --pipedal-tag)
+                [ "$#" -ge 2 ] || die "--pipedal-tag requires a release tag."
+                PIPEDAL_SOURCE="tag"
+                PIPEDAL_REQUESTED_TAG="$2"
+                shift 2
+                ;;
             --tag)
                 [ "$#" -ge 2 ] || die "--tag requires a release tag."
                 MULTIFX_SOURCE="tag"
@@ -151,7 +168,7 @@ parse_arguments() {
     done
 
     case "${ACTION}" in
-        menu|pipedal|multifx|uninstall|display|all|status) ;;
+        menu|pipedal|multifx|backup|restore|uninstall|uninstall-pipedal|display|all|status) ;;
         *) die "Unknown action: ${ACTION}" ;;
     esac
 }
@@ -165,6 +182,139 @@ confirm() {
         y|Y|yes|YES) return 0 ;;
         *) return 1 ;;
     esac
+}
+
+confirm_default_yes() {
+    local prompt="$1" answer
+    [ "${ASSUME_YES}" -eq 0 ] || return 0
+    [ -t 0 ] || die "A confirmation is required; rerun with --yes."
+    read -r -p "${prompt} [Y/n]: " answer
+    case "${answer}" in
+        ''|y|Y|yes|YES) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
+draw_banner() {
+    printf '\033[2J\033[H\033[38;5;45m'
+    cat <<'BANNER'
++----------------------------------------------------------------+
+|  __  __ _____ __  __                                           |
+| |  \/  |  ___|\ \/ /      PiPedal MultiFX Setup                |
+| | |\/| | |_    \  /       install - protect - perform          |
+| | |  | |  _|   /  \                                            |
+| |_|  |_|_|    /_/\_\                                           |
++----------------------------------------------------------------+
+BANNER
+    printf '\033[0m'
+}
+
+# Display a scrollable terminal menu. Arrow keys move the highlight, Enter
+# accepts it, and users may type an item number followed by Enter. Main menus
+# with ten or fewer items can enable immediate single-key number selection.
+select_menu() {
+    local title="$1" immediate_numbers="$2"
+    shift 2
+    local -a options=("$@")
+    local selected=0 first=0 key rest digits="" number rows count
+    count="${#options[@]}"
+    [ "${count}" -gt 0 ] || return 1
+
+    if [ ! -t 0 ] || [ ! -t 1 ]; then
+        echo "${title}"
+        for ((number=0; number<count; number++)); do
+            printf '%2d) %s\n' "$((number + 1))" "${options[number]}"
+        done
+        read -r -p "Choose [1-${count}]: " number
+        [[ "${number}" =~ ^[0-9]+$ ]] &&
+            [ "${number}" -ge 1 ] && [ "${number}" -le "${count}" ] || return 1
+        MENU_RESULT="$((number - 1))"
+        return 0
+    fi
+
+    rows="$(tput lines 2>/dev/null || echo 24)"
+    rows="$((rows - 13))"
+    [ "${rows}" -ge 5 ] || rows=5
+    [ "${rows}" -le 16 ] || rows=16
+
+    while true; do
+        [ "${selected}" -ge "${first}" ] || first="${selected}"
+        [ "${selected}" -lt $((first + rows)) ] || first="$((selected - rows + 1))"
+        draw_banner
+        printf '\n  %s\n' "${title}"
+        printf '  Use Up/Down + Enter, or type an item number.\n\n'
+        for ((number=first; number<count && number<first+rows; number++)); do
+            if [ "${number}" -eq "${selected}" ]; then
+                printf '\033[7m  > %2d) %-54s\033[0m\n' "$((number + 1))" "${options[number]}"
+            else
+                printf '    %2d) %s\n' "$((number + 1))" "${options[number]}"
+            fi
+        done
+        if [ "${count}" -gt "${rows}" ]; then
+            printf '\n  Showing %d-%d of %d\n' "$((first + 1))" \
+                "$(( first + rows < count ? first + rows : count ))" "${count}"
+        fi
+        [ -z "${digits}" ] || printf '  Number: %s\n' "${digits}"
+
+        IFS= read -rsn1 key
+        case "${key}" in
+            $'\033')
+                IFS= read -rsn2 -t 0.1 rest || rest=""
+                case "${rest}" in
+                    '[A') selected="$(( (selected - 1 + count) % count ))"; digits="" ;;
+                    '[B') selected="$(( (selected + 1) % count ))"; digits="" ;;
+                esac
+                ;;
+            '')
+                if [ -n "${digits}" ]; then
+                    number="$((10#${digits}))"
+                    if [ "${number}" -ge 1 ] && [ "${number}" -le "${count}" ]; then
+                        MENU_RESULT="$((number - 1))"
+                        return 0
+                    fi
+                    digits=""
+                else
+                    MENU_RESULT="${selected}"
+                    return 0
+                fi
+                ;;
+            [0-9])
+                if [ "${immediate_numbers}" -eq 1 ] && [ "${count}" -le 10 ]; then
+                    if [ "${key}" = "0" ]; then number=10; else number="${key}"; fi
+                    if [ "${number}" -le "${count}" ]; then
+                        MENU_RESULT="$((number - 1))"
+                        return 0
+                    fi
+                else
+                    digits="${digits}${key}"
+                    number="$((10#${digits}))"
+                    if [ "${number}" -ge 1 ] && [ "${number}" -le "${count}" ]; then
+                        selected="$((number - 1))"
+                    fi
+                fi
+                ;;
+            $'\177') digits="${digits%?}" ;;
+            q|Q) return 1 ;;
+        esac
+    done
+}
+
+mark_reboot_needed() {
+    REBOOT_NEEDED=1
+    REBOOT_REASON="$1"
+}
+
+offer_reboot_if_needed() {
+    [ "${REBOOT_NEEDED}" -eq 1 ] || return 0
+    echo
+    echo "A reboot is recommended: ${REBOOT_REASON}"
+    if confirm "Reboot now?"; then
+        systemctl reboot
+    else
+        echo "Reboot skipped. You can reboot later with: sudo reboot"
+    fi
+    REBOOT_NEEDED=0
+    REBOOT_REASON=""
 }
 
 apt_update_once() {
@@ -184,6 +334,8 @@ maybe_full_upgrade() {
     [ "${RUN_FULL_UPGRADE}" -eq 1 ] || return 0
     apt_update_once
     apt-get full-upgrade -y
+    [ ! -f /var/run/reboot-required ] ||
+        mark_reboot_needed "the operating-system upgrade requested a reboot"
 }
 
 github_api() {
@@ -264,17 +416,14 @@ find_pipedal_key() {
     return 1
 }
 
-load_latest_pipedal_release() {
-    local release_json parsed architecture
+parse_pipedal_release() {
+    local release_json="$1" parsed architecture
     architecture="$(dpkg --print-architecture)"
     case "${architecture}" in
         arm64|amd64) ;;
         *) die "Official PiPedal packages are not expected for '${architecture}'." ;;
     esac
 
-    echo "Checking the official PiPedal GitHub releases..."
-    release_json="$(github_api "${PIPEDAL_RELEASES_API}/latest")" ||
-        die "Could not read the latest official PiPedal release."
     parsed="$(printf '%s' "${release_json}" | python3 -c '
 import json,sys
 release=json.load(sys.stdin)
@@ -303,6 +452,94 @@ print(signature["browser_download_url"] if signature else "")
     PIPEDAL_VERSION="${PIPEDAL_TAG#v}"
     [ -n "${PIPEDAL_FILE}" ] && [ -n "${PIPEDAL_URL}" ] ||
         die "The PiPedal release metadata is incomplete."
+}
+
+load_requested_pipedal_release() {
+    local release_json encoded
+    echo "Checking the official PiPedal GitHub releases..."
+    case "${PIPEDAL_SOURCE}" in
+        tag)
+            encoded="$(urlencode "${PIPEDAL_REQUESTED_TAG}")"
+            release_json="$(github_api \
+                "${PIPEDAL_RELEASES_API}/tags/${encoded}")" ||
+                die "No published PiPedal release exists for '${PIPEDAL_REQUESTED_TAG}'."
+            ;;
+        latest-stable)
+            release_json="$(github_api "${PIPEDAL_RELEASES_API}/latest")" ||
+                die "Could not read the latest official PiPedal release."
+            ;;
+        selected)
+            return 0
+            ;;
+        *) die "Internal PiPedal source error: ${PIPEDAL_SOURCE}" ;;
+    esac
+    parse_pipedal_release "${release_json}"
+}
+
+# Build a version list from published releases which actually contain a Debian
+# package for this machine. The official latest stable release is moved to the
+# top and selected by default; prereleases remain available for explicit use.
+select_pipedal_version() {
+    local latest_json releases_json latest_tag parsed line index=0
+    local architecture
+    local -a labels=()
+    PIPEDAL_CHOICE_TAGS=()
+    PIPEDAL_CHOICE_FILES=()
+    PIPEDAL_CHOICE_URLS=()
+    PIPEDAL_CHOICE_SIGNATURES=()
+    install_download_tools
+    architecture="$(dpkg --print-architecture)"
+    echo "Loading PiPedal versions..."
+    latest_json="$(github_api "${PIPEDAL_RELEASES_API}/latest")" ||
+        die "Could not read the latest PiPedal release."
+    latest_tag="$(printf '%s' "${latest_json}" | python3 -c \
+        'import json,sys; print(json.load(sys.stdin)["tag_name"])')"
+    releases_json="$(github_api "${PIPEDAL_RELEASES_API}?per_page=100")" ||
+        die "Could not read the PiPedal release list."
+    parsed="$(printf '%s' "${releases_json}" | python3 -c '
+import json,sys
+releases=json.load(sys.stdin)
+arch=sys.argv[1]
+latest=sys.argv[2]
+rows=[]
+for release in releases:
+    if release.get("draft"): continue
+    suffix=f"_{arch}.deb"
+    deb=next((a for a in release.get("assets", [])
+              if a.get("name", "").startswith("pipedal_")
+              and a.get("name", "").endswith(suffix)), None)
+    if not deb: continue
+    sig=next((a for a in release.get("assets", [])
+              if a.get("name") == deb["name"] + ".asc"), None)
+    tag=release["tag_name"]
+    label=tag
+    if tag == latest: label += "  [Latest]"
+    elif release.get("prerelease"): label += "  [Prerelease]"
+    rows.append((0 if tag == latest else 1, label, tag, deb["name"],
+                 deb["browser_download_url"],
+                 sig["browser_download_url"] if sig else ""))
+for row in sorted(enumerate(rows), key=lambda x: (x[1][0], x[0])):
+    print("\t".join(row[1][1:]))
+' "${architecture}" "${latest_tag}")" || die "PiPedal release metadata is invalid."
+
+    while IFS=$'\t' read -r label tag file url signature; do
+        [ -n "${tag}" ] || continue
+        labels+=("${label}")
+        PIPEDAL_CHOICE_TAGS+=("${tag}")
+        PIPEDAL_CHOICE_FILES+=("${file}")
+        PIPEDAL_CHOICE_URLS+=("${url}")
+        PIPEDAL_CHOICE_SIGNATURES+=("${signature}")
+        index="$((index + 1))"
+    done <<< "${parsed}"
+    [ "${index}" -gt 0 ] || die "No compatible PiPedal packages were found."
+    select_menu "Select PiPedal version" 0 "${labels[@]}" || return 1
+    index="${MENU_RESULT}"
+    PIPEDAL_TAG="${PIPEDAL_CHOICE_TAGS[index]}"
+    PIPEDAL_FILE="${PIPEDAL_CHOICE_FILES[index]}"
+    PIPEDAL_URL="${PIPEDAL_CHOICE_URLS[index]}"
+    PIPEDAL_SIGNATURE_URL="${PIPEDAL_CHOICE_SIGNATURES[index]}"
+    PIPEDAL_VERSION="${PIPEDAL_TAG#v}"
+    PIPEDAL_SOURCE="selected"
 }
 
 verify_pipedal_package() {
@@ -345,16 +582,24 @@ install_or_update_pipedal() {
     local saved_multifx=""
 
     install_download_tools
-    load_latest_pipedal_release
+    load_requested_pipedal_release
     if dpkg-query -W -f='${Version}' pipedal >/dev/null 2>&1; then
         installed_version="$(dpkg-query -W -f='${Version}' pipedal)"
         echo "Installed PiPedal: ${installed_version}"
-        echo "Latest stable PiPedal: ${PIPEDAL_VERSION}"
-        if dpkg --compare-versions "${installed_version}" ge \
+        echo "Selected PiPedal:  ${PIPEDAL_VERSION}"
+        if dpkg --compare-versions "${installed_version}" eq \
             "${PIPEDAL_VERSION}"; then
-            echo "PiPedal is already current or newer."
+            echo "That PiPedal version is already installed."
             install_self
             return 0
+        fi
+        confirm "Change PiPedal from ${installed_version} to ${PIPEDAL_VERSION}?" || {
+            echo "Cancelled."
+            return 0
+        }
+        if dpkg --compare-versions "${installed_version}" gt "${PIPEDAL_VERSION}" &&
+            confirm_default_yes "Create a safety backup before downgrading PiPedal?"; then
+            create_backup
         fi
     fi
 
@@ -381,7 +626,7 @@ install_or_update_pipedal() {
     fi
 
     echo "Installing PiPedal ${PIPEDAL_VERSION}..."
-    if ! apt-get install -y "${package}"; then
+    if ! apt-get install -y --allow-downgrades "${package}"; then
         if [ "${had_multifx}" -eq 1 ]; then
             replace_directory_contents "${saved_multifx}" "${REACT_DIR}"
             systemctl restart pipedal-encoder.service 2>/dev/null || true
@@ -456,6 +701,79 @@ print(checksum["browser_download_url"])
     MULTIFX_CHECKSUM_URL="$(printf '%s\n' "${parsed}" | sed -n '4p')"
     [[ "${MULTIFX_FILE}" != */* && "${MULTIFX_FILE}" != *\\* ]] ||
         die "Unsafe release asset name: ${MULTIFX_FILE}"
+}
+
+# List only MultiFX releases that have both the Raspberry Pi ZIP and its
+# checksum. Releases without permanent package assets cannot be installed
+# safely and are omitted until their assets are backfilled.
+select_multifx_version() {
+    local latest_json releases_json latest_tag parsed label tag published index=0
+    local installed_release="" installed_published="" selected_published=""
+    local -a labels=()
+    MULTIFX_CHOICE_TAGS=()
+    MULTIFX_CHOICE_PUBLISHED=()
+    install_download_tools
+    echo "Loading MultiFX versions..."
+    latest_json="$(github_api "${MULTIFX_RELEASES_API}/latest")" ||
+        die "No stable MultiFX release is published yet."
+    latest_tag="$(printf '%s' "${latest_json}" | python3 -c \
+        'import json,sys; print(json.load(sys.stdin)["tag_name"])')"
+    releases_json="$(github_api "${MULTIFX_RELEASES_API}?per_page=100")" ||
+        die "Could not read the MultiFX release list."
+    parsed="$(printf '%s' "${releases_json}" | python3 -c '
+import json,sys
+releases=json.load(sys.stdin)
+latest=sys.argv[1]
+rows=[]
+for release in releases:
+    if release.get("draft"): continue
+    assets=release.get("assets", [])
+    zips=[a for a in assets if a.get("name", "").lower().endswith(".zip")
+          and "multifx" in a.get("name", "").lower()
+          and "raspberrypi" in a.get("name", "").lower()]
+    if not zips: continue
+    package=zips[0]
+    checksum=next((a for a in assets
+                   if a.get("name") == package["name"] + ".sha256"), None)
+    if not checksum: continue
+    tag=release["tag_name"]
+    label=tag
+    if tag == latest: label += "  [Latest]"
+    elif release.get("prerelease"): label += "  [Prerelease]"
+    rows.append((0 if tag == latest else 1, label, tag,
+                 release.get("published_at") or release.get("created_at") or ""))
+for row in sorted(enumerate(rows), key=lambda x: (x[1][0], x[0])):
+    print("\t".join(row[1][1:]))
+' "${latest_tag}")" || die "MultiFX release metadata is invalid."
+    while IFS=$'\t' read -r label tag published; do
+        [ -n "${tag}" ] || continue
+        labels+=("${label}")
+        MULTIFX_CHOICE_TAGS+=("${tag}")
+        MULTIFX_CHOICE_PUBLISHED+=("${published}")
+        index="$((index + 1))"
+    done <<< "${parsed}"
+    [ "${index}" -gt 0 ] ||
+        die "No MultiFX releases have a verified Raspberry Pi package yet."
+    select_menu "Select MultiFX version" 0 "${labels[@]}" || return 1
+    REQUESTED_TAG="${MULTIFX_CHOICE_TAGS[MENU_RESULT]}"
+    selected_published="${MULTIFX_CHOICE_PUBLISHED[MENU_RESULT]}"
+    MULTIFX_CHANGE_IS_DOWNGRADE=0
+    MULTIFX_CHRONOLOGY_KNOWN=0
+    if [ -f "${INSTALLER_STATE_DIR}/installed-release" ]; then
+        installed_release="$(cat "${INSTALLER_STATE_DIR}/installed-release")"
+        for ((index=0; index<${#MULTIFX_CHOICE_TAGS[@]}; index++)); do
+            if [ "${MULTIFX_CHOICE_TAGS[index]}" = "${installed_release}" ]; then
+                installed_published="${MULTIFX_CHOICE_PUBLISHED[index]}"
+                break
+            fi
+        done
+        if [ -n "${installed_published}" ] && [ -n "${selected_published}" ]; then
+            MULTIFX_CHRONOLOGY_KNOWN=1
+            [[ "${selected_published}" < "${installed_published}" ]] &&
+                MULTIFX_CHANGE_IS_DOWNGRADE=1
+        fi
+    fi
+    MULTIFX_SOURCE="tag"
 }
 
 is_multifx_package_root() {
@@ -552,6 +870,13 @@ install_multifx_payload() {
         backup_service_once "${service}"
     done
 
+    if [ "${MULTIFX_RESET_FOR_DOWNGRADE}" -eq 1 ]; then
+        echo "Resetting MultiFX controller/runtime data for older-version compatibility..."
+        rm -rf -- "${MFX_STATE_DIR}"
+        mkdir -p "${MFX_STATE_DIR}"
+        rm -f -- "${CONTROLLER_CONFIG}"
+    fi
+
     echo "Installing PiPedal MultiFX ${release_label}..."
     systemctl stop pipedal-encoder.service 2>/dev/null || true
     replace_directory_contents "${package_root}/react" "${REACT_DIR}"
@@ -586,9 +911,37 @@ install_multifx_payload() {
 }
 
 install_multifx_from_github() {
-    local work_dir archive checksum_file expected actual
+    local work_dir archive checksum_file expected actual installed_release=""
+    local is_downgrade=0
+    MULTIFX_RESET_FOR_DOWNGRADE=0
     install_download_tools
     load_multifx_release
+    if [ -f "${INSTALLER_STATE_DIR}/installed-release" ] &&
+        [ "$(cat "${INSTALLER_STATE_DIR}/installed-release")" = "${MULTIFX_TAG}" ]; then
+        confirm "${MULTIFX_TAG} is already installed. Reinstall it?" || {
+            echo "No changes were made."
+            return 0
+        }
+    fi
+    if [ -f "${INSTALLER_STATE_DIR}/installed-release" ]; then
+        installed_release="$(cat "${INSTALLER_STATE_DIR}/installed-release")"
+        if [ "${MULTIFX_CHRONOLOGY_KNOWN}" -eq 1 ]; then
+            is_downgrade="${MULTIFX_CHANGE_IS_DOWNGRADE}"
+        elif dpkg --compare-versions "${installed_release#multifx-v}" gt \
+            "${MULTIFX_TAG#multifx-v}"; then
+            is_downgrade=1
+        fi
+        if [ "${is_downgrade}" -eq 1 ] &&
+            confirm_default_yes "Create a safety backup before downgrading MultiFX?"; then
+            create_backup
+        fi
+        if [ "${is_downgrade}" -eq 1 ]; then
+            echo "Older bridges may not understand newer controller/runtime data."
+            if confirm_default_yes "Reset MultiFX data to the selected version's defaults?"; then
+                MULTIFX_RESET_FOR_DOWNGRADE=1
+            fi
+        fi
+    fi
     make_temp_dir /tmp/pipedal-multifx.XXXXXX
     work_dir="${TEMP_DIR}"
     archive="${work_dir}/${MULTIFX_FILE}"
@@ -602,7 +955,7 @@ install_multifx_from_github() {
     [ "${actual,,}" = "${expected,,}" ] ||
         die "The MultiFX ZIP checksum does not match."
     unzip -tq "${archive}" >/dev/null || die "The downloaded ZIP is invalid."
-    if unzip -Z1 "${archive}" | grep -Eq '(^/|(^|/)\.\.(/|$))'; then
+    if unzip -Z1 "${archive}" | grep -E '(^/|(^|/)\.\.(/|$))' >/dev/null; then
         die "The downloaded ZIP contains an unsafe path."
     fi
     mkdir -p "${work_dir}/package"
@@ -621,7 +974,7 @@ install_or_update_multifx() {
             release_label="local package"
             if [ -f "${PACKAGE_ROOT}/MULTIFX_RELEASE" ]; then
                 IFS= read -r release_label < "${PACKAGE_ROOT}/MULTIFX_RELEASE"
-                [[ "${release_label}" =~ ^multifx-v[0-9]+\.[0-9]+\.[0-9]+([.-][A-Za-z0-9.-]+)?$ ]] ||
+                [[ "${release_label}" =~ ^multifx-v[0-9]+\.[0-9]+(\.[0-9]+)?([.-][A-Za-z0-9.-]+)?$ ]] ||
                     die "The package contains an invalid MultiFX release version."
             fi
             install_multifx_payload "${PACKAGE_ROOT}" "${release_label}"
@@ -631,7 +984,7 @@ install_or_update_multifx() {
                 release_label="local package"
                 if [ -f "${SCRIPT_DIR}/MULTIFX_RELEASE" ]; then
                     IFS= read -r release_label < "${SCRIPT_DIR}/MULTIFX_RELEASE"
-                    [[ "${release_label}" =~ ^multifx-v[0-9]+\.[0-9]+\.[0-9]+([.-][A-Za-z0-9.-]+)?$ ]] ||
+                    [[ "${release_label}" =~ ^multifx-v[0-9]+\.[0-9]+(\.[0-9]+)?([.-][A-Za-z0-9.-]+)?$ ]] ||
                         die "The package contains an invalid MultiFX release version."
                 fi
                 install_multifx_payload "${SCRIPT_DIR}" "${release_label}"
@@ -644,40 +997,237 @@ install_or_update_multifx() {
     esac
 }
 
-uninstall_multifx() {
-    local service
-    if ! is_multifx_installed; then
-        echo "PiPedal MultiFX is not installed."
-        return 0
+create_backup() {
+    local timestamp archive partial work_dir manifest path relative
+    local pipedald_active=0 encoder_active=0
+    local -a backup_paths=()
+    get_target_user
+    BACKUP_DIR="${TARGET_HOME}/mfxbackups"
+    mkdir -p "${BACKUP_DIR}"
+    chown "${TARGET_USER}:${TARGET_GROUP}" "${BACKUP_DIR}"
+    timestamp="$(date '+%Y%m%d-%H%M%S')"
+    archive="${BACKUP_DIR}/mfxbackup-${timestamp}.tar.gz"
+    partial="${archive}.partial"
+    make_temp_dir /tmp/pipedal-backup.XXXXXX
+    work_dir="${TEMP_DIR}"
+    mkdir -p "${work_dir}/metadata"
+    manifest="${work_dir}/metadata/manifest.txt"
+
+    {
+        echo "format=1"
+        echo "created=$(date --iso-8601=seconds)"
+        echo "host=$(hostname)"
+        echo "target_user=${TARGET_USER}"
+        if dpkg-query -W -f='${Version}' pipedal >/dev/null 2>&1; then
+            echo "pipedal_version=$(dpkg-query -W -f='${Version}' pipedal)"
+        else
+            echo "pipedal_version=not-installed"
+        fi
+        if [ -f "${INSTALLER_STATE_DIR}/installed-release" ]; then
+            echo "multifx_version=$(cat "${INSTALLER_STATE_DIR}/installed-release")"
+        else
+            echo "multifx_version=not-installed"
+        fi
+    } > "${manifest}"
+
+    # PiPedal keeps its configuration and musical data under /etc/pipedal and
+    # /var/pipedal. LV2 locations are included because users commonly install
+    # additional plugins there, and MultiFX runtime/controller state is kept in
+    # its two /var/lib directories.
+    for path in \
+        /etc/pipedal \
+        /var/pipedal \
+        "${MFX_STATE_DIR}" \
+        "${INSTALLER_STATE_DIR}" \
+        "${MFX_LIB_DIR}" \
+        "${SERVICE_DIR}/pipedal-encoder.service" \
+        "${SERVICE_DIR}/pipedal-ydotoold.service" \
+        /usr/lib/lv2 \
+        /usr/local/lib/lv2 \
+        /usr/share/lv2 \
+        /usr/local/share/lv2 \
+        /usr/lib/aarch64-linux-gnu/lv2 \
+        /usr/lib/x86_64-linux-gnu/lv2 \
+        "${DISPLAY_STATE_DIR}" \
+        /etc/xdg/labwc \
+        "${TARGET_HOME}/.bash_profile" \
+        "${TARGET_HOME}/.lv2"; do
+        if [ -e "${path}" ] || [ -L "${path}" ]; then
+            relative="${path#/}"
+            backup_paths+=("${relative}")
+            echo "path=${relative}" >> "${manifest}"
+        fi
+    done
+    [ "${#backup_paths[@]}" -gt 0 ] || die "There is no PiPedal or MultiFX data to back up."
+
+    systemctl is-active --quiet pipedald.service 2>/dev/null && pipedald_active=1
+    systemctl is-active --quiet pipedal-encoder.service 2>/dev/null && encoder_active=1
+    systemctl stop pipedal-encoder.service 2>/dev/null || true
+    systemctl stop pipedald.service 2>/dev/null || true
+    echo "Creating compressed backup. Large model and LV2 collections may take a while..."
+    if tar -czpf "${partial}" -C / "${backup_paths[@]}" \
+        -C "${work_dir}" metadata; then
+        mv -f -- "${partial}" "${archive}"
+    else
+        rm -f -- "${partial}"
+        [ "${pipedald_active}" -eq 0 ] || systemctl restart pipedald.service || true
+        [ "${encoder_active}" -eq 0 ] || systemctl restart pipedal-encoder.service || true
+        die "The backup could not be created."
     fi
-    [ -f "${STOCK_REACT_DIR}/index.html" ] ||
-        die "The stock PiPedal frontend backup is missing; nothing was removed."
-    confirm "Remove MultiFX and restore the stock PiPedal interface?" || {
+    [ "${pipedald_active}" -eq 0 ] || systemctl restart pipedald.service || true
+    [ "${encoder_active}" -eq 0 ] || systemctl restart pipedal-encoder.service || true
+    chown "${TARGET_USER}:${TARGET_GROUP}" "${archive}"
+    chmod 0600 "${archive}"
+    BACKUP_LAST_FILE="${archive}"
+    echo "Backup created: ${archive}"
+}
+
+offer_backup_before_removal() {
+    if confirm_default_yes "Create a safety backup before removing anything?"; then
+        create_backup
+    else
+        echo "Continuing without a new backup."
+    fi
+}
+
+restore_backup() {
+    local record archive label manifest backup_version current_version="not-installed"
+    local pipedald_active=0 encoder_active=0
+    local -a archives=() labels=()
+    get_target_user
+    BACKUP_DIR="${TARGET_HOME}/mfxbackups"
+    [ -d "${BACKUP_DIR}" ] || die "No backup directory exists at ${BACKUP_DIR}."
+    while IFS= read -r record; do
+        [ -n "${record}" ] || continue
+        archive="${record#*$'\t'}"
+        archives+=("${archive}")
+        label="$(basename -- "${archive}")  ($(du -h "${archive}" | awk '{print $1}'))"
+        labels+=("${label}")
+    done < <(find "${BACKUP_DIR}" -maxdepth 1 -type f \
+        -name 'mfxbackup-*.tar.gz' -printf '%T@\t%p\n' | sort -rn)
+    [ "${#archives[@]}" -gt 0 ] || die "No mfxbackup files were found in ${BACKUP_DIR}."
+    select_menu "Select backup to restore" 0 "${labels[@]}" || return 0
+    archive="${archives[MENU_RESULT]}"
+    tar -tzf "${archive}" >/dev/null || die "The selected backup is damaged."
+    if tar -tzf "${archive}" | grep -E '(^/|(^|/)\.\.(/|$))' >/dev/null; then
+        die "The selected backup contains an unsafe path."
+    fi
+    manifest="$(tar -xOzf "${archive}" metadata/manifest.txt 2>/dev/null)" ||
+        die "The selected file is not a supported MultiFX backup."
+    backup_version="$(printf '%s\n' "${manifest}" | sed -n 's/^pipedal_version=//p' | head -n1)"
+    if dpkg-query -W -f='${Version}' pipedal >/dev/null 2>&1; then
+        current_version="$(dpkg-query -W -f='${Version}' pipedal)"
+    fi
+    if [ "${backup_version}" != "not-installed" ] &&
+        [ "${current_version}" = "not-installed" ]; then
+        die "Install PiPedal ${backup_version} (or another chosen version) before restoring this backup."
+    fi
+    if [ "${backup_version}" != "${current_version}" ]; then
+        echo "WARNING: Backup PiPedal version: ${backup_version}"
+        echo "         Installed PiPedal version: ${current_version}"
+        echo "Restoring presets across versions can require PiPedal migrations."
+        confirm "Restore this backup despite the version difference?" || {
+            echo "Cancelled."
+            return 0
+        }
+    fi
+    confirm "Overwrite current PiPedal/MultiFX data with $(basename "${archive}")?" || {
         echo "Cancelled."
         return 0
     }
 
+    systemctl is-active --quiet pipedald.service 2>/dev/null && pipedald_active=1
+    systemctl is-active --quiet pipedal-encoder.service 2>/dev/null && encoder_active=1
+    systemctl stop pipedal-encoder.service 2>/dev/null || true
+    systemctl stop pipedald.service 2>/dev/null || true
+    echo "Restoring backup..."
+    if ! tar -xzpf "${archive}" -C / --exclude='metadata' --exclude='metadata/*'; then
+        [ "${pipedald_active}" -eq 0 ] || systemctl restart pipedald.service || true
+        [ "${encoder_active}" -eq 0 ] || systemctl restart pipedal-encoder.service || true
+        die "The backup restore failed."
+    fi
+    systemctl daemon-reload
+    [ "${pipedald_active}" -eq 0 ] || systemctl restart pipedald.service || true
+    if [ "${encoder_active}" -eq 1 ] || [ -f "${SERVICE_DIR}/pipedal-encoder.service" ]; then
+        systemctl restart pipedal-encoder.service 2>/dev/null || true
+    fi
+    refresh_browser
+    mark_reboot_needed "restored services, plugins and touchscreen configuration"
+    echo "Backup restored from: ${archive}"
+}
+
+has_multifx_remnants() {
+    is_multifx_installed ||
+        [ -e "${MFX_LIB_DIR}" ] ||
+        [ -e "${MFX_STATE_DIR}" ] ||
+        [ -e "${INSTALLER_STATE_DIR}/installed-release" ] ||
+        [ -e "${INSTALLER_STATE_DIR}/controller-config.was-present" ] ||
+        [ -e "${INSTALLER_STATE_DIR}/controller-config.was-absent" ] ||
+        [ -e "${CONTROLLER_CONFIG}" ] ||
+        [ -e "${SERVICE_DIR}/pipedal-encoder.service" ]
+}
+
+# Remove every MultiFX-owned runtime item while leaving the current setup tool
+# installed. When PiPedal remains installed, restore the stock frontend and any
+# files/services which existed before MultiFX was first installed.
+remove_multifx_components() {
+    local restore_stock="$1" service encoder_was_present=0 ydotool_was_present=0
+    install_self
+    [ -f "${INSTALLER_STATE_DIR}/pipedal-encoder.service.was-present" ] &&
+        encoder_was_present=1
+    [ -f "${INSTALLER_STATE_DIR}/pipedal-ydotoold.service.was-present" ] &&
+        ydotool_was_present=1
     systemctl disable --now pipedal-encoder.service 2>/dev/null || true
     systemctl disable --now pipedal-ydotoold.service 2>/dev/null || true
-    replace_directory_contents "${STOCK_REACT_DIR}" "${REACT_DIR}"
-    restore_file_backup "${CONTROLLER_CONFIG}" controller-config
-    for service in pipedal-encoder.service pipedal-ydotoold.service; do
-        restore_file_backup "${SERVICE_DIR}/${service}" "${service}"
-    done
-    rm -rf -- "${MFX_LIB_DIR}"
-    rm -f -- "${INSTALLER_STATE_DIR}/installed-release"
 
+    if [ "${restore_stock}" -eq 1 ] && is_multifx_installed &&
+        [ -d "${REACT_DIR}" ]; then
+        [ -f "${STOCK_REACT_DIR}/index.html" ] ||
+            die "The stock PiPedal frontend backup is missing; MultiFX was not removed."
+        replace_directory_contents "${STOCK_REACT_DIR}" "${REACT_DIR}"
+    fi
+    if [ -d "${INSTALLER_STATE_DIR}" ]; then
+        restore_file_backup "${CONTROLLER_CONFIG}" controller-config
+        for service in pipedal-encoder.service pipedal-ydotoold.service; do
+            restore_file_backup "${SERVICE_DIR}/${service}" "${service}"
+        done
+    else
+        rm -f -- "${CONTROLLER_CONFIG}"
+        rm -f -- "${SERVICE_DIR}/pipedal-encoder.service"
+        rm -f -- "${SERVICE_DIR}/pipedal-ydotoold.service"
+    fi
+
+    rm -rf -- "${MFX_LIB_DIR}"
+    rm -rf -- "${MFX_STATE_DIR}"
+    rm -rf -- "${INSTALLER_STATE_DIR}"
+    rm -f -- "${UNINSTALL_COMMAND}"
+    rm -f -- /tmp/.ydotool_socket
     systemctl daemon-reload
-    for service in pipedal-ydotoold.service pipedal-encoder.service; do
-        if [ -f "${INSTALLER_STATE_DIR}/${service}.was-present" ]; then
-            systemctl enable "${service}" 2>/dev/null || true
-            systemctl restart "${service}" 2>/dev/null || true
-        fi
-    done
-    systemctl restart pipedald 2>/dev/null || true
+    if [ "${ydotool_was_present}" -eq 1 ]; then
+        systemctl enable pipedal-ydotoold.service 2>/dev/null || true
+        systemctl restart pipedal-ydotoold.service 2>/dev/null || true
+    fi
+    if [ "${encoder_was_present}" -eq 1 ]; then
+        systemctl enable pipedal-encoder.service 2>/dev/null || true
+        systemctl restart pipedal-encoder.service 2>/dev/null || true
+    fi
+    [ "${restore_stock}" -eq 0 ] || systemctl restart pipedald 2>/dev/null || true
+}
+
+uninstall_multifx() {
+    if ! has_multifx_remnants; then
+        echo "No MultiFX installation or runtime remnants were found."
+        return 0
+    fi
+    offer_backup_before_removal
+    confirm "Permanently remove MultiFX, its controller configuration and all runtime state?" || {
+        echo "Cancelled."
+        return 0
+    }
+    remove_multifx_components 1
     refresh_browser
-    echo "MultiFX was removed and the stock PiPedal interface was restored."
-    echo "Your saved MultiFX layouts, themes and controller state were preserved."
+    echo "MultiFX was completely removed and stock PiPedal was restored."
+    echo "The setup tool and files under ~/mfxbackups were kept."
 }
 
 get_target_user() {
@@ -710,6 +1260,37 @@ backup_display_file_once() {
             touch "${absent}"
         fi
     }
+}
+
+restore_display_file() {
+    local target="$1" name="$2"
+    local present="${DISPLAY_STATE_DIR}/${name}.was-present"
+    local backup="${DISPLAY_STATE_DIR}/${name}.backup"
+    rm -f -- "${target}"
+    if [ -f "${present}" ] && [ -e "${backup}" ]; then
+        cp -a "${backup}" "${target}"
+    fi
+}
+
+remove_touchscreen_configuration() {
+    local configured_user profile home group
+    [ -d "${DISPLAY_STATE_DIR}" ] || return 0
+    configured_user="$(cat "${DISPLAY_STATE_DIR}/configured-user" 2>/dev/null || true)"
+    restore_display_file /etc/xdg/labwc/rc.xml labwc-rc.xml
+    restore_display_file /etc/xdg/labwc/autostart labwc-autostart
+    if [ -n "${configured_user}" ] && id "${configured_user}" >/dev/null 2>&1; then
+        home="$(getent passwd "${configured_user}" | cut -d: -f6)"
+        group="$(id -gn "${configured_user}")"
+        profile="${home}/.bash_profile"
+        restore_display_file "${profile}" bash-profile
+        [ ! -e "${profile}" ] || chown "${configured_user}:${group}" "${profile}"
+    fi
+    if command -v raspi-config >/dev/null 2>&1; then
+        # Older installer versions did not record the previous boot mode. B1
+        # safely returns to a normal console login instead of auto-launching UI.
+        raspi-config nonint do_boot_behaviour B1 || true
+    fi
+    rm -rf -- "${DISPLAY_STATE_DIR}"
 }
 
 configure_touchscreen_display() {
@@ -769,6 +1350,67 @@ PROFILE
     install_self
     echo "Touchscreen display setup is complete for ${TARGET_USER}."
     echo "Reboot the Raspberry Pi when convenient to start it automatically."
+    mark_reboot_needed "touchscreen auto-login and the Labwc session were configured"
+}
+
+uninstall_pipedal() {
+    local directory
+    if ! dpkg-query -W -f='${Status}' pipedal 2>/dev/null | grep -q 'install ok installed' &&
+        [ ! -d /etc/pipedal ] && [ ! -d /var/pipedal ] &&
+        ! has_multifx_remnants; then
+        echo "No PiPedal installation or data remnants were found."
+        return 0
+    fi
+    offer_backup_before_removal
+    echo
+    echo "This removes PiPedal, MultiFX, presets, models, IRs, configuration,"
+    echo "PiPedal's bundled TooB plugins, controller state and touchscreen startup."
+    echo "Other independently installed LV2 plugins are not deleted."
+    confirm "Permanently remove PiPedal and all PiPedal/MultiFX data?" || {
+        echo "Cancelled."
+        return 0
+    }
+
+    install_self
+    if has_multifx_remnants; then
+        remove_multifx_components 0
+    fi
+    rm -rf -- "${INSTALLER_STATE_DIR}"
+    systemctl disable --now pipedald.service 2>/dev/null || true
+    systemctl disable --now pipedaladmin.service 2>/dev/null || true
+    if dpkg-query -W -f='${Status}' pipedal 2>/dev/null | grep -q 'install ok installed'; then
+        apt-get purge -y pipedal
+    fi
+
+    # These are the application-owned paths used by PiPedal's official
+    # installer/uninstaller. /usr/lib/lv2 itself is deliberately retained for
+    # unrelated third-party plugins; only PiPedal's bundled TooB directory is
+    # removed after the optional backup.
+    rm -rf -- /etc/pipedal
+    rm -rf -- /var/pipedal
+    rm -rf -- /var/lib/pipedal
+    rm -rf -- /var/log/pipedal
+    rm -rf -- /usr/lib/lv2/ToobAmp.lv2
+    for directory in /usr/bin /usr/sbin; do
+        find "${directory}" -maxdepth 1 \
+            \( -type f -o -type l \) -name 'pipedal*' -delete
+    done
+    for directory in /etc/systemd/system /usr/lib/systemd/system /lib/systemd/system; do
+        [ -d "${directory}" ] || continue
+        find "${directory}" -maxdepth 1 \
+            \( -type f -o -type l \) -name 'pipedal*.service' -delete
+    done
+    remove_touchscreen_configuration
+    systemctl daemon-reload
+    if id pipedal_d >/dev/null 2>&1; then
+        userdel pipedal_d 2>/dev/null || true
+    fi
+    if getent group pipedal_d >/dev/null 2>&1; then
+        groupdel pipedal_d 2>/dev/null || true
+    fi
+    mark_reboot_needed "PiPedal services, accounts and touchscreen startup were removed"
+    echo "PiPedal and MultiFX were completely removed."
+    echo "The setup tool and files under ~/mfxbackups were kept."
 }
 
 show_status() {
@@ -811,6 +1453,22 @@ run_full_setup() {
     configure_touchscreen_display
 }
 
+interactive_pipedal_install() {
+    select_pipedal_version || return 0
+    install_or_update_pipedal
+}
+
+interactive_multifx_install() {
+    select_multifx_version || return 0
+    install_or_update_multifx
+}
+
+interactive_full_setup() {
+    select_pipedal_version || return 0
+    select_multifx_version || return 0
+    run_full_setup
+}
+
 pause_for_menu() {
     [ -t 0 ] || return 0
     echo
@@ -818,31 +1476,34 @@ pause_for_menu() {
 }
 
 show_menu() {
-    local choice
+    local -a options=(
+        "Install / change PiPedal version"
+        "Install / change MultiFX version"
+        "Complete setup: PiPedal + MultiFX + touchscreen"
+        "Create full backup"
+        "Restore backup"
+        "Completely remove MultiFX"
+        "Completely remove PiPedal + MultiFX"
+        "Set up touchscreen display"
+        "Status and diagnostics"
+        "Exit"
+    )
     while true; do
-        echo
-        echo "=================================================="
-        echo " PiPedal MultiFX Setup"
-        echo "=================================================="
-        echo "1) Install or update PiPedal"
-        echo "2) Install or update MultiFX"
-        echo "3) Remove MultiFX and restore original PiPedal"
-        echo "4) Set up touchscreen display"
-        echo "5) Complete setup: PiPedal + MultiFX + touchscreen"
-        echo "6) Status and diagnostics"
-        echo "7) Exit"
-        echo "=================================================="
-        read -r -p "Choose an option [1-7]: " choice
-        case "${choice}" in
-            1) install_or_update_pipedal; pause_for_menu ;;
-            2) MULTIFX_SOURCE="auto"; install_or_update_multifx; pause_for_menu ;;
-            3) uninstall_multifx; pause_for_menu ;;
-            4) configure_touchscreen_display; pause_for_menu ;;
-            5) MULTIFX_SOURCE="auto"; run_full_setup; pause_for_menu ;;
-            6) show_status; pause_for_menu ;;
-            7) return 0 ;;
-            *) echo "Invalid option." ;;
+        select_menu "Main menu" 1 "${options[@]}" || return 0
+        case "${MENU_RESULT}" in
+            0) interactive_pipedal_install ;;
+            1) interactive_multifx_install ;;
+            2) interactive_full_setup ;;
+            3) create_backup ;;
+            4) restore_backup ;;
+            5) uninstall_multifx ;;
+            6) uninstall_pipedal ;;
+            7) configure_touchscreen_display ;;
+            8) show_status ;;
+            9) return 0 ;;
         esac
+        offer_reboot_if_needed
+        pause_for_menu
     done
 }
 
@@ -860,11 +1521,15 @@ main() {
         menu) show_menu ;;
         pipedal) install_or_update_pipedal ;;
         multifx) install_or_update_multifx ;;
+        backup) create_backup ;;
+        restore) restore_backup ;;
         uninstall) uninstall_multifx ;;
+        uninstall-pipedal) uninstall_pipedal ;;
         display) configure_touchscreen_display ;;
         all) run_full_setup ;;
         status) show_status ;;
     esac
+    [ "${ACTION}" = "menu" ] || offer_reboot_if_needed
 }
 
 if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then

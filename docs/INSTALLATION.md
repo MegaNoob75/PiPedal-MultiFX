@@ -27,7 +27,7 @@ From inside the extracted release folder:
 sudo ./mfxinstaller.sh
 ```
 
-Choose **Install or update MultiFX**. `install-multifx.sh` remains available as
+Choose **Install / change MultiFX version**. `install-multifx.sh` remains available as
 a compatibility shortcut and calls the same consolidated setup utility.
 
 The installer:
@@ -54,22 +54,34 @@ sudo ./mfxinstaller.sh
 The menu provides:
 
 ```text
-1) Install or update PiPedal
-2) Install or update MultiFX
-3) Remove MultiFX and restore original PiPedal
-4) Set up touchscreen display
-5) Complete setup: PiPedal + MultiFX + touchscreen
-6) Status and diagnostics
-7) Exit
+1) Install / change PiPedal version
+2) Install / change MultiFX version
+3) Complete setup: PiPedal + MultiFX + touchscreen
+4) Create full backup
+5) Restore backup
+6) Completely remove MultiFX
+7) Completely remove PiPedal + MultiFX
+8) Set up touchscreen display
+9) Status and diagnostics
+0) Exit
 ```
 
-The setup script checks GitHub for the latest stable official PiPedal release
-instead of relying on a hard-coded version. It chooses the package matching the
-machine's `arm64` or `amd64` architecture.
+The setup script checks GitHub instead of relying on hard-coded versions. It
+lists published PiPedal packages matching the machine's `arm64` or `amd64`
+architecture and MultiFX releases that have a verified Raspberry Pi ZIP. The
+newest stable choice is first and marked **Latest**. Selecting an older version
+performs an intentional downgrade.
 
-MultiFX is downloaded from the latest stable PiPedal MultiFX GitHub Release.
-Both the release ZIP and its `.sha256` file must be attached to the release.
-The checksum is verified before the ZIP is extracted.
+Before a downgrade, the installer offers to create a backup. For MultiFX it
+also offers to reset controller/runtime data to the older package defaults,
+because an older bridge may not understand state written by a newer release.
+
+All menus support Up/Down, Enter and numbered choices. Long version lists
+scroll inside the terminal instead of overflowing the display.
+
+MultiFX is downloaded from the selected PiPedal MultiFX GitHub Release. Both
+the release ZIP and its `.sha256` file must be attached to that release. The
+checksum is verified before the ZIP is extracted.
 
 The optional touchscreen action automatically detects the normal login user
 and configures the same display mode used by the project: console auto-login,
@@ -86,6 +98,9 @@ sudo pipedal-multifx-setup
 Advanced examples:
 
 ```bash
+# Install a particular published PiPedal release.
+sudo pipedal-multifx-setup pipedal --pipedal-tag v2.0.108
+
 # Install a particular published MultiFX release.
 sudo pipedal-multifx-setup multifx --tag multifx-v0.4.0
 
@@ -98,6 +113,30 @@ sudo pipedal-multifx-setup multifx --local /path/to/package
 # Select a particular login user only when automatic detection is unsuitable.
 sudo pipedal-multifx-setup display --user pi
 ```
+
+## Backup and Restore
+
+Choose **Create full backup**, or run:
+
+```bash
+sudo pipedal-multifx-setup backup
+```
+
+Backups are named `mfxbackup-YYYYMMDD-HHMMSS.tar.gz` and saved under the
+detected login user's `~/mfxbackups` directory. A backup includes:
+
+- `/etc/pipedal` configuration and the installed frontend
+- `/var/pipedal` banks, presets, plugin presets, NAM models, IRs and uploads
+- MultiFX bridge, controller configuration, layouts, themes and runtime state
+- MultiFX systemd service definitions
+- standard system, architecture-specific, local and user LV2 directories
+- touchscreen/Labwc configuration created by this installer
+
+Choose **Restore backup**, or run `sudo pipedal-multifx-setup restore`, to pick
+a backup using the same keyboard menu. Restore warns when the backup's PiPedal
+version differs from the installed version because PiPedal may need to migrate
+presets between releases. After a complete removal, install the desired
+PiPedal version first and then restore the backup.
 
 See [Publishing a MultiFX Release](RELEASING_MULTIFX.md) for the GitHub release
 procedure that creates the downloadable ZIP and checksum.
@@ -126,11 +165,20 @@ After installation, a stable uninstaller is also installed at:
 sudo /usr/local/sbin/uninstall-pipedal-multifx
 ```
 
-The uninstaller restores the frontend that was backed up before MultiFX was first installed. MultiFX layouts, themes, controller assignments and runtime state are preserved so reinstalling MultiFX can recover them.
+The uninstaller first offers to create a backup. It restores the frontend that
+was backed up before MultiFX was installed, then removes the MultiFX bridge,
+controller configuration, services, runtime state and installer restore data.
+Only the installed setup tool and `~/mfxbackups` are deliberately retained.
 
 If compatible services existed before MultiFX was installed, their previous service definitions are restored as well.
 
 PiPedal itself is **not** removed.
+
+The main menu also has **Completely remove PiPedal + MultiFX**. That action
+offers a backup, purges the PiPedal package, removes PiPedal/MultiFX data and
+configuration, restores the previous touchscreen startup files, and removes
+PiPedal's bundled TooB plugin directory. Independently installed third-party
+LV2 plugins are backed up but are not deleted.
 
 ## Important Paths
 
