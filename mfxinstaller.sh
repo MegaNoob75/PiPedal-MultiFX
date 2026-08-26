@@ -4,17 +4,17 @@ set -Eeuo pipefail
 # PiPedal MultiFX end-user setup utility.
 #
 # Normal use:
-#   sudo ./install-pipedal-kiosk.sh
+#   sudo ./mfxinstaller.sh
 #
 # Scripted/advanced use:
-#   sudo ./install-pipedal-kiosk.sh pipedal
-#   sudo ./install-pipedal-kiosk.sh multifx
-#   sudo ./install-pipedal-kiosk.sh multifx --tag multifx-v0.4.0
-#   sudo ./install-pipedal-kiosk.sh multifx --latest-release
-#   sudo ./install-pipedal-kiosk.sh multifx --local /path/to/extracted/package
-#   sudo ./install-pipedal-kiosk.sh uninstall
-#   sudo ./install-pipedal-kiosk.sh display --user pi
-#   sudo ./install-pipedal-kiosk.sh all
+#   sudo ./mfxinstaller.sh pipedal
+#   sudo ./mfxinstaller.sh multifx
+#   sudo ./mfxinstaller.sh multifx --tag multifx-v0.4.0
+#   sudo ./mfxinstaller.sh multifx --latest-release
+#   sudo ./mfxinstaller.sh multifx --local /path/to/extracted/package
+#   sudo ./mfxinstaller.sh uninstall
+#   sudo ./mfxinstaller.sh display --user pi
+#   sudo ./mfxinstaller.sh all
 
 MULTIFX_REPOSITORY="${MULTIFX_REPOSITORY:-MegaNoob75/PiPedal-MultiFX}"
 MULTIFX_RELEASES_API="https://api.github.com/repos/${MULTIFX_REPOSITORY}/releases"
@@ -78,7 +78,7 @@ usage() {
 PiPedal MultiFX setup
 
 Usage:
-  sudo ./install-pipedal-kiosk.sh [action] [options]
+  sudo ./mfxinstaller.sh [action] [options]
 
 Actions:
   menu        Interactive menu (default)
@@ -463,7 +463,7 @@ is_multifx_package_root() {
     [ -f "${directory}/react/index.html" ] &&
         [ -f "${directory}/multifx/controller-config.json" ] &&
         [ -f "${directory}/multifx/pipedal_encoder_bridge.py" ] &&
-        [ -f "${directory}/install-pipedal-kiosk.sh" ] &&
+        [ -f "${directory}/mfxinstaller.sh" ] &&
         { [ -f "${directory}/systemd/system/pipedal-encoder.service" ] ||
           [ -f "${directory}/multifx/systemd/system/pipedal-encoder.service" ]; } &&
         { [ -f "${directory}/systemd/system/pipedal-ydotoold.service" ] ||
@@ -573,7 +573,7 @@ install_multifx_payload() {
     done
 
     printf '%s\n' "${release_label}" > "${INSTALLER_STATE_DIR}/installed-release"
-    install_self "${package_root}/install-pipedal-kiosk.sh"
+    install_self "${package_root}/mfxinstaller.sh"
     systemctl daemon-reload
     systemctl enable pipedal-ydotoold.service pipedal-encoder.service
     systemctl restart pipedal-ydotoold.service

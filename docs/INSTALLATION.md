@@ -24,7 +24,7 @@ Download the latest Raspberry Pi ZIP from the [PiPedal MultiFX Releases](https:/
 From inside the extracted release folder:
 
 ```bash
-sudo ./install-pipedal-kiosk.sh
+sudo ./mfxinstaller.sh
 ```
 
 Choose **Install or update MultiFX**. `install-multifx.sh` remains available as
@@ -48,7 +48,7 @@ PiPedal's audio engine and preset storage remain PiPedal-owned.
 The package also includes:
 
 ```bash
-sudo ./install-pipedal-kiosk.sh
+sudo ./mfxinstaller.sh
 ```
 
 The menu provides:

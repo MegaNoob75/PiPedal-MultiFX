@@ -306,7 +306,7 @@ For packaged installs, download and extract the Raspberry Pi ZIP from a publishe
 From inside the extracted package, launch the all-in-one menu:
 
 ```bash
-sudo ./install-pipedal-kiosk.sh
+sudo ./mfxinstaller.sh
 ```
 
 Choose **Install or update MultiFX**. The older `install-multifx.sh` command is
@@ -330,7 +330,7 @@ For the full install/update procedure, see [Installation and Updates](docs/INSTA
 The Raspberry Pi package also includes:
 
 ```bash
-sudo ./install-pipedal-kiosk.sh
+sudo ./mfxinstaller.sh
 ```
 
 The streamlined setup menu provides:

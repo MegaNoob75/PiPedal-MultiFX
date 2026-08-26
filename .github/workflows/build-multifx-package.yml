@@ -70,7 +70,7 @@ jobs:
           cp README.md LICENSE.md "${STAGE}/"
           cp docs/INSTALLATION.md "${STAGE}/docs/"
           cp \
-            install-pipedal-kiosk.sh \
+            mfxinstaller.sh \
             install-multifx.sh \
             uninstall-multifx.sh \
             "${STAGE}/"
@@ -92,7 +92,7 @@ jobs:
           cp vite/node_modules/dseg/DSEG-LICENSE.txt \
             "${STAGE}/licenses/fonts/DSEG-OFL-1.1.txt"
 
-          bash -n "${STAGE}/install-pipedal-kiosk.sh"
+          bash -n "${STAGE}/mfxinstaller.sh"
           bash -n "${STAGE}/install-multifx.sh"
           bash -n "${STAGE}/uninstall-multifx.sh"
           test -f "${STAGE}/react/index.html"
