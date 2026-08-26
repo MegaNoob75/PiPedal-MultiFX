@@ -1,62 +1,137 @@
 name: Build MultiFX Raspberry Pi Package
 
 on:
+  # Publishing a GitHub Release builds the package from that release's tag and
+  # attaches the permanent ZIP/checksum assets used by the setup utility.
+  release:
+    types: [published]
+  # Manual runs are useful for testing packaging without publishing a release.
   workflow_dispatch:
     inputs:
       version:
-        description: 'Release version (example: 1.01)'
+        description: "Package version for this test build (example: 0.4.0)"
         required: true
-        default: '1.01'
+        default: "0.4.0"
         type: string
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
   build-package:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          # A release event resolves to its tag. Manual tests use the selected
+          # branch in the Actions screen.
+          ref: ${{ github.event.release.tag_name || github.ref }}
+
       - uses: actions/setup-node@v4
         with:
-          node-version: '24'
+          node-version: "24"
           cache: npm
           cache-dependency-path: vite/package-lock.json
+
       - name: Install frontend dependencies
         working-directory: vite
         run: npm ci
+
       - name: Build frontend
         working-directory: vite
         run: npm run build
-      - name: Assemble Raspberry Pi package
+
+      - name: Assemble and verify Raspberry Pi package
         shell: bash
         env:
-          RELEASE_VERSION: ${{ inputs.version }}
+          RELEASE_VERSION: ${{ github.event.release.tag_name || inputs.version }}
         run: |
           set -euo pipefail
           VERSION="${RELEASE_VERSION#v}"
           VERSION="${VERSION#multifx-v}"
-          [[ "${VERSION}" =~ ^[0-9]+\.[0-9]+([.][0-9]+)?$ ]] || { echo "Invalid version: ${RELEASE_VERSION}"; exit 1; }
+          [[ "${VERSION}" =~ ^[0-9]+\.[0-9]+\.[0-9]+([.-][A-Za-z0-9.-]+)?$ ]] || {
+            echo "Version must look like 0.4.0 or multifx-v0.4.0: ${RELEASE_VERSION}"
+            exit 1
+          }
+
           PACKAGE_NAME="PiPedal-MultiFX-v${VERSION}-RaspberryPi"
           STAGE="release/${PACKAGE_NAME}"
           rm -rf release
-          mkdir -p "${STAGE}/react" "${STAGE}/multifx" "${STAGE}/systemd/system"
+          mkdir -p \
+            "${STAGE}/react" \
+            "${STAGE}/multifx" \
+            "${STAGE}/systemd/system" \
+            "${STAGE}/keys" \
+            "${STAGE}/docs" \
+            "${STAGE}/licenses/fonts"
+
           cp -a vite/dist/. "${STAGE}/react/"
-          cp install-pipedal-kiosk.sh install-multifx.sh uninstall-multifx.sh "${STAGE}/"
+          printf 'multifx-v%s\n' "${VERSION}" > "${STAGE}/MULTIFX_RELEASE"
+          cp README.md LICENSE.md "${STAGE}/"
+          cp docs/INSTALLATION.md "${STAGE}/docs/"
+          cp \
+            install-pipedal-kiosk.sh \
+            install-multifx.sh \
+            uninstall-multifx.sh \
+            "${STAGE}/"
           chmod +x "${STAGE}/"*.sh
-          cp multifx/controller-config.json multifx/pipedal_encoder_bridge.py multifx/MULTIFX_CONTROLLER_PROTOCOL.txt "${STAGE}/multifx/"
-          cp multifx/systemd/system/pipedal-encoder.service multifx/systemd/system/pipedal-ydotoold.service "${STAGE}/systemd/system/"
+          cp \
+            multifx/controller-config.json \
+            multifx/pipedal_encoder_bridge.py \
+            multifx/MULTIFX_CONTROLLER_PROTOCOL.txt \
+            "${STAGE}/multifx/"
+          cp \
+            multifx/systemd/system/pipedal-encoder.service \
+            multifx/systemd/system/pipedal-ydotoold.service \
+            "${STAGE}/systemd/system/"
+          cp config/updatekey2.asc "${STAGE}/keys/pipedal-updatekey.asc"
+          for font_package in vite/node_modules/@fontsource/*; do
+            cp "${font_package}/LICENSE" \
+              "${STAGE}/licenses/fonts/$(basename "${font_package}")-OFL-1.1.txt"
+          done
+          cp vite/node_modules/dseg/DSEG-LICENSE.txt \
+            "${STAGE}/licenses/fonts/DSEG-OFL-1.1.txt"
+
           bash -n "${STAGE}/install-pipedal-kiosk.sh"
           bash -n "${STAGE}/install-multifx.sh"
           bash -n "${STAGE}/uninstall-multifx.sh"
           test -f "${STAGE}/react/index.html"
+          test -f "${STAGE}/MULTIFX_RELEASE"
+          test -f "${STAGE}/LICENSE.md"
+          test -f "${STAGE}/docs/INSTALLATION.md"
           test -f "${STAGE}/multifx/controller-config.json"
           test -f "${STAGE}/multifx/pipedal_encoder_bridge.py"
-          (cd release && zip -qr "${PACKAGE_NAME}.zip" "${PACKAGE_NAME}")
+          test -f "${STAGE}/keys/pipedal-updatekey.asc"
+          PIPEDAL_KEY_INFO="$(gpg --batch --show-keys --with-colons \
+            "${STAGE}/keys/pipedal-updatekey.asc")"
+          grep -q 'fpr:::::::::2D1F39DBB1F819412B678F88E9D7081E08E3D85C:' \
+            <<< "${PIPEDAL_KEY_INFO}"
+          test -f "${STAGE}/licenses/fonts/DSEG-OFL-1.1.txt"
+
+          (
+            cd release
+            zip -qr "${PACKAGE_NAME}.zip" "${PACKAGE_NAME}"
+            sha256sum "${PACKAGE_NAME}.zip" > "${PACKAGE_NAME}.zip.sha256"
+          )
           echo "PACKAGE_NAME=${PACKAGE_NAME}" >> "${GITHUB_ENV}"
-      - uses: actions/upload-artifact@v4
+
+      - name: Upload testable Actions artifact
+        uses: actions/upload-artifact@v4
         with:
           name: ${{ env.PACKAGE_NAME }}
-          path: release/${{ env.PACKAGE_NAME }}.zip
+          path: |
+            release/${{ env.PACKAGE_NAME }}.zip
+            release/${{ env.PACKAGE_NAME }}.zip.sha256
           if-no-files-found: error
           retention-days: 30
+
+      - name: Attach permanent assets to the published GitHub Release
+        if: github.event_name == 'release'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+        run: |
+          gh release upload "${RELEASE_TAG}" \
+            "release/${PACKAGE_NAME}.zip" \
+            "release/${PACKAGE_NAME}.zip.sha256" \
+            --clobber

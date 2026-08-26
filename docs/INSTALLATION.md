@@ -2,7 +2,9 @@
 
 [← Back to main README](../README.md)
 
-PiPedal MultiFX can be installed on top of an existing PiPedal installation, or the included setup menu can install/update PiPedal, configure a Chromium kiosk, and then install MultiFX.
+PiPedal MultiFX can be installed on top of an existing PiPedal installation,
+or the included setup menu can install/update PiPedal, install MultiFX, and
+optionally configure the fullscreen touchscreen display.
 
 ## Before You Start
 
@@ -22,8 +24,11 @@ Download the latest Raspberry Pi ZIP from the [PiPedal MultiFX Releases](https:/
 From inside the extracted release folder:
 
 ```bash
-sudo ./install-multifx.sh
+sudo ./install-pipedal-kiosk.sh
 ```
+
+Choose **Install or update MultiFX**. `install-multifx.sh` remains available as
+a compatibility shortcut and calls the same consolidated setup utility.
 
 The installer:
 
@@ -34,11 +39,11 @@ The installer:
 - preserves an existing controller configuration during normal updates
 - installs the MultiFX controller bridge
 - installs/restarts the required systemd services
-- refreshes the browser when the kiosk refresh service is available
+- refreshes the browser when the touchscreen refresh service is available
 
 PiPedal's audio engine and preset storage remain PiPedal-owned.
 
-## Option B — PiPedal / Kiosk / MultiFX Setup Menu
+## Option B — All-in-One Setup Menu
 
 The package also includes:
 
@@ -49,16 +54,53 @@ sudo ./install-pipedal-kiosk.sh
 The menu provides:
 
 ```text
-1) Install/update PiPedal + Chromium kiosk
-2) Install/update PiPedal MultiFX UI
-3) Uninstall PiPedal MultiFX UI
-4) Install/update PiPedal + kiosk, then MultiFX
-5) Exit
+1) Install or update PiPedal
+2) Install or update MultiFX
+3) Remove MultiFX and restore original PiPedal
+4) Set up touchscreen display
+5) Complete setup: PiPedal + MultiFX + touchscreen
+6) Status and diagnostics
+7) Exit
 ```
 
-The setup script checks GitHub for the latest stable PiPedal release instead of relying on a hard-coded PiPedal version.
+The setup script checks GitHub for the latest stable official PiPedal release
+instead of relying on a hard-coded version. It chooses the package matching the
+machine's `arm64` or `amd64` architecture.
 
-When MultiFX is installed from a standalone copy of the setup script, it can locate the latest PiPedal MultiFX GitHub release and download the Raspberry Pi package automatically.
+MultiFX is downloaded from the latest stable PiPedal MultiFX GitHub Release.
+Both the release ZIP and its `.sha256` file must be attached to the release.
+The checksum is verified before the ZIP is extracted.
+
+The optional touchscreen action automatically detects the normal login user
+and configures the same display mode used by the project: console auto-login,
+Labwc, maximized Chromium app mode, and the Squeekboard keyboard. Chromium's
+`--kiosk` mode is deliberately not used because it interferes with the
+on-screen keyboard.
+
+The installer saves itself as:
+
+```bash
+sudo pipedal-multifx-setup
+```
+
+Advanced examples:
+
+```bash
+# Install a particular published MultiFX release.
+sudo pipedal-multifx-setup multifx --tag multifx-v0.4.0
+
+# Install the newest published release, including a prerelease.
+sudo pipedal-multifx-setup multifx --latest-release
+
+# Install an already extracted Raspberry Pi release package.
+sudo pipedal-multifx-setup multifx --local /path/to/package
+
+# Select a particular login user only when automatic detection is unsuitable.
+sudo pipedal-multifx-setup display --user pi
+```
+
+See [Publishing a MultiFX Release](RELEASING_MULTIFX.md) for the GitHub release
+procedure that creates the downloadable ZIP and checksum.
 
 ## Updating MultiFX
 
@@ -84,7 +126,7 @@ After installation, a stable uninstaller is also installed at:
 sudo /usr/local/sbin/uninstall-pipedal-multifx
 ```
 
-The uninstaller restores the frontend that was backed up before MultiFX was first installed.
+The uninstaller restores the frontend that was backed up before MultiFX was first installed. MultiFX layouts, themes, controller assignments and runtime state are preserved so reinstalling MultiFX can recover them.
 
 If compatible services existed before MultiFX was installed, their previous service definitions are restored as well.
 
@@ -104,11 +146,17 @@ MultiFX controller bridge:
 
 MultiFX backup/state:
   /var/lib/pipedal-multifx/
+
+Installer restore data:
+  /var/lib/pipedal-multifx-installer/
+
+Touchscreen configuration backups:
+  /var/lib/pipedal-touchscreen/
 ```
 
 ## After Installation
 
-Open the PiPedal web interface in the configured kiosk/browser.
+Open the PiPedal web interface in the configured touchscreen/browser.
 
 The normal workflow is:
 

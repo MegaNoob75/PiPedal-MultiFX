@@ -284,7 +284,9 @@ Preview built-in themes, customize visual roles, and import/export custom theme 
 
 ## Installation
 
-PiPedal MultiFX can be installed on top of an existing PiPedal installation, or the included setup menu can install/update PiPedal, configure a Chromium kiosk, and install MultiFX.
+PiPedal MultiFX can be installed on top of an existing PiPedal installation,
+or the included setup menu can install/update PiPedal, install MultiFX, and
+optionally configure the fullscreen touchscreen display.
 
 ### Recommended Hardware
 
@@ -301,11 +303,14 @@ A physical ESP32 controller is **not required**. Performance switches can be use
 
 For packaged installs, download and extract the Raspberry Pi ZIP from a published PiPedal MultiFX release.
 
-From inside the extracted package:
+From inside the extracted package, launch the all-in-one menu:
 
 ```bash
-sudo ./install-multifx.sh
+sudo ./install-pipedal-kiosk.sh
 ```
+
+Choose **Install or update MultiFX**. The older `install-multifx.sh` command is
+kept as a compatibility shortcut and now calls the same consolidated installer.
 
 The installer:
 
@@ -320,7 +325,7 @@ The installer:
 
 For the full install/update procedure, see [Installation and Updates](docs/INSTALLATION.md).
 
-### Option B — PiPedal / Kiosk / MultiFX Setup Menu
+### Option B — All-in-One PiPedal / MultiFX Setup Menu
 
 The Raspberry Pi package also includes:
 
@@ -328,17 +333,36 @@ The Raspberry Pi package also includes:
 sudo ./install-pipedal-kiosk.sh
 ```
 
-The setup menu provides:
+The streamlined setup menu provides:
 
 ```text
-1) Install/update PiPedal + Chromium kiosk
-2) Install/update PiPedal MultiFX UI
-3) Uninstall PiPedal MultiFX UI
-4) Install/update PiPedal + kiosk, then MultiFX
-5) Exit
+1) Install or update PiPedal
+2) Install or update MultiFX
+3) Remove MultiFX and restore original PiPedal
+4) Set up touchscreen display
+5) Complete setup: PiPedal + MultiFX + touchscreen
+6) Status and diagnostics
+7) Exit
 ```
 
-The setup script can check GitHub for the latest stable PiPedal release instead of relying on a hard-coded PiPedal version.
+The setup script downloads the latest stable official PiPedal package and the
+latest stable published MultiFX Raspberry Pi package. It detects the normal
+login user rather than assuming a particular home directory.
+
+The optional touchscreen action reproduces the Raspberry Pi display setup used
+by the project: Labwc, an automatically maximized Chromium app window, and the
+Squeekboard on-screen keyboard. It deliberately does not use Chromium kiosk
+mode because kiosk mode prevents the keyboard from working correctly.
+
+After the first run, the same menu is available as:
+
+```bash
+sudo pipedal-multifx-setup
+```
+
+Advanced command-line options for a specific release tag, a prerelease, or a
+local extracted package are documented in
+[Installation and Updates](docs/INSTALLATION.md).
 
 ### Updating MultiFX
 
