@@ -19,6 +19,7 @@ import MultiFXSettingsHub from "./MultiFXSettingsHub";
 import MultiFXControllerSettings from "./MultiFXControllerSettings";
 import MultiFXThemeManager from "./MultiFXThemeManager";
 import MultiFXUISettings from "./MultiFXUISettings";
+import MultiFXUpdatesView from "./MultiFXUpdatesView";
 import MultiFXSnapshotManager from "./MultiFXSnapshotManager";
 import MultiFXSnapshotEditView from "./MultiFXSnapshotEditView";
 import FxAmplifierIcon from "./svg/fx_amplifier.svg?react";
@@ -44,6 +45,7 @@ export type MultiFXView =
     | "controller"
     | "theme"
     | "multiFXUI"
+    | "updates"
     | "snapshots"
     | "snapshotEdit"
     | "systemSettings"
@@ -281,6 +283,7 @@ export default function MultiFXApp({ onExitToOriginal }: MultiFXAppProps) {
         controller: "CONTROLLER",
         theme: "THEME",
         multiFXUI: "MULTIFX-UI",
+        updates: "UPDATES",
         snapshots: "SNAPSHOTS",
         snapshotEdit: "SNAPSHOT EDITOR",
         systemSettings: "SYSTEM SETTINGS",
@@ -363,6 +366,7 @@ export default function MultiFXApp({ onExitToOriginal }: MultiFXAppProps) {
                         onTheme={() => goTo("theme")}
                         onMultiFXUI={() => goTo("multiFXUI")}
                         onSystem={() => goTo("systemSettings")}
+                        onUpdates={() => goTo("updates")}
                     />
                 )}
                 {view === "controller" && (
@@ -373,6 +377,7 @@ export default function MultiFXApp({ onExitToOriginal }: MultiFXAppProps) {
                 )}
                 {view === "theme" && <MultiFXThemeManager />}
                 {view === "multiFXUI" && <MultiFXUISettings />}
+                {view === "updates" && <MultiFXUpdatesView />}
                 {view === "systemSettings" && <MultiFXSettingsView onClose={goBack} />}
                 {view === "about" && <MultiFXAboutView />}
             </div>

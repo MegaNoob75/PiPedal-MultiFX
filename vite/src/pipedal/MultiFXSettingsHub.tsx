@@ -9,13 +9,15 @@ interface MultiFXSettingsHubProps {
     onTheme: () => void;
     onMultiFXUI: () => void;
     onSystem: () => void;
+    onUpdates: () => void;
 }
 
 export default function MultiFXSettingsHub({
     onController,
     onTheme,
     onMultiFXUI,
-    onSystem
+    onSystem,
+    onUpdates
 }: MultiFXSettingsHubProps) {
     return (
         <div style={screenStyle}>
@@ -59,6 +61,11 @@ export default function MultiFXSettingsHub({
                     title="PIPEDAL / SYSTEM"
                     description="Audio, MIDI, Wi-Fi, routing and PiPedal system settings"
                     onClick={onSystem}
+                />
+                <SettingsCard
+                    title="UPDATES"
+                    description="Check for and install official PiPedal updates"
+                    onClick={onUpdates}
                 />
             </div>
         </div>

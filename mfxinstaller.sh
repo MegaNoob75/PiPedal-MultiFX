@@ -27,6 +27,7 @@ MFX_STATE_DIR="/var/lib/pipedal-multifx"
 INSTALLER_STATE_DIR="/var/lib/pipedal-multifx-installer"
 STOCK_REACT_DIR="${INSTALLER_STATE_DIR}/stock-react"
 PIPEDAL_KEY_STATE="${INSTALLER_STATE_DIR}/pipedal-updatekey.asc"
+YDOTOOL_BACKPORTS_SOURCE="/etc/apt/sources.list.d/pipedal-multifx-trixie-backports.sources"
 DISPLAY_STATE_DIR="/var/lib/pipedal-touchscreen"
 SERVICE_DIR="/etc/systemd/system"
 SETUP_COMMAND="/usr/local/sbin/pipedal-multifx-setup"
@@ -210,10 +211,9 @@ BANNER
 }
 
 # Display a scrollable terminal menu. Arrow keys move the highlight, Enter
-# accepts it, and users may type an item number followed by Enter. Main menus
-# with ten or fewer items can enable immediate single-key number selection.
+# accepts it, and users may edit an item number before pressing Enter.
 select_menu() {
-    local title="$1" immediate_numbers="$2"
+    local title="$1"
     shift 2
     local -a options=("$@")
     local selected=0 first=0 key rest digits="" number rows count
@@ -279,21 +279,13 @@ select_menu() {
                 fi
                 ;;
             [0-9])
-                if [ "${immediate_numbers}" -eq 1 ] && [ "${count}" -le 10 ]; then
-                    if [ "${key}" = "0" ]; then number=10; else number="${key}"; fi
-                    if [ "${number}" -le "${count}" ]; then
-                        MENU_RESULT="$((number - 1))"
-                        return 0
-                    fi
-                else
-                    digits="${digits}${key}"
-                    number="$((10#${digits}))"
-                    if [ "${number}" -ge 1 ] && [ "${number}" -le "${count}" ]; then
-                        selected="$((number - 1))"
-                    fi
+                digits="${digits}${key}"
+                number="$((10#${digits}))"
+                if [ "${number}" -ge 1 ] && [ "${number}" -le "${count}" ]; then
+                    selected="$((number - 1))"
                 fi
                 ;;
-            $'\177') digits="${digits%?}" ;;
+            $'\177'|$'\b') digits="${digits%?}" ;;
             q|Q) return 1 ;;
         esac
     done
@@ -321,6 +313,107 @@ apt_update_once() {
     if [ "${APT_UPDATED}" -eq 0 ]; then
         apt-get update
         APT_UPDATED=1
+    fi
+}
+
+package_is_installed() {
+    dpkg-query -W -f='${Status}' "$1" 2>/dev/null |
+        grep -q 'install ok installed'
+}
+
+record_dependency_state_once() {
+    local package="$1"
+    local installed="${INSTALLER_STATE_DIR}/dependency-${package}.was-installed"
+    local absent="${INSTALLER_STATE_DIR}/dependency-${package}.was-absent"
+    [ -e "${installed}" ] || [ -e "${absent}" ] || {
+        if package_is_installed "${package}"; then
+            touch "${installed}"
+        else
+            touch "${absent}"
+        fi
+    }
+}
+
+ydotool_has_candidate() {
+    local candidate
+    candidate="$(apt-cache policy ydotool 2>/dev/null |
+        sed -n 's/^  Candidate: //p' | head -n1)"
+    [ -n "${candidate}" ] && [ "${candidate}" != "(none)" ]
+}
+
+ensure_ydotool_available() {
+    local codename="" source_created=0
+    ydotool_has_candidate && return 0
+
+    if [ -r /etc/os-release ]; then
+        # VERSION_CODENAME is distribution-provided data, not executable input.
+        codename="$(sed -n 's/^VERSION_CODENAME=//p' /etc/os-release |
+            tr -d '\"' | head -n1)"
+    fi
+    if [ "${codename}" != "trixie" ]; then
+        die "ydotool is unavailable from the configured package repositories. Enable a repository that supplies ydotool, then run the installer again."
+    fi
+    [ -r /usr/share/keyrings/debian-archive-keyring.gpg ] ||
+        die "The Debian archive keyring is missing; cannot securely enable trixie-backports."
+
+    echo
+    echo "ydotool is not included in Debian 13's standard repository."
+    echo "It is available from the official Debian trixie-backports repository."
+    confirm_default_yes "Enable official Debian trixie-backports for ydotool?" ||
+        die "MultiFX installation requires ydotool. No repository was changed."
+
+    if [ ! -e "${YDOTOOL_BACKPORTS_SOURCE}" ]; then
+        cat > "${YDOTOOL_BACKPORTS_SOURCE}" <<'BACKPORTS_SOURCE'
+Types: deb
+URIs: https://deb.debian.org/debian
+Suites: trixie-backports
+Components: main
+Signed-By: /usr/share/keyrings/debian-archive-keyring.gpg
+BACKPORTS_SOURCE
+        chmod 0644 "${YDOTOOL_BACKPORTS_SOURCE}"
+        touch "${INSTALLER_STATE_DIR}/ydotool-backports-source.created-by-installer"
+        source_created=1
+    fi
+
+    APT_UPDATED=0
+    if ! apt_update_once || ! ydotool_has_candidate; then
+        if [ "${source_created}" -eq 1 ]; then
+            rm -f -- "${YDOTOOL_BACKPORTS_SOURCE}"
+            rm -f -- "${INSTALLER_STATE_DIR}/ydotool-backports-source.created-by-installer"
+        fi
+        die "trixie-backports was configured, but no installable ydotool package was found."
+    fi
+    echo "Official Debian trixie-backports is now enabled for ydotool."
+}
+
+install_multifx_dependencies() {
+    local package
+    mkdir -p "${INSTALLER_STATE_DIR}"
+    apt_update_once
+    ensure_ydotool_available
+    for package in ydotool python3-mido python3-rtmidi; do
+        record_dependency_state_once "${package}"
+    done
+    apt-get install -y --no-install-recommends \
+        ydotool python3-mido python3-rtmidi
+}
+
+remove_multifx_dependencies() {
+    local package
+    local -a remove_packages=()
+    for package in ydotool python3-mido python3-rtmidi; do
+        if [ -f "${INSTALLER_STATE_DIR}/dependency-${package}.was-absent" ] &&
+            package_is_installed "${package}"; then
+            remove_packages+=("${package}")
+        fi
+    done
+    if [ "${#remove_packages[@]}" -gt 0 ]; then
+        echo "Removing packages installed only for MultiFX..."
+        apt-get purge -y "${remove_packages[@]}"
+    fi
+    if [ -f "${INSTALLER_STATE_DIR}/ydotool-backports-source.created-by-installer" ]; then
+        rm -f -- "${YDOTOOL_BACKPORTS_SOURCE}"
+        echo "Removed the trixie-backports source added by MultiFX."
     fi
 }
 
@@ -365,7 +458,8 @@ replace_directory_contents() {
 
 is_multifx_installed() {
     [ -f "${MFX_LIB_DIR}/pipedal_encoder_bridge.py" ] &&
-        [ -f "${REACT_DIR}/index.html" ]
+        [ -L "${REACT_DIR}/controller-config.json" ] &&
+        [ "$(readlink -- "${REACT_DIR}/controller-config.json")" = "${CONTROLLER_CONFIG}" ]
 }
 
 install_self() {
@@ -399,6 +493,60 @@ refresh_browser() {
     fi
 }
 
+# Debian's ydotool package enables ydotool.service globally as a per-user
+# service. MultiFX deliberately runs one system daemon instead, because the
+# root controller bridge needs a predictable socket before a desktop user logs
+# in. Running both daemons makes them compete for /tmp/.ydotool_socket.
+stop_ydotool_user_service_for_user() {
+    local user="$1" uid runtime_dir
+    [ -n "${user}" ] && id "${user}" >/dev/null 2>&1 || return 0
+    uid="$(id -u "${user}")"
+    runtime_dir="/run/user/${uid}"
+    [ -S "${runtime_dir}/bus" ] || return 0
+    runuser -u "${user}" -- env \
+        XDG_RUNTIME_DIR="${runtime_dir}" \
+        DBUS_SESSION_BUS_ADDRESS="unix:path=${runtime_dir}/bus" \
+        systemctl --user daemon-reload 2>/dev/null || true
+    runuser -u "${user}" -- env \
+        XDG_RUNTIME_DIR="${runtime_dir}" \
+        DBUS_SESSION_BUS_ADDRESS="unix:path=${runtime_dir}/bus" \
+        systemctl --user stop ydotool.service 2>/dev/null || true
+}
+
+resolve_ydotool_service_conflict() {
+    local global_state target_user=""
+    global_state="$(systemctl --global is-enabled ydotool.service 2>/dev/null || true)"
+    [ "${global_state}" = "enabled" ] || [ "${global_state}" = "enabled-runtime" ] ||
+        return 0
+
+    echo
+    echo "A conflicting Debian ydotool user service is globally enabled."
+    echo "MultiFX uses pipedal-ydotoold.service so its root controller bridge"
+    echo "has one reliable daemon and one predictable socket."
+    if ! confirm_default_yes \
+        "Mask the conflicting user service while MultiFX is installed?"; then
+        die "Installation stopped to avoid running two ydotool daemons."
+    fi
+
+    mkdir -p "${INSTALLER_STATE_DIR}"
+    touch "${INSTALLER_STATE_DIR}/ydotool-user-service.masked-by-installer"
+    systemctl --global mask ydotool.service
+    if [ -n "${SUDO_USER:-}" ] && [ "${SUDO_USER}" != "root" ]; then
+        target_user="${SUDO_USER}"
+    elif [ -n "${TARGET_USER_OVERRIDE}" ]; then
+        target_user="${TARGET_USER_OVERRIDE}"
+    fi
+    stop_ydotool_user_service_for_user "${target_user}"
+    echo "The conflicting user service was stopped and reversibly masked."
+}
+
+restore_ydotool_user_service_policy() {
+    [ -f "${INSTALLER_STATE_DIR}/ydotool-user-service.masked-by-installer" ] ||
+        return 0
+    systemctl --global unmask ydotool.service 2>/dev/null || true
+    echo "Restored the Debian ydotool user-service policy."
+}
+
 find_pipedal_key() {
     local candidate
     for candidate in \
@@ -413,7 +561,56 @@ find_pipedal_key() {
             return 0
         fi
     done
-    return 1
+    install_embedded_pipedal_key
+    PIPEDAL_KEY_FILE="${PIPEDAL_KEY_STATE}"
+}
+
+install_embedded_pipedal_key() {
+    mkdir -p "${INSTALLER_STATE_DIR}"
+    cat > "${PIPEDAL_KEY_STATE}" <<'PIPEDAL_PUBLIC_KEY'
+-----BEGIN PGP PUBLIC KEY BLOCK-----
+
+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
+DIJTINP5eg6wly2M9P1A3RY=
+=T0QC
+-----END PGP PUBLIC KEY BLOCK-----
+PIPEDAL_PUBLIC_KEY
+    chmod 0644 "${PIPEDAL_KEY_STATE}"
 }
 
 parse_pipedal_release() {
@@ -633,20 +830,23 @@ install_or_update_pipedal() {
         fi
         die "PiPedal installation failed; the previous MultiFX UI was restored."
     fi
-
     if [ "${had_multifx}" -eq 1 ]; then
-        # Save the newly installed stock UI as the current restore point, then
-        # put the user's installed MultiFX UI back in place.
+        # Keep the complete frontend supplied by the new PiPedal package. The
+        # MultiFX configuration/runtime files remain installed so a separately
+        # tested MultiFX release can reuse them when it is installed again.
         replace_directory_contents "${REACT_DIR}" "${STOCK_REACT_DIR}"
-        replace_directory_contents "${saved_multifx}" "${REACT_DIR}"
-        [ ! -e "${CONTROLLER_CONFIG}" ] ||
-            ln -sfn "${CONTROLLER_CONFIG}" "${REACT_DIR}/controller-config.json"
+        touch "${INSTALLER_STATE_DIR}/multifx-reinstall-required"
+        systemctl disable --now pipedal-encoder.service 2>/dev/null || true
+        systemctl disable --now pipedal-ydotoold.service 2>/dev/null || true
         systemctl restart pipedald 2>/dev/null || true
-        systemctl restart pipedal-encoder.service 2>/dev/null || true
     fi
 
     install_self
     echo "PiPedal ${PIPEDAL_VERSION} installation is complete."
+    if [ "${had_multifx}" -eq 1 ]; then
+        echo "PiPedal's new stock interface is active."
+        echo "MultiFX configuration was kept; reinstall MultiFX after confirming compatibility."
+    fi
 }
 
 load_multifx_release() {
@@ -859,10 +1059,9 @@ install_multifx_payload() {
     is_multifx_package_root "${package_root}" ||
         die "Invalid MultiFX package: ${package_root}"
 
-    apt_update_once
-    apt-get install -y --no-install-recommends \
-        ydotool python3-mido python3-rtmidi
+    install_multifx_dependencies
     mkdir -p "${MFX_STATE_DIR}" "${MFX_LIB_DIR}" "${INSTALLER_STATE_DIR}"
+    resolve_ydotool_service_conflict
     ensure_stock_frontend_backup
 
     backup_file_once "${CONTROLLER_CONFIG}" controller-config
@@ -898,7 +1097,11 @@ install_multifx_payload() {
     done
 
     printf '%s\n' "${release_label}" > "${INSTALLER_STATE_DIR}/installed-release"
-    install_self "${package_root}/mfxinstaller.sh"
+    rm -f -- "${INSTALLER_STATE_DIR}/multifx-reinstall-required"
+    # Keep the installer that is currently running. A published MultiFX payload
+    # may contain an older setup utility, especially when a newer standalone
+    # installer is being used to repair or install an existing release.
+    install_self
     systemctl daemon-reload
     systemctl enable pipedal-ydotoold.service pipedal-encoder.service
     systemctl restart pipedal-ydotoold.service
@@ -908,6 +1111,8 @@ install_multifx_payload() {
         die "MultiFX installed, but pipedal-encoder.service did not start."
     refresh_browser
     echo "PiPedal MultiFX ${release_label} installation is complete."
+    echo "MultiFX did not change PiPedal's audio-device settings."
+    echo "Configure and test the interface in PiPedal; 48000 Hz is the recommended starting sample rate."
 }
 
 install_multifx_from_github() {
@@ -1163,6 +1368,9 @@ has_multifx_remnants() {
         [ -e "${INSTALLER_STATE_DIR}/installed-release" ] ||
         [ -e "${INSTALLER_STATE_DIR}/controller-config.was-present" ] ||
         [ -e "${INSTALLER_STATE_DIR}/controller-config.was-absent" ] ||
+        [ -e "${INSTALLER_STATE_DIR}/dependency-ydotool.was-installed" ] ||
+        [ -e "${INSTALLER_STATE_DIR}/dependency-ydotool.was-absent" ] ||
+        [ -e "${INSTALLER_STATE_DIR}/ydotool-backports-source.created-by-installer" ] ||
         [ -e "${CONTROLLER_CONFIG}" ] ||
         [ -e "${SERVICE_DIR}/pipedal-encoder.service" ]
 }
@@ -1191,6 +1399,8 @@ remove_multifx_components() {
         for service in pipedal-encoder.service pipedal-ydotoold.service; do
             restore_file_backup "${SERVICE_DIR}/${service}" "${service}"
         done
+        restore_ydotool_user_service_policy
+        remove_multifx_dependencies
     else
         rm -f -- "${CONTROLLER_CONFIG}"
         rm -f -- "${SERVICE_DIR}/pipedal-encoder.service"
@@ -1415,11 +1625,15 @@ uninstall_pipedal() {
 
 show_status() {
     local pipedal_version="not installed" multifx_version="not installed"
+    local ydotool_global_state
     if dpkg-query -W -f='${Version}' pipedal >/dev/null 2>&1; then
         pipedal_version="$(dpkg-query -W -f='${Version}' pipedal)"
     fi
     if [ -f "${INSTALLER_STATE_DIR}/installed-release" ]; then
         multifx_version="$(cat "${INSTALLER_STATE_DIR}/installed-release")"
+        if [ -f "${INSTALLER_STATE_DIR}/multifx-reinstall-required" ]; then
+            multifx_version="${multifx_version} (configuration retained; reinstall required)"
+        fi
     elif is_multifx_installed; then
         multifx_version="installed (version unknown)"
     fi
@@ -1439,6 +1653,14 @@ show_status() {
                 "$(systemctl is-active "${service}.service" 2>/dev/null || true)"
         fi
     done
+    ydotool_global_state="$(systemctl --global is-enabled ydotool.service 2>/dev/null || true)"
+    if [ "${ydotool_global_state}" = "enabled" ] ||
+        [ "${ydotool_global_state}" = "enabled-runtime" ]; then
+        echo
+        echo "WARNING: Debian's ydotool user service is globally enabled."
+        echo "Recommendation: rerun the MultiFX installer and approve masking it"
+        echo "so only pipedal-ydotoold.service owns the ydotool socket."
+    fi
     if systemctl list-unit-files pipedal-encoder.service --no-legend \
         2>/dev/null | grep -q pipedal-encoder.service; then
         echo

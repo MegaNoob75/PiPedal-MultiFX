@@ -315,13 +315,18 @@ kept as a compatibility shortcut and now calls the same consolidated installer.
 The installer:
 
 - verifies that PiPedal is present
-- installs required MultiFX runtime dependencies
+- installs required MultiFX runtime dependencies; on Debian 13/Trixie it can
+  enable the official `trixie-backports` repository after confirmation when
+  that repository is needed for `ydotool`
 - backs up the existing PiPedal frontend the first time MultiFX is installed
 - installs the prebuilt MultiFX frontend
 - installs the MultiFX bridge
 - installs and restarts the required systemd services
 - creates the frontend link to the controller configuration
 - keeps PiPedal's audio engine and native musical data under PiPedal's control
+
+MultiFX does not change PiPedal's audio-device settings. Configure and test the
+interface in PiPedal itself; 48000 Hz is the recommended starting sample rate.
 
 For the full install/update procedure, see [Installation and Updates](docs/INSTALLATION.md).
 
@@ -368,6 +373,12 @@ After the first run, the same menu is available as:
 ```bash
 sudo pipedal-multifx-setup
 ```
+
+MultiFX Settings includes an **Updates** page that checks PiPedal's official
+update service. Installing a PiPedal update installs PiPedal's complete stock
+server and frontend. MultiFX-owned controller configuration, layouts and
+runtime state are retained, but MultiFX should be reinstalled only after its
+compatibility with the new PiPedal release has been confirmed.
 
 Advanced command-line options for a specific release tag, a prerelease, or a
 local extracted package are documented in
