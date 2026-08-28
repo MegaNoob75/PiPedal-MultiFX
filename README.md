@@ -325,6 +325,11 @@ The installer:
 - creates the frontend link to the controller configuration
 - keeps PiPedal's audio engine and native musical data under PiPedal's control
 
+At startup, the setup utility checks `mfxinstaller.sh` on the repository's
+`main` branch. A changed script is accepted only after its GitHub blob SHA and
+Bash syntax are verified, and the user is asked before the installed setup tool
+is replaced and restarted. Use `--no-self-update` to skip this check.
+
 MultiFX does not change PiPedal's audio-device settings. Configure and test the
 interface in PiPedal itself; 48000 Hz is the recommended starting sample rate.
 
@@ -374,11 +379,12 @@ After the first run, the same menu is available as:
 sudo pipedal-multifx-setup
 ```
 
-MultiFX Settings includes an **Updates** page that checks PiPedal's official
-update service. Installing a PiPedal update installs PiPedal's complete stock
-server and frontend. MultiFX-owned controller configuration, layouts and
-runtime state are retained, but MultiFX should be reinstalled only after its
-compatibility with the new PiPedal release has been confirmed.
+In MultiFX Settings, open **PiPedal / System** and select PiPedal's existing
+**Check for updates** action. MultiFX displays the result in its own update
+view. Installing an update installs PiPedal's complete stock server and
+frontend. MultiFX-owned controller configuration, layouts and runtime state are
+retained, but MultiFX should be reinstalled only after its compatibility with
+the new PiPedal release has been confirmed.
 
 Advanced command-line options for a specific release tag, a prerelease, or a
 local extracted package are documented in

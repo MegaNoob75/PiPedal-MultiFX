@@ -75,7 +75,13 @@ function downloadJson(
     URL.revokeObjectURL(url);
 }
 
-export default function MultiFXUISettings() {
+interface MultiFXUISettingsProps {
+    onExitToOriginal: () => void;
+}
+
+export default function MultiFXUISettings({
+    onExitToOriginal
+}: MultiFXUISettingsProps) {
     const [message, setMessage] = useState("");
     const [resetConfirmOpen, setResetConfirmOpen] =
         useState(false);
@@ -136,7 +142,7 @@ export default function MultiFXUISettings() {
             showMessage("One or more interaction settings are invalid.");
             return;
         }
-        showMessage("MultiFX interaction settings saved.");
+        showMessage("PI-MULTIFX interaction settings saved.");
     };
 
     const scheduleReload = () => {
@@ -186,7 +192,7 @@ export default function MultiFXUISettings() {
                 }
             } catch (error) {
                 throw new Error(
-                    `The MultiFX runtime service is unavailable: ${String(error)}`
+                    `The PI-MULTIFX runtime service is unavailable: ${String(error)}`
                 );
             }
 
@@ -207,7 +213,7 @@ export default function MultiFXUISettings() {
                 backup
             );
 
-            showMessage("MultiFX settings backup created.");
+            showMessage("PI-MULTIFX settings backup created.");
         } catch (error) {
             showMessage(
                 `Could not create backup: ${String(error)}`
@@ -222,7 +228,7 @@ export default function MultiFXUISettings() {
 
             if (!validateMultiFXBackup(value)) {
                 showMessage(
-                    "That file is not a valid MultiFX settings backup."
+                    "That file is not a valid PI-MULTIFX settings backup."
                 );
                 return;
             }
@@ -311,7 +317,7 @@ export default function MultiFXUISettings() {
             }
 
             showMessage(
-                "MultiFX settings restored. Reloading...",
+                "PI-MULTIFX settings restored. Reloading...",
                 3000
             );
             scheduleReload();
@@ -350,13 +356,13 @@ export default function MultiFXUISettings() {
 
             setResetConfirmOpen(false);
             showMessage(
-                "MultiFX settings reset. Reloading...",
+                "PI-MULTIFX settings reset. Reloading...",
                 3000
             );
             scheduleReload();
         } catch (error) {
             showMessage(
-                `Could not reset MultiFX settings: ${String(error)}`
+                `Could not reset PI-MULTIFX settings: ${String(error)}`
             );
         }
     };
@@ -366,10 +372,10 @@ export default function MultiFXUISettings() {
             <div style={headerStyle}>
                 <div>
                     <div style={titleStyle}>
-                        MULTIFX-UI SETTINGS
+                        PI-MULTIFX UI SETTINGS
                     </div>
                     <div style={subtitleStyle}>
-                        Backup, restore and MultiFX interface options
+                        Original PiPedal access, backup, restore and interface options
                     </div>
                 </div>
             </div>
@@ -388,11 +394,31 @@ export default function MultiFXUISettings() {
             <div style={contentStyle}>
                 <section style={sectionStyle}>
                     <div style={sectionTitleStyle}>
+                        INTERFACE
+                    </div>
+
+                    <div style={sectionDescriptionStyle}>
+                        Switch this browser from PI-MULTIFX to the original
+                        PiPedal interface. Your current preset and settings
+                        remain unchanged.
+                    </div>
+
+                    <button
+                        type="button"
+                        onClick={onExitToOriginal}
+                        style={{ ...primaryButtonStyle, marginTop: 12 }}
+                    >
+                        OPEN ORIGINAL PIPEDAL
+                    </button>
+                </section>
+
+                <section style={sectionStyle}>
+                    <div style={sectionTitleStyle}>
                         BACKUP / RESTORE
                     </div>
 
                     <div style={sectionDescriptionStyle}>
-                        Save or restore MultiFX-only configuration,
+                        Save or restore PI-MULTIFX-only configuration,
                         including the shared Performance preset assignments and
                         controller layout. PiPedal presets, banks, audio,
                         MIDI, Wi-Fi and system settings are not included.
@@ -404,16 +430,16 @@ export default function MultiFXUISettings() {
                             onClick={() => void exportBackup()}
                             style={primaryButtonStyle}
                         >
-                            BACKUP MULTIFX SETTINGS
+                            BACKUP PI-MULTIFX SETTINGS
                             <span style={buttonSubtextStyle}>
                                 Download one JSON backup file
                             </span>
                         </button>
 
                         <label style={buttonStyle}>
-                            RESTORE MULTIFX SETTINGS
+                            RESTORE PI-MULTIFX SETTINGS
                             <span style={buttonSubtextStyle}>
-                                Restore from a MultiFX backup
+                                Restore from a PI-MULTIFX backup
                             </span>
                             <input
                                 type="file"
@@ -440,7 +466,7 @@ export default function MultiFXUISettings() {
                     </div>
 
                     <div style={sectionDescriptionStyle}>
-                        Control temporary Performance pop-outs and MultiFX
+                        Control temporary Performance pop-outs and PI-MULTIFX
                         feedback timing. These choices are shared by the PC
                         and pedalboard display. Existing theme and controller
                         settings stay in their current editors.
@@ -618,7 +644,7 @@ export default function MultiFXUISettings() {
                             color: MFX_COLORS.danger
                         }}
                     >
-                        RESET MULTIFX
+                        RESET PI-MULTIFX
                     </div>
 
                     <div style={sectionDescriptionStyle}>
@@ -636,12 +662,12 @@ export default function MultiFXUISettings() {
                             }
                             style={dangerButtonStyle}
                         >
-                            RESET MULTIFX SETTINGS
+                            RESET PI-MULTIFX SETTINGS
                         </button>
                     ) : (
                         <div style={confirmStyle}>
                             <div style={confirmTextStyle}>
-                                Reset all saved MultiFX settings?
+                                Reset all saved PI-MULTIFX settings?
                             </div>
 
                             <div style={confirmButtonsStyle}>

@@ -1,5 +1,7 @@
-import { useEffect } from "react";
+import { useEffect, useMemo, useState } from "react";
 import SettingsDialog from "./SettingsDialog";
+import MultiFXUpdatesView from "./MultiFXUpdatesView";
+import { PiPedalModelFactory } from "./PiPedalModel";
 
 interface MultiFXSettingsViewProps {
     onClose: () => void;
@@ -15,19 +17,44 @@ interface MultiFXSettingsViewProps {
 export default function MultiFXSettingsView({
     onClose
 }: MultiFXSettingsViewProps) {
+    const model = useMemo(() => PiPedalModelFactory.getInstance(), []);
+    const [updatesOpen, setUpdatesOpen] = useState(false);
+
     useEffect(() => {
         document.body.classList.add("multifx-settings-route");
 
+        // PiPedal's SettingsDialog calls this public model action. Redirect it
+        // only while hosted by MultiFX so its existing Check for updates row
+        // opens our owned update view above the nested settings dialog.
+        const originalShowUpdateDialog = model.showUpdateDialog;
+        model.showUpdateDialog = (show: boolean = true) => {
+            setUpdatesOpen(show);
+        };
+
         return () => {
+            model.showUpdateDialog = originalShowUpdateDialog;
             document.body.classList.remove("multifx-settings-route");
         };
-    }, []);
+    }, [model]);
 
     return (
-        <SettingsDialog
-            open={true}
-            onboarding={false}
-            onClose={onClose}
-        />
+        <>
+            <SettingsDialog
+                open={true}
+                onboarding={false}
+                onClose={onClose}
+            />
+            {updatesOpen && (
+                <div style={updatesOverlayStyle}>
+                    <MultiFXUpdatesView onClose={() => setUpdatesOpen(false)} />
+                </div>
+            )}
+        </>
     );
 }
+
+const updatesOverlayStyle: React.CSSProperties = {
+    position: "fixed",
+    inset: 0,
+    zIndex: 1600
+};

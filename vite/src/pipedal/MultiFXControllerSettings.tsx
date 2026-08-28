@@ -1,4 +1,5 @@
 import React, { useEffect, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import {
     clearSavedControllerConfig,
     CONTROLLER_LAYOUT_ELEMENT_IDS,
@@ -190,6 +191,9 @@ type PlacementTarget =
 
 type PlacementDragState = PlacementTarget & {
     pointerId: number;
+    startX: number;
+    startY: number;
+    moved: boolean;
     label: string;
     preferredWidth: number;
     preferredHeight: number;
@@ -203,6 +207,15 @@ type PlacementDragVisual = PlacementTarget & {
     label: string;
     rect: ControllerLayoutRect;
     valid: boolean;
+};
+
+type LayoutMeasurementOverlay = {
+    clientX: number;
+    clientY: number;
+    rect: ControllerLayoutRect;
+    canvasWidth: number;
+    canvasHeight: number;
+    mode: "MOVE" | "RESIZE" | "PLACE";
 };
 
 type GridDragState = {
@@ -2046,11 +2059,14 @@ function PerformanceLayoutEditor(props: {
     const swapTargetRef = useRef<string | null>(null);
     const gridDragRef = useRef<GridDragState | null>(null);
     const suppressGridClickRef = useRef<string | null>(null);
+    const suppressPlacementClickRef = useRef<string | null>(null);
     const [swapTargetId, setSwapTargetId] = useState<string | null>(null);
     const [freeformDragVisual, setFreeformDragVisual] =
         useState<FreeformDragVisual | null>(null);
     const [placementDragVisual, setPlacementDragVisual] =
         useState<PlacementDragVisual | null>(null);
+    const [measurementOverlay, setMeasurementOverlay] =
+        useState<LayoutMeasurementOverlay | null>(null);
     const [gridDragVisual, setGridDragVisual] =
         useState<GridDragVisual | null>(null);
     const [gridDropCell, setGridDropCell] =
@@ -2217,8 +2233,20 @@ function PerformanceLayoutEditor(props: {
                     );
                 }
 
+                if (placementDrag.moved) {
+                    const placementKey =
+                        `${placementDrag.kind}:${placementDrag.id}`;
+                    suppressPlacementClickRef.current = placementKey;
+                    window.setTimeout(() => {
+                        if (suppressPlacementClickRef.current === placementKey) {
+                            suppressPlacementClickRef.current = null;
+                        }
+                    }, 0);
+                }
+
                 placementDragRef.current = null;
                 setPlacementDragVisual(null);
+                setMeasurementOverlay(null);
                 return;
             }
 
@@ -2338,6 +2366,7 @@ function PerformanceLayoutEditor(props: {
             swapTargetRef.current = null;
             setSwapTargetId(null);
             setFreeformDragVisual(null);
+            setMeasurementOverlay(null);
         };
 
         const cancel = () => {
@@ -2347,6 +2376,7 @@ function PerformanceLayoutEditor(props: {
             swapTargetRef.current = null;
             setSwapTargetId(null);
             setFreeformDragVisual(null);
+            setMeasurementOverlay(null);
         };
 
         window.addEventListener("pointerup", finish);
@@ -2387,6 +2417,9 @@ function PerformanceLayoutEditor(props: {
         placementDragRef.current = {
             ...target,
             pointerId: event.pointerId,
+            startX: event.clientX,
+            startY: event.clientY,
+            moved: false,
             label,
             preferredWidth: size.preferredWidth,
             preferredHeight: size.preferredHeight,
@@ -2426,6 +2459,13 @@ function PerformanceLayoutEditor(props: {
 
         event.preventDefault();
 
+        if (!placementDrag.moved) {
+            placementDrag.moved = Math.hypot(
+                event.clientX - placementDrag.startX,
+                event.clientY - placementDrag.startY
+            ) >= 4;
+        }
+
         const bounds = canvas.getBoundingClientRect();
         if (
             bounds.width <= 0
@@ -2444,6 +2484,7 @@ function PerformanceLayoutEditor(props: {
             placementDrag.previewRect = null;
             placementDrag.valid = false;
             setPlacementDragVisual(null);
+            setMeasurementOverlay(null);
             return;
         }
 
@@ -2485,6 +2526,14 @@ function PerformanceLayoutEditor(props: {
             label: placementDrag.label,
             rect: { ...preview.rect },
             valid: preview.valid
+        });
+        setMeasurementOverlay({
+            clientX: event.clientX,
+            clientY: event.clientY,
+            rect: { ...preview.rect },
+            canvasWidth: bounds.width,
+            canvasHeight: bounds.height,
+            mode: "PLACE"
         });
     };
 
@@ -3240,6 +3289,14 @@ function PerformanceLayoutEditor(props: {
                     targetKey: layoutTargetKey(drag),
                     rect: { ...next }
                 });
+                setMeasurementOverlay({
+                    clientX: event.clientX,
+                    clientY: event.clientY,
+                    rect: { ...next },
+                    canvasWidth: bounds.width,
+                    canvasHeight: bounds.height,
+                    mode: "MOVE"
+                });
                 return;
             }
         } else if (
@@ -3367,6 +3424,14 @@ function PerformanceLayoutEditor(props: {
                 rectsOverlap(next, rect)
             )
         ) {
+            setMeasurementOverlay({
+                clientX: event.clientX,
+                clientY: event.clientY,
+                rect: { ...drag.previewRect },
+                canvasWidth: bounds.width,
+                canvasHeight: bounds.height,
+                mode: drag.mode === "move" ? "MOVE" : "RESIZE"
+            });
             return;
         }
 
@@ -3376,10 +3441,27 @@ function PerformanceLayoutEditor(props: {
                 targetKey: layoutTargetKey(drag),
                 rect: { ...next }
             });
+            setMeasurementOverlay({
+                clientX: event.clientX,
+                clientY: event.clientY,
+                rect: { ...next },
+                canvasWidth: bounds.width,
+                canvasHeight: bounds.height,
+                mode: "MOVE"
+            });
             return;
         }
 
         setRect(drag, next);
+        drag.previewRect = { ...next };
+        setMeasurementOverlay({
+            clientX: event.clientX,
+            clientY: event.clientY,
+            rect: { ...next },
+            canvasWidth: bounds.width,
+            canvasHeight: bounds.height,
+            mode: "RESIZE"
+        });
     };
 
     const setCurrentGridAsDefault = () => {
@@ -3631,11 +3713,6 @@ function PerformanceLayoutEditor(props: {
 
                 <div style={layoutEditorBodyStyle}>
                     <aside style={layoutInspectorStyle}>
-                        <div style={sectionTitleStyle}>LAYOUT MODE</div>
-                        <div style={helpStyle}>
-                            Grid automatically places/resizes controls. Freeform never moves existing controls automatically; newly-added controls stay Unplaced until you place them. Drag one placed switch onto another to swap their positions.
-                        </div>
-
                         {layout.mode === "freeform" && (
                             <>
                                 <div
@@ -3652,17 +3729,10 @@ function PerformanceLayoutEditor(props: {
                                         ELEMENTS
                                     </div>
                                     <div style={{
-                                        ...helpStyle,
-                                        marginTop: 5,
-                                        marginBottom: 8
-                                    }}>
-                                        Drag an unused element onto the canvas or use PLACE. New items shrink to fit available space; existing items never move automatically. Drag a placed element back here to remove it.
-                                    </div>
-
-                                    <div style={{
                                         display: "flex",
                                         flexDirection: "column",
-                                        gap: 5
+                                        gap: 5,
+                                        marginTop: 8
                                     }}>
                                         {CONTROLLER_LAYOUT_ELEMENT_IDS.map(
                                             (id) => {
@@ -3698,12 +3768,23 @@ function PerformanceLayoutEditor(props: {
                                                                 : movePlacementDrag
                                                         }
                                                         onClick={() => {
+                                                            const placementKey =
+                                                                `element:${id}`;
+                                                            if (
+                                                                suppressPlacementClickRef.current
+                                                                === placementKey
+                                                            ) {
+                                                                suppressPlacementClickRef.current = null;
+                                                                return;
+                                                            }
                                                             if (
                                                                 element.visible
                                                             ) {
                                                                 setSelectedId(
                                                                     `element:${id}`
                                                                 );
+                                                            } else {
+                                                                placeElement(id);
                                                             }
                                                         }}
                                                         style={{
@@ -3730,22 +3811,6 @@ function PerformanceLayoutEditor(props: {
                                                             ]
                                                         }
                                                     </button>
-                                                    {!element.visible && (
-                                                        <button
-                                                            type="button"
-                                                            onClick={() =>
-                                                                placeElement(id)
-                                                            }
-                                                            style={{
-                                                                ...secondaryButtonStyle,
-                                                                flex: "0 0 auto",
-                                                                padding: "5px 7px",
-                                                                fontSize: "0.62rem"
-                                                            }}
-                                                        >
-                                                            PLACE
-                                                        </button>
-                                                    )}
                                                     </div>
                                                 );
                                             }
@@ -3855,9 +3920,6 @@ function PerformanceLayoutEditor(props: {
                                 <div style={{ ...sectionTitleStyle, marginTop: 16 }}>
                                     UNPLACED SWITCHES
                                 </div>
-                                <div style={{ ...helpStyle, marginTop: 5 }}>
-                                    Drag a control onto the layout to preview its fit. The ghost shrinks automatically when needed; green fits, red is too small. PLACE searches for an open spot and shrinks the new control only as much as needed.
-                                </div>
                                 {unplacedSwitches.length === 0 ? (
                                     <div style={helpStyle}>
                                         All switches are placed.
@@ -3895,6 +3957,18 @@ function PerformanceLayoutEditor(props: {
                                                         )
                                                     }
                                                     onPointerMove={movePlacementDrag}
+                                                    onClick={() => {
+                                                        const placementKey =
+                                                            `switch:${item.id}`;
+                                                        if (
+                                                            suppressPlacementClickRef.current
+                                                            === placementKey
+                                                        ) {
+                                                            suppressPlacementClickRef.current = null;
+                                                            return;
+                                                        }
+                                                        placeSwitch(item.id);
+                                                    }}
                                                     style={{
                                                         ...secondaryButtonStyle,
                                                         flex: "1 1 auto",
@@ -3909,31 +3983,7 @@ function PerformanceLayoutEditor(props: {
                                                         WebkitUserSelect: "none"
                                                     }}
                                                 >
-                                                    {item.label}
-                                                    <span
-                                                        style={{
-                                                            display: "block",
-                                                            marginTop: 2,
-                                                            color: MFX_COLORS.muted,
-                                                            fontSize: "0.58rem",
-                                                            fontWeight: 750
-                                                        }}
-                                                    >
-                                                        DRAG ONTO LAYOUT
-                                                    </span>
-                                                </button>
-                                                <button
-                                                    type="button"
-                                                    onClick={() =>
-                                                        placeSwitch(item.id)
-                                                    }
-                                                    style={{
-                                                        ...secondaryButtonStyle,
-                                                        padding: "5px 8px",
-                                                        fontSize: "0.68rem"
-                                                    }}
-                                                >
-                                                    PLACE
+                                                    + {item.label}
                                                 </button>
                                             </div>
                                         ))}
@@ -3942,9 +3992,6 @@ function PerformanceLayoutEditor(props: {
 
                                 <div style={{ ...sectionTitleStyle, marginTop: 16 }}>
                                     HARDWARE CONTROLS
-                                </div>
-                                <div style={{ ...helpStyle, marginTop: 5 }}>
-                                    Place pots, sliders, expression pedals, encoders and encoder buttons. Their displayed function follows the active preset binding.
                                 </div>
                                 {unplacedHardwareControls.length === 0 ? (
                                     <div style={helpStyle}>
@@ -3980,6 +4027,18 @@ function PerformanceLayoutEditor(props: {
                                                         )
                                                     }
                                                     onPointerMove={movePlacementDrag}
+                                                    onClick={() => {
+                                                        const placementKey =
+                                                            `control:${control.id}`;
+                                                        if (
+                                                            suppressPlacementClickRef.current
+                                                            === placementKey
+                                                        ) {
+                                                            suppressPlacementClickRef.current = null;
+                                                            return;
+                                                        }
+                                                        placeControl(control);
+                                                    }}
                                                     style={{
                                                         ...secondaryButtonStyle,
                                                         flex: "1 1 auto",
@@ -3991,7 +4050,7 @@ function PerformanceLayoutEditor(props: {
                                                         touchAction: "none"
                                                     }}
                                                 >
-                                                    {control.label}
+                                                    + {control.label}
                                                     <span style={{
                                                         display: "block",
                                                         marginTop: 2,
@@ -4001,17 +4060,6 @@ function PerformanceLayoutEditor(props: {
                                                     }}>
                                                         {control.kind.toUpperCase()} · CC {control.midiCc}
                                                     </span>
-                                                </button>
-                                                <button
-                                                    type="button"
-                                                    onClick={() => placeControl(control)}
-                                                    style={{
-                                                        ...secondaryButtonStyle,
-                                                        padding: "5px 8px",
-                                                        fontSize: "0.68rem"
-                                                    }}
-                                                >
-                                                    PLACE
                                                 </button>
                                             </div>
                                         ))}
@@ -4120,13 +4168,6 @@ function PerformanceLayoutEditor(props: {
                                 )}
 
                                 {selectedRect && (
-                                    <div style={rectInfoStyle}>
-                                        X {Math.round(selectedRect.x * 100)}% • Y {Math.round(selectedRect.y * 100)}%<br />
-                                        W {Math.round(selectedRect.width * 100)}% • H {Math.round(selectedRect.height * 100)}%
-                                    </div>
-                                )}
-
-                                {selectedRect && (
                                     <button
                                         type="button"
                                         onClick={removeSelectedFromFreeform}
@@ -4171,8 +4212,8 @@ function PerformanceLayoutEditor(props: {
                     <div style={layoutPreviewPanelStyle}>
                         <div style={layoutPreviewTitleStyle}>
                             {layout.mode === "freeform"
-                                ? "Drag controls • resize from lower-right • drag unplaced items in from the left"
-                                : "Drag a tile to move/swap it • tap-to-move also works"}
+                                ? "FREEFORM CANVAS"
+                                : "GRID CANVAS"}
                         </div>
 
                         <div
@@ -4509,15 +4550,11 @@ function PerformanceLayoutEditor(props: {
                                         <LayoutPreviewItem
                                             id={`placement-ghost:${placementDragVisual.kind}:${placementDragVisual.id}`}
                                             label={placementDragVisual.label}
-                                            sublabel={`${
+                                            sublabel={
                                                 placementDragVisual.valid
                                                     ? "DROP TO PLACE"
                                                     : "NEEDS MORE SPACE"
-                                            } • ${Math.round(
-                                                placementDragVisual.rect.width * 100
-                                            )}% × ${Math.round(
-                                                placementDragVisual.rect.height * 100
-                                            )}%`}
+                                            }
                                             rect={placementDragVisual.rect}
                                             selected={false}
                                             kind={placementDragVisual.kind}
@@ -4546,6 +4583,85 @@ function PerformanceLayoutEditor(props: {
                         </div>
                     </div>
                 </div>
+            </div>
+            {measurementOverlay && createPortal(
+                <LayoutMeasurementPopup
+                    measurement={measurementOverlay}
+                />,
+                document.body
+            )}
+        </div>
+    );
+}
+
+function LayoutMeasurementPopup({
+    measurement
+}: {
+    measurement: LayoutMeasurementOverlay;
+}) {
+    const viewportPadding = 8;
+    const cursorGap = 16;
+    const popupWidth = Math.max(
+        1,
+        Math.min(188, window.innerWidth - viewportPadding * 2)
+    );
+    const popupHeight = Math.max(
+        1,
+        Math.min(62, window.innerHeight - viewportPadding * 2)
+    );
+    const preferredLeft = measurement.clientX + cursorGap;
+    const alternateLeft = measurement.clientX - popupWidth - cursorGap;
+    const left = Math.max(
+        viewportPadding,
+        Math.min(
+            window.innerWidth - popupWidth - viewportPadding,
+            preferredLeft + popupWidth <= window.innerWidth - viewportPadding
+                ? preferredLeft
+                : alternateLeft
+        )
+    );
+    const preferredTop = measurement.clientY + cursorGap;
+    const alternateTop = measurement.clientY - popupHeight - cursorGap;
+    const top = Math.max(
+        viewportPadding,
+        Math.min(
+            window.innerHeight - popupHeight - viewportPadding,
+            preferredTop + popupHeight <= window.innerHeight - viewportPadding
+                ? preferredTop
+                : alternateTop
+        )
+    );
+    const x = Math.round(
+        measurement.rect.x * measurement.canvasWidth
+    );
+    const y = Math.round(
+        measurement.rect.y * measurement.canvasHeight
+    );
+    const width = Math.round(
+        measurement.rect.width * measurement.canvasWidth
+    );
+    const height = Math.round(
+        measurement.rect.height * measurement.canvasHeight
+    );
+
+    return (
+        <div
+            aria-hidden="true"
+            style={{
+                ...layoutMeasurementPopupStyle,
+                left,
+                top,
+                width: popupWidth
+            }}
+        >
+            <div style={layoutMeasurementModeStyle}>
+                {measurement.mode}
+            </div>
+            <div style={layoutMeasurementValuesStyle}>
+                <span>X {x}px</span>
+                <span>Y {y}px</span>
+                <span>W {width}px</span>
+                <span>H {height}px</span>
             </div>
         </div>
     );
@@ -5440,13 +5556,6 @@ const selectedInfoStyle: React.CSSProperties = {
     fontSize: "0.82rem"
 };
 
-const rectInfoStyle: React.CSSProperties = {
-    marginTop: 7,
-    color: MFX_COLORS.muted,
-    fontSize: "0.68rem",
-    lineHeight: 1.45
-};
-
 const layoutPreviewPanelStyle: React.CSSProperties = {
     minWidth: 0,
     minHeight: 0,
@@ -5462,6 +5571,37 @@ const layoutPreviewTitleStyle: React.CSSProperties = {
     color: MFX_COLORS.muted,
     fontSize: "0.68rem",
     fontWeight: 800
+};
+
+const layoutMeasurementPopupStyle: React.CSSProperties = {
+    position: "fixed",
+    zIndex: 100500,
+    minHeight: "min(62px, calc(100vh - 16px))",
+    padding: "7px 10px",
+    boxSizing: "border-box",
+    borderRadius: 9,
+    border: `1px solid ${MFX_COLORS.cyan}`,
+    background: "rgba(8, 12, 20, 0.94)",
+    color: MFX_COLORS.text,
+    boxShadow: "0 8px 24px rgba(0, 0, 0, 0.45)",
+    pointerEvents: "none",
+    fontVariantNumeric: "tabular-nums"
+};
+
+const layoutMeasurementModeStyle: React.CSSProperties = {
+    color: MFX_COLORS.cyan,
+    fontSize: "0.62rem",
+    fontWeight: 900,
+    letterSpacing: "0.08em"
+};
+
+const layoutMeasurementValuesStyle: React.CSSProperties = {
+    display: "grid",
+    gridTemplateColumns: "repeat(2, minmax(0, 1fr))",
+    gap: "3px 10px",
+    marginTop: 4,
+    fontSize: "0.72rem",
+    fontWeight: 850
 };
 
 const layoutCanvasStyle: React.CSSProperties = {

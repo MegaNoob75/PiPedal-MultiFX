@@ -292,7 +292,7 @@ export default function MultiFXThemeManager() {
             const parsed = validateMultiFXTheme(JSON.parse(text));
 
             if (!parsed) {
-                setMessage("That file is not a valid MultiFX theme.");
+                setMessage("That file is not a valid PI-MULTIFX theme.");
                 return;
             }
 

@@ -9,23 +9,21 @@ interface MultiFXSettingsHubProps {
     onTheme: () => void;
     onMultiFXUI: () => void;
     onSystem: () => void;
-    onUpdates: () => void;
 }
 
 export default function MultiFXSettingsHub({
     onController,
     onTheme,
     onMultiFXUI,
-    onSystem,
-    onUpdates
+    onSystem
 }: MultiFXSettingsHubProps) {
     return (
         <div style={screenStyle}>
             <div style={headerStyle}>
                 <div>
-                    <div style={titleStyle}>MULTIFX SETTINGS</div>
+                    <div style={titleStyle}>PI-MULTIFX SETTINGS</div>
                     <div style={subtitleStyle}>
-                        Configure MultiFX without editing files
+                        Configure PI-MULTIFX without editing files
                     </div>
                 </div>
             </div>
@@ -53,19 +51,14 @@ export default function MultiFXSettingsHub({
                     onClick={onTheme}
                 />
                 <SettingsCard
-                    title="MULTIFX-UI"
-                    description="MultiFX behavior, backup, restore and interface options"
+                    title="PI-MULTIFX UI"
+                    description="Original PiPedal access, backup, restore and interface options"
                     onClick={onMultiFXUI}
                 />
                 <SettingsCard
                     title="PIPEDAL / SYSTEM"
                     description="Audio, MIDI, Wi-Fi, routing and PiPedal system settings"
                     onClick={onSystem}
-                />
-                <SettingsCard
-                    title="UPDATES"
-                    description="Check for and install official PiPedal updates"
-                    onClick={onUpdates}
                 />
             </div>
         </div>

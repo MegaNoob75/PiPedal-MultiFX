@@ -1363,7 +1363,7 @@ function EditHeader({
                     whiteSpace: "nowrap"
                 }}
             >
-                {advanced ? "MULTIFX EDITOR" : "ADVANCED / SPLIT"}
+                {advanced ? "PI-MULTIFX EDITOR" : "ADVANCED / SPLIT"}
             </button>
         </div>
     );

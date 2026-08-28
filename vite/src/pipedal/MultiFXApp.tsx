@@ -19,7 +19,6 @@ import MultiFXSettingsHub from "./MultiFXSettingsHub";
 import MultiFXControllerSettings from "./MultiFXControllerSettings";
 import MultiFXThemeManager from "./MultiFXThemeManager";
 import MultiFXUISettings from "./MultiFXUISettings";
-import MultiFXUpdatesView from "./MultiFXUpdatesView";
 import MultiFXSnapshotManager from "./MultiFXSnapshotManager";
 import MultiFXSnapshotEditView from "./MultiFXSnapshotEditView";
 import FxAmplifierIcon from "./svg/fx_amplifier.svg?react";
@@ -45,7 +44,6 @@ export type MultiFXView =
     | "controller"
     | "theme"
     | "multiFXUI"
-    | "updates"
     | "snapshots"
     | "snapshotEdit"
     | "systemSettings"
@@ -282,8 +280,7 @@ export default function MultiFXApp({ onExitToOriginal }: MultiFXAppProps) {
         settings: "SETTINGS",
         controller: "CONTROLLER",
         theme: "THEME",
-        multiFXUI: "MULTIFX-UI",
-        updates: "UPDATES",
+        multiFXUI: "PI-MULTIFX UI",
         snapshots: "SNAPSHOTS",
         snapshotEdit: "SNAPSHOT EDITOR",
         systemSettings: "SYSTEM SETTINGS",
@@ -296,7 +293,7 @@ export default function MultiFXApp({ onExitToOriginal }: MultiFXAppProps) {
                 <button type="button" onClick={() => {
                     if (newPresetDraft || view === "snapshotEdit") return;
                     setMenuOpen((open) => !open);
-                }} style={mfxButtonStyle}>MFX</button>
+                }} style={mfxButtonStyle}>PI-MULTIFX</button>
 
                 <div className="mfx-app-title" style={shellTitleStyle}>
                     {viewTitle[view]}
@@ -366,7 +363,6 @@ export default function MultiFXApp({ onExitToOriginal }: MultiFXAppProps) {
                         onTheme={() => goTo("theme")}
                         onMultiFXUI={() => goTo("multiFXUI")}
                         onSystem={() => goTo("systemSettings")}
-                        onUpdates={() => goTo("updates")}
                     />
                 )}
                 {view === "controller" && (
@@ -376,8 +372,11 @@ export default function MultiFXApp({ onExitToOriginal }: MultiFXAppProps) {
                     />
                 )}
                 {view === "theme" && <MultiFXThemeManager />}
-                {view === "multiFXUI" && <MultiFXUISettings />}
-                {view === "updates" && <MultiFXUpdatesView />}
+                {view === "multiFXUI" && (
+                    <MultiFXUISettings
+                        onExitToOriginal={() => void exitToOriginal()}
+                    />
+                )}
                 {view === "systemSettings" && <MultiFXSettingsView onClose={goBack} />}
                 {view === "about" && <MultiFXAboutView />}
             </div>
@@ -417,7 +416,6 @@ export default function MultiFXApp({ onExitToOriginal }: MultiFXAppProps) {
                     onEdit={() => void openBasePresetEditor()}
                     onSettings={() => goTo("settings")}
                     onAbout={() => goTo("about")}
-                    onOriginal={() => void exitToOriginal()}
                 />
             )}
         </div>
@@ -432,7 +430,6 @@ interface MultiFXMenuProps {
     onEdit: () => void;
     onSettings: () => void;
     onAbout: () => void;
-    onOriginal: () => void;
 }
 
 function MultiFXMenu(props: MultiFXMenuProps) {
@@ -520,7 +517,7 @@ function MultiFXMenu(props: MultiFXMenuProps) {
             >
                 <div style={menuBrandStyle}>
                     <FxAmplifierIcon style={{ width: 30, height: 30, fill: "currentColor" }} />
-                    <div><b>PiPedal</b><div style={{ color: MFX_SURFACES.menu.accent, fontWeight: 900 }}>MULTIFX</div></div>
+                    <div><b>PiPedal</b><div style={{ color: MFX_SURFACES.menu.accent, fontWeight: 900 }}>PI-MULTIFX</div></div>
                 </div>
                 <ShellMenuButton label="PERFORMANCE" subtitle="Preset and foot-controller view"
                     active={props.currentView === "performance"} onClick={props.onPerformance} />
@@ -529,13 +526,10 @@ function MultiFXMenu(props: MultiFXMenuProps) {
                 <ShellMenuButton label="PRESET EDITOR" subtitle="Plugins, controls and signal chain"
                     active={props.currentView === "edit"} onClick={props.onEdit} />
                 <MenuDivider />
-                <ShellMenuButton label="SETTINGS" subtitle="Controller, theme, MultiFX UI and PiPedal system"
+                <ShellMenuButton label="SETTINGS" subtitle="Controller, theme, PI-MULTIFX UI and PiPedal system"
                     active={settingsActive} onClick={props.onSettings} />
-                <ShellMenuButton label="ABOUT" subtitle="About PiPedal MultiFX"
+                <ShellMenuButton label="ABOUT" subtitle="About PI-MULTIFX"
                     active={props.currentView === "about"} onClick={props.onAbout} />
-                <MenuDivider />
-                <ShellMenuButton label="ORIGINAL PIPEDAL" subtitle="Switch this browser to the original interface"
-                    onClick={props.onOriginal} />
             </div>
         </>
     );
@@ -570,14 +564,14 @@ function ShellMenuButton({ label, subtitle, active = false, onClick }: {
 }
 
 const rootStyle: React.CSSProperties = { position: "absolute", inset: 0, overflow: "hidden", background: MFX_SURFACES.page.background, color: MFX_SURFACES.page.text };
-const shellStyle: React.CSSProperties = { position: "absolute", left: 0, right: 0, top: 0, height: 54, zIndex: 100000, display: "grid", gridTemplateColumns: "auto 1fr auto", alignItems: "center", gap: 10, padding: "6px 8px", boxSizing: "border-box", borderBottom: `1px solid ${MFX_COLORS.border}`, background: MFX_SURFACES.header.background, color: MFX_SURFACES.header.text, boxShadow: MFX_SURFACES.header.shadow };
+const shellStyle: React.CSSProperties = { position: "absolute", left: 0, right: 0, top: 0, width: "100%", maxWidth: "100vw", minWidth: 0, height: 54, zIndex: 100000, display: "grid", gridTemplateColumns: "minmax(0, auto) minmax(0, 1fr) minmax(0, auto)", alignItems: "center", gap: "clamp(4px, 1.2vw, 10px)", padding: "6px 8px", overflow: "hidden", boxSizing: "border-box", borderBottom: `1px solid ${MFX_COLORS.border}`, background: MFX_SURFACES.header.background, color: MFX_SURFACES.header.text, boxShadow: MFX_SURFACES.header.shadow };
 const shellTitleStyle: React.CSSProperties = { minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", textAlign: "center", fontWeight: 900, letterSpacing: "0.08em" };
-const shellActionsStyle: React.CSSProperties = { display: "flex", alignItems: "center", gap: 8 };
+const shellActionsStyle: React.CSSProperties = { minWidth: 0, maxWidth: "48vw", display: "flex", alignItems: "center", justifyContent: "flex-end", gap: "clamp(4px, 1vw, 8px)", overflow: "hidden" };
 const pageHostStyle: React.CSSProperties = { position: "absolute", left: 0, right: 0, top: 54, bottom: 0, overflow: "hidden" };
-const mfxButtonStyle: React.CSSProperties = { minWidth: 58, minHeight: 40, borderRadius: 10, border: `2px solid ${MFX_COLORS.purple}`, background: MFX_COLORS.purpleSurface, color: MFX_COLORS.purpleLight, font: "inherit", fontWeight: 900, cursor: "pointer" };
+const mfxButtonStyle: React.CSSProperties = { minWidth: 0, maxWidth: "34vw", minHeight: 40, padding: "0 clamp(7px, 1.5vw, 13px)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", borderRadius: 10, border: `2px solid ${MFX_COLORS.purple}`, background: MFX_COLORS.purpleSurface, color: MFX_COLORS.purpleLight, font: "inherit", fontSize: "clamp(0.68rem, 1.8vw, 0.9rem)", fontWeight: 900, cursor: "pointer" };
 const backButtonStyle: React.CSSProperties = { ...mfxButtonStyle, minWidth: 48, width: 48, fontSize: "1.55rem" };
 const normalButtonStyle: React.CSSProperties = { minHeight: 40, padding: "0 12px", borderRadius: 9, border: `1px solid ${MFX_COLORS.border}`, background: MFX_COLORS.panelAlt, color: MFX_COLORS.text, font: "inherit", fontWeight: 900, cursor: "pointer" };
-const accentButtonStyle: React.CSSProperties = { ...normalButtonStyle, border: `2px solid ${MFX_COLORS.cyan}`, background: MFX_COLORS.cyanSurface, color: MFX_COLORS.cyanText };
+const accentButtonStyle: React.CSSProperties = { ...normalButtonStyle, minWidth: 0, maxWidth: "30vw", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", border: `2px solid ${MFX_COLORS.cyan}`, background: MFX_COLORS.cyanSurface, color: MFX_COLORS.cyanText };
 const dialogBackdropStyle: React.CSSProperties = { position: "fixed", inset: 0, zIndex: 100100, display: "flex", alignItems: "center", justifyContent: "center", background: "rgba(0,0,0,0.62)" };
 const dialogStyle: React.CSSProperties = { width: "min(420px, calc(100vw - 32px))", padding: 18, borderRadius: 14, border: "2px solid transparent", background: multiFXSurfaceBackground("popup"), color: MFX_SURFACES.popup.text, boxShadow: MFX_SURFACES.popup.shadow, display: "flex", flexDirection: "column", gap: 14 };
 const inputStyle: React.CSSProperties = { width: "100%", height: 44, padding: "0 12px", boxSizing: "border-box", borderRadius: 9, border: `2px solid ${MFX_COLORS.border}`, outline: "none", background: MFX_COLORS.panelAlt, color: MFX_COLORS.text, font: "inherit", fontWeight: 800 };

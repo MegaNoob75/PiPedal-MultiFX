@@ -99,8 +99,15 @@ The installer saves itself as:
 sudo pipedal-multifx-setup
 ```
 
-PiPedal can be checked and updated from the MultiFX-owned **Updates** page or
-from the setup utility:
+When the setup menu or an install action starts, it checks the installer on the
+repository's `main` branch. The downloaded script must match the Git blob SHA
+reported by GitHub and pass a Bash syntax check. The installer then asks before
+replacing the saved setup utility and restarting the same action. This allows
+installer-only fixes to be distributed without publishing a new MultiFX
+release. Pass `--no-self-update` when an update check is not wanted.
+
+PiPedal can be checked and updated by opening **PiPedal / System** in MultiFX
+Settings and selecting **Check for updates**, or from the setup utility:
 
 ```bash
 sudo pipedal-multifx-setup pipedal

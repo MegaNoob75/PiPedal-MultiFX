@@ -122,7 +122,7 @@ export default function MultiFXAboutView() {
 
                             <p style={paragraphStyle}>
                                 PiPedal was created by Robin E. R. Davies.
-                                PiPedal MultiFX is an unofficial alternative
+                                PI-MULTIFX is an unofficial alternative
                                 interface built on PiPedal and does not replace
                                 PiPedal's upstream licensing or attribution.
                             </p>
@@ -305,7 +305,7 @@ export default function MultiFXAboutView() {
                                 letterSpacing: "0.04em"
                             }}
                         >
-                            PiPedal MultiFX
+                            PI-MULTIFX
                         </div>
 
                         <div
@@ -319,14 +319,14 @@ export default function MultiFXAboutView() {
                         </div>
 
                         <p style={paragraphStyle}>
-                            PiPedal MultiFX provides a touchscreen- and
+                            PI-MULTIFX provides a touchscreen- and
                             foot-controller-focused interface while continuing
                             to use PiPedal for pedalboards, plugins, banks,
                             presets, audio processing and system management.
                         </p>
 
                         <InfoRow label="PiPedal server" value={serverVersion} />
-                        <InfoRow label="Interface" value="PiPedal MultiFX" />
+                        <InfoRow label="Interface" value="PI-MULTIFX" />
 
                         <div
                             style={{
@@ -371,7 +371,7 @@ export default function MultiFXAboutView() {
                             }}
                         >
                             PiPedal legal details are displayed entirely inside
-                            MultiFX. The legal-page button performs only a local
+                            PI-MULTIFX. The legal-page button performs only a local
                             React state change.
                         </div>
                     </div>

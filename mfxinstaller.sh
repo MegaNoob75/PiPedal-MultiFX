@@ -18,7 +18,9 @@ set -Eeuo pipefail
 
 MULTIFX_REPOSITORY="${MULTIFX_REPOSITORY:-MegaNoob75/PiPedal-MultiFX}"
 MULTIFX_RELEASES_API="https://api.github.com/repos/${MULTIFX_REPOSITORY}/releases"
+INSTALLER_SOURCE_API="https://api.github.com/repos/${MULTIFX_REPOSITORY}/contents/mfxinstaller.sh?ref=main"
 PIPEDAL_RELEASES_API="https://api.github.com/repos/rerdavies/pipedal/releases"
+INSTALLER_VERSION="0.4.2"
 
 REACT_DIR="/etc/pipedal/react"
 CONTROLLER_CONFIG="/etc/pipedal/controller-config.json"
@@ -46,6 +48,7 @@ LOCAL_PACKAGE=""
 TARGET_USER_OVERRIDE=""
 RUN_FULL_UPGRADE=0
 ASSUME_YES=0
+CHECK_SELF_UPDATE=1
 APT_UPDATED=0
 REBOOT_NEEDED=0
 REBOOT_REASON=""
@@ -63,7 +66,7 @@ cleanup() {
     local directory
     for directory in "${TEMP_DIRS[@]:-}"; do
         case "${directory}" in
-            /tmp/pipedal-install.*|/tmp/pipedal-multifx.*|/tmp/pipedal-transaction.*|/tmp/pipedal-backup.*)
+            /tmp/pipedal-install.*|/tmp/pipedal-installer-update.*|/tmp/pipedal-multifx.*|/tmp/pipedal-transaction.*|/tmp/pipedal-backup.*)
                 [ ! -e "${directory}" ] || rm -rf -- "${directory}"
                 ;;
         esac
@@ -107,6 +110,7 @@ Advanced options:
   --local DIRECTORY  Install an extracted MultiFX Raspberry Pi package
   --user USER        Use this normal account for touchscreen auto-login
   --full-upgrade     Run apt-get full-upgrade before the requested action
+  --no-self-update   Do not check the installer on GitHub before starting
   -y, --yes          Accept confirmation prompts
   -h, --help         Show this help
 
@@ -152,6 +156,10 @@ parse_arguments() {
                 ;;
             --full-upgrade)
                 RUN_FULL_UPGRADE=1
+                shift
+                ;;
+            --no-self-update)
+                CHECK_SELF_UPDATE=0
                 shift
                 ;;
             -y|--yes)
@@ -436,6 +444,100 @@ github_api() {
         -H "Accept: application/vnd.github+json" \
         -H "X-GitHub-Api-Version: 2022-11-28" \
         "$1"
+}
+
+check_for_installer_update() {
+    local api_response candidate metadata remote_sha calculated_sha
+    local remote_version replacement
+    [ "${CHECK_SELF_UPDATE}" -eq 1 ] || return 0
+    command -v curl >/dev/null 2>&1 || {
+        echo "Installer update check skipped: curl is not installed."
+        return 0
+    }
+    command -v python3 >/dev/null 2>&1 || {
+        echo "Installer update check skipped: python3 is not installed."
+        return 0
+    }
+
+    make_temp_dir /tmp/pipedal-installer-update.XXXXXX
+    api_response="${TEMP_DIR}/github-content.json"
+    candidate="${TEMP_DIR}/mfxinstaller.sh"
+    metadata="${TEMP_DIR}/metadata.txt"
+    echo "Checking the MultiFX installer for updates..."
+    if ! github_api "${INSTALLER_SOURCE_API}" > "${api_response}"; then
+        echo "Installer update check unavailable; continuing with version ${INSTALLER_VERSION}."
+        return 0
+    fi
+
+    if ! python3 - "${api_response}" "${candidate}" "${metadata}" <<'PY'
+import base64
+import hashlib
+import json
+import sys
+
+response_path, output_path, metadata_path = sys.argv[1:]
+with open(response_path, "r", encoding="utf-8") as source:
+    document = json.load(source)
+if document.get("type") != "file" or document.get("encoding") != "base64":
+    raise SystemExit("GitHub did not return a base64 file")
+content = base64.b64decode(document["content"], validate=True)
+expected = document.get("sha", "")
+calculated = hashlib.sha1(
+    b"blob " + str(len(content)).encode("ascii") + b"\0" + content
+).hexdigest()
+if not expected or calculated != expected:
+    raise SystemExit("Git blob SHA verification failed")
+with open(output_path, "wb") as output:
+    output.write(content)
+with open(metadata_path, "w", encoding="ascii") as output:
+    output.write(expected + "\n" + calculated + "\n")
+PY
+    then
+        echo "Installer update check returned invalid data; the current installer was not changed."
+        return 0
+    fi
+
+    remote_sha="$(sed -n '1p' "${metadata}")"
+    calculated_sha="$(sed -n '2p' "${metadata}")"
+    [ -n "${remote_sha}" ] && [ "${remote_sha}" = "${calculated_sha}" ] || {
+        echo "Installer verification failed; the current installer was not changed."
+        return 0
+    }
+    chmod 0755 "${candidate}"
+    bash -n "${candidate}" || {
+        echo "The GitHub installer failed its Bash syntax check and was rejected."
+        return 0
+    }
+    remote_version="$(sed -n 's/^INSTALLER_VERSION="\([^"]*\)"/\1/p' \
+        "${candidate}" | head -n1)"
+    [ -n "${remote_version}" ] || {
+        echo "The GitHub installer has no version declaration and was rejected."
+        return 0
+    }
+    if dpkg --compare-versions "${remote_version}" lt "${INSTALLER_VERSION}"; then
+        echo "GitHub main contains older installer ${remote_version}; keeping ${INSTALLER_VERSION}."
+        return 0
+    fi
+    if cmp -s -- "${candidate}" "${SCRIPT_FILE}"; then
+        return 0
+    fi
+
+    replacement="${SETUP_COMMAND}.new"
+    echo
+    echo "A newer installer revision is available from GitHub main."
+    echo "Current installer: ${INSTALLER_VERSION}"
+    echo "GitHub installer:  ${remote_version}"
+    confirm_default_yes "Download the verified installer update and restart?" || {
+        echo "Continuing with the current installer."
+        return 0
+    }
+    mkdir -p "$(dirname -- "${SETUP_COMMAND}")"
+    install -m 0755 "${candidate}" "${replacement}"
+    mv -f -- "${replacement}" "${SETUP_COMMAND}"
+    ln -sfn "${SETUP_COMMAND}" "${UNINSTALL_COMMAND}"
+    echo "Installer updated. Restarting with the same command..."
+    exec "${SETUP_COMMAND}" "$@"
+    die "The updated installer could not be started."
 }
 
 urlencode() {
@@ -1738,6 +1840,9 @@ main() {
     require_root
     command -v apt-get >/dev/null 2>&1 ||
         die "This installer requires Raspberry Pi OS, Debian or Ubuntu."
+    case "${ACTION}" in
+        menu|pipedal|multifx|all) check_for_installer_update "$@" ;;
+    esac
     maybe_full_upgrade
     case "${ACTION}" in
         menu) show_menu ;;

@@ -10,7 +10,11 @@ import {
 const UPDATE_CHECK_TIMEOUT_MS = 15000;
 const REINSTALL_COMMAND = "sudo pipedal-multifx-setup multifx";
 
-export default function MultiFXUpdatesView() {
+interface MultiFXUpdatesViewProps {
+    onClose?: () => void;
+}
+
+export default function MultiFXUpdatesView({ onClose }: MultiFXUpdatesViewProps) {
     const model = useMemo(() => PiPedalModelFactory.getInstance(), []);
     const [status, setStatus] = useState<UpdateStatus>(() => model.updateStatus.get());
     const [checking, setChecking] = useState(false);
@@ -51,8 +55,8 @@ export default function MultiFXUpdatesView() {
         const approved = window.confirm(
             "Install the official PiPedal update now?\n\n"
             + "PiPedal will install its complete server and stock interface. "
-            + "Your MultiFX controller configuration, layout and runtime state will be kept, "
-            + "but the MultiFX interface must be reinstalled after a compatible MultiFX release is available."
+            + "Your PI-MULTIFX controller configuration, layout and runtime state will be kept, "
+            + "but the PI-MULTIFX interface must be reinstalled after a compatible PI-MULTIFX release is available."
         );
         if (!approved) return;
         setInstalling(true);
@@ -68,6 +72,14 @@ export default function MultiFXUpdatesView() {
     return (
         <div style={screenStyle}>
             <div style={contentStyle}>
+                <div style={pageHeaderStyle}>
+                    <div style={pageTitleStyle}>UPDATES</div>
+                    {onClose && (
+                        <button type="button" onClick={onClose} style={normalButtonStyle}>
+                            BACK TO SYSTEM SETTINGS
+                        </button>
+                    )}
+                </div>
                 <section style={panelStyle}>
                     <div style={sectionTitleStyle}>PIPEDAL UPDATE</div>
                     <div style={versionGridStyle}>
@@ -93,9 +105,9 @@ export default function MultiFXUpdatesView() {
                     </div>
 
                     <div style={warningStyle}>
-                        An update installs PiPedal’s complete official server and interface. MultiFX does not
-                        hold the old PiPedal interface over the new release. MultiFX-owned controller settings,
-                        layouts and runtime state are retained so they can be reused when MultiFX is installed again.
+                        An update installs PiPedal’s complete official server and interface. PI-MULTIFX does not
+                        hold the old PiPedal interface over the new release. PI-MULTIFX-owned controller settings,
+                        layouts and runtime state are retained so they can be reused when PI-MULTIFX is installed again.
                     </div>
 
                     <div style={actionsStyle}>
@@ -114,10 +126,10 @@ export default function MultiFXUpdatesView() {
                 </section>
 
                 <section style={panelStyle}>
-                    <div style={sectionTitleStyle}>REINSTALL MULTIFX LATER</div>
+                    <div style={sectionTitleStyle}>REINSTALL PI-MULTIFX LATER</div>
                     <div style={bodyStyle}>
-                        After confirming that your MultiFX release supports the new PiPedal version, reinstall it
-                        with the existing setup utility. Your saved MultiFX configuration will be reused.
+                        After confirming that your PI-MULTIFX release supports the new PiPedal version, reinstall it
+                        with the existing setup utility. Your saved PI-MULTIFX configuration will be reused.
                     </div>
                     <pre style={commandStyle}>{REINSTALL_COMMAND}</pre>
                 </section>
@@ -141,6 +153,21 @@ const contentStyle: React.CSSProperties = {
     margin: "0 auto",
     display: "grid",
     gap: 14
+};
+
+const pageHeaderStyle: React.CSSProperties = {
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "space-between",
+    flexWrap: "wrap",
+    gap: 10
+};
+
+const pageTitleStyle: React.CSSProperties = {
+    color: MFX_SURFACES.page.accent,
+    fontWeight: 900,
+    letterSpacing: "0.06em",
+    fontSize: "1.1rem"
 };
 
 const panelStyle: React.CSSProperties = {

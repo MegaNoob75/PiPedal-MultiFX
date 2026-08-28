@@ -832,19 +832,6 @@ export
                                             size="large">
                                             <MenuButton style={{ opacity: 0.75 }} />
                                         </IconButtonEx>
-                                        <Button
-                                            variant="contained"
-                                            onClick={() => { this.setPerformanceView(true); }}
-                                            style={{
-                                                marginLeft: 8,
-                                                marginRight: 10,
-                                                minWidth: 0,
-                                                whiteSpace: "nowrap",
-                                                fontWeight: 700
-                                            }}
-                                        >
-                                            ← MFX PERFORMANCE
-                                        </Button>
                                         <div style={{ flex: "0 1 400px", minWidth: 100 }}>
                                             <PresetSelector />
                                         </div>
@@ -879,20 +866,6 @@ export
                                         size="large">
                                         <MenuButton />
                                     </IconButtonEx>
-                                    <Button
-                                        variant="contained"
-                                        onClick={() => { this.setPerformanceView(true); }}
-                                        style={{
-                                            position: "absolute",
-                                            left: 68,
-                                            top: 10,
-                                            zIndex: 3,
-                                            minHeight: 42,
-                                            fontWeight: 700
-                                        }}
-                                    >
-                                        ← MFX PERFORMANCE
-                                    </Button>
                                     {this.state.canFullScreen && (
                                         <IconButtonEx
                                             tooltip={this.state.isFullScreen ? "Exit full screen" : "Full screen"}
@@ -925,7 +898,7 @@ export
                                     <ListItemIcon >
                                         <FxAmplifierIcon color='inherit' className={classes.menuIcon} style={{ width: 24, height: 24 }} />
                                     </ListItemIcon>
-                                    <ListItemText primary='MFX Performance View' />
+                                    <ListItemText primary='PI-MULTIFX' />
                                 </ListItemButton>
                             </List>
                             <Divider />

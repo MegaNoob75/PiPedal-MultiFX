@@ -406,7 +406,7 @@ export default function MultiFXSnapshotManager() {
 
                 <div style={helpStyle}>
                     Snapshot changes use PiPedal's native snapshot
-                    calls. MultiFX safely reloads BASE before persisting
+                    calls. PI-MULTIFX safely reloads BASE before persisting
                     snapshot data so snapshot sound can never overwrite it.
                 </div>
             </div>
