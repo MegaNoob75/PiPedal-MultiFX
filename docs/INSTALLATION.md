@@ -106,8 +106,13 @@ replacing the saved setup utility and restarting the same action. This allows
 installer-only fixes to be distributed without publishing a new MultiFX
 release. Pass `--no-self-update` when an update check is not wanted.
 
-PiPedal can be checked and updated by opening **PiPedal / System** in MultiFX
-Settings and selecting **Check for updates**, or from the setup utility:
+PiPedal and PI-MULTIFX can be checked by opening **PiPedal / System** in
+PI-MULTIFX Settings and selecting **Check for updates**. A newer stable
+PI-MULTIFX release can be installed directly from the same screen. The runtime
+bridge starts the existing setup utility as an independent systemd job, so it
+can safely restart the controller bridge and interface during installation.
+The normal verified Raspberry Pi ZIP and matching SHA-256 release assets are
+required. PiPedal can also be updated from the setup utility:
 
 ```bash
 sudo pipedal-multifx-setup pipedal

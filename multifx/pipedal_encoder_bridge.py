@@ -5,7 +5,7 @@ Responsibilities are deliberately narrow:
   * translate the MultiFX USB-MIDI controller into ydotool key events;
   * send complete portable hardware configurations over private MIDI SysEx;
   * discover controller hardware capabilities and coordinate transient Learn;
-  * expose one small HTTP state service on port 8877.
+  * expose the shared state and restricted PI-MULTIFX updater on port 8877.
 
 Persistence contract
 --------------------
@@ -39,6 +39,7 @@ from __future__ import annotations
 import json
 import math
 import os
+import re
 import socket
 import subprocess
 import sys
@@ -46,7 +47,9 @@ import threading
 import time
 import uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from urllib.parse import urlparse
+from urllib.error import HTTPError, URLError
+from urllib.parse import parse_qs, urlparse
+from urllib.request import Request, urlopen
 
 try:
     import mido
@@ -75,10 +78,23 @@ PHYSICAL_SWITCH_KEY_CODES = {
 RUNTIME_STATE_HOST = "0.0.0.0"
 RUNTIME_STATE_PORT = 8877
 RUNTIME_STATE_PATH = "/multifx-state"
+MULTIFX_UPDATE_PATH = "/multifx-update"
 PERSISTENT_STATE_FILE = "/var/lib/pipedal-multifx/state.json"
 FACTORY_CONTROLLER_CONFIG_FILE = "/etc/pipedal/controller-config.json"
+MULTIFX_INSTALLED_RELEASE_FILE = \
+    "/var/lib/pipedal-multifx-installer/installed-release"
+MULTIFX_UPDATE_JOB_FILE = \
+    "/var/lib/pipedal-multifx-installer/ui-update-job.json"
+MULTIFX_SETUP_COMMAND = "/usr/local/sbin/pipedal-multifx-setup"
+MULTIFX_RELEASE_API = \
+    "https://api.github.com/repos/MegaNoob75/PiPedal-MultiFX/releases/latest"
+MULTIFX_UPDATE_UNIT = "pipedal-multifx-ui-update"
+MULTIFX_RELEASE_PATTERN = re.compile(
+    r"^multifx-v(\d+)\.(\d+)(?:\.(\d+))?([.-][A-Za-z0-9.-]+)?$"
+)
+MULTIFX_RELEASE_CACHE_SECONDS = 300
 STATE_SCHEMA_VERSION = 3
-RUNTIME_VERSION = 6
+RUNTIME_VERSION = 7
 
 MFX_SYSEX_PREFIX = (0x7D, 0x4D, 0x46, 0x58)
 CONTROLLER_PROTOCOL_VERSION = 2
@@ -163,6 +179,12 @@ LEARN_STATUS_CONFLICT = 0x04
 MIDI_DEVICE_HINT = os.environ.get("MULTIFX_MIDI_DEVICE_HINT", "").strip().lower()
 
 state_lock = threading.RLock()
+multifx_update_lock = threading.RLock()
+multifx_release_cache = {
+    "checkedAt": 0.0,
+    "release": None,
+    "error": "",
+}
 state = {
     "version": RUNTIME_VERSION,
     "revision": 0,
@@ -1615,6 +1637,262 @@ def handle_controller_sysex(raw_data):
     return False
 
 
+def _multifx_version_key(tag):
+    """Return a sortable key for a validated PI-MULTIFX release tag."""
+    match = MULTIFX_RELEASE_PATTERN.fullmatch(tag or "")
+    if not match:
+        return None
+    suffix = match.group(4) or ""
+    return (
+        int(match.group(1)),
+        int(match.group(2)),
+        int(match.group(3) or 0),
+        1 if not suffix else 0,
+        suffix.lower(),
+    )
+
+
+def _read_text_file(path):
+    try:
+        with open(path, "r", encoding="utf-8") as source:
+            return source.read().strip()
+    except OSError:
+        return ""
+
+
+def _write_multifx_update_job(job):
+    directory = os.path.dirname(MULTIFX_UPDATE_JOB_FILE)
+    os.makedirs(directory, mode=0o755, exist_ok=True)
+    temporary = MULTIFX_UPDATE_JOB_FILE + ".tmp"
+    with open(temporary, "w", encoding="utf-8") as output:
+        json.dump(job, output, separators=(",", ":"))
+        output.write("\n")
+        output.flush()
+        os.fsync(output.fileno())
+    os.chmod(temporary, 0o600)
+    os.replace(temporary, MULTIFX_UPDATE_JOB_FILE)
+
+
+def _read_multifx_update_job():
+    try:
+        with open(MULTIFX_UPDATE_JOB_FILE, "r", encoding="utf-8") as source:
+            job = json.load(source)
+        if (
+            isinstance(job, dict)
+            and _multifx_version_key(job.get("targetVersion")) is not None
+            and job.get("unit") == MULTIFX_UPDATE_UNIT
+        ):
+            return job
+    except (OSError, ValueError, TypeError):
+        pass
+    return None
+
+
+def _release_has_installable_assets(release):
+    assets = release.get("assets") if isinstance(release, dict) else None
+    if not isinstance(assets, list):
+        return False
+    packages = [
+        asset for asset in assets
+        if isinstance(asset, dict)
+        and isinstance(asset.get("name"), str)
+        and asset["name"].lower().endswith(".zip")
+        and "multifx" in asset["name"].lower()
+        and "raspberrypi" in asset["name"].lower()
+    ]
+    if not packages:
+        return False
+    package_name = packages[0]["name"]
+    return any(
+        isinstance(asset, dict)
+        and asset.get("name") == package_name + ".sha256"
+        for asset in assets
+    )
+
+
+def _fetch_latest_multifx_release(force=False):
+    now = time.monotonic()
+    with multifx_update_lock:
+        cached = multifx_release_cache.get("release")
+        cached_error = str(multifx_release_cache.get("error") or "")
+        checked_at = float(multifx_release_cache.get("checkedAt") or 0)
+        if not force and checked_at and now - checked_at < MULTIFX_RELEASE_CACHE_SECONDS:
+            return cached, cached_error
+
+    request = Request(
+        MULTIFX_RELEASE_API,
+        headers={
+            "Accept": "application/vnd.github+json",
+            "User-Agent": "PiPedal-MultiFX-runtime",
+        },
+    )
+    try:
+        with urlopen(request, timeout=12) as response:
+            release = json.loads(response.read(2 * 1024 * 1024).decode("utf-8"))
+        if not isinstance(release, dict):
+            raise ValueError("GitHub returned invalid release metadata.")
+        tag = release.get("tag_name")
+        if (
+            release.get("draft")
+            or release.get("prerelease")
+            or _multifx_version_key(tag) is None
+            or not _release_has_installable_assets(release)
+        ):
+            raise ValueError(
+                "The latest release does not contain a verified Raspberry Pi package."
+            )
+        result = {
+            "tag": tag,
+            "name": release.get("name") or tag,
+            "publishedAt": release.get("published_at") or "",
+            "url": release.get("html_url") or "",
+        }
+        error = ""
+    except (HTTPError, URLError, TimeoutError, ValueError, json.JSONDecodeError) as exc:
+        result = None
+        error = f"Could not check GitHub releases: {exc}"
+
+    with multifx_update_lock:
+        multifx_release_cache["checkedAt"] = now
+        multifx_release_cache["release"] = result
+        multifx_release_cache["error"] = error
+    return result, error
+
+
+def _multifx_update_unit_state():
+    try:
+        result = subprocess.run(
+            ["systemctl", "is-active", MULTIFX_UPDATE_UNIT],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            text=True,
+            timeout=3,
+            check=False,
+        )
+        return result.stdout.strip().lower()
+    except (OSError, subprocess.SubprocessError):
+        return "unknown"
+
+
+def get_multifx_update_status(force_check=False):
+    installed = _read_text_file(MULTIFX_INSTALLED_RELEASE_FILE)
+    release, release_error = _fetch_latest_multifx_release(force_check)
+    latest = release["tag"] if release else ""
+    installed_key = _multifx_version_key(installed)
+    latest_key = _multifx_version_key(latest)
+    update_available = bool(
+        installed_key is not None
+        and latest_key is not None
+        and latest_key > installed_key
+    )
+    job = _read_multifx_update_job()
+    job_state = "idle"
+    message = ""
+
+    if job:
+        target = job["targetVersion"]
+        if installed == target:
+            job_state = "complete"
+            message = f"PI-MULTIFX {target} was installed successfully."
+            try:
+                os.unlink(MULTIFX_UPDATE_JOB_FILE)
+            except OSError:
+                pass
+        else:
+            unit_state = _multifx_update_unit_state()
+            started_at = job.get("startedAt")
+            recently_started = (
+                isinstance(started_at, int)
+                and time.time() - started_at < 15
+            )
+            if (
+                unit_state in {"active", "activating", "reloading"}
+                or recently_started
+            ):
+                job_state = "installing"
+                message = f"Installing PI-MULTIFX {target}..."
+            else:
+                job_state = "failed"
+                message = (
+                    f"PI-MULTIFX {target} was not installed. "
+                    "Check the pipedal-multifx-ui-update journal for details."
+                )
+
+    if not installed:
+        message = message or (
+            "The installed PI-MULTIFX release is not recorded. "
+            "Use the setup utility once to repair the installation."
+        )
+
+    return {
+        "installedVersion": installed,
+        "latestVersion": latest,
+        "latestName": release["name"] if release else "",
+        "releaseUrl": release["url"] if release else "",
+        "updateAvailable": update_available,
+        "jobState": job_state,
+        "message": message,
+        "error": release_error,
+    }
+
+
+def start_multifx_update():
+    with multifx_update_lock:
+        current = get_multifx_update_status(force_check=True)
+        if current["jobState"] == "installing":
+            return current
+        if not current["updateAvailable"]:
+            raise ValueError("No newer stable PI-MULTIFX release is available.")
+        if not os.path.isfile(MULTIFX_SETUP_COMMAND):
+            raise RuntimeError(
+                "The PI-MULTIFX setup utility is missing. Run mfxinstaller.sh once to repair it."
+            )
+
+        target = current["latestVersion"]
+        try:
+            subprocess.run(
+                ["systemctl", "reset-failed", MULTIFX_UPDATE_UNIT],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                timeout=3,
+                check=False,
+            )
+            _write_multifx_update_job({
+                "targetVersion": target,
+                "unit": MULTIFX_UPDATE_UNIT,
+                "startedAt": int(time.time()),
+            })
+            result = subprocess.run(
+                [
+                    "systemd-run",
+                    "--unit", MULTIFX_UPDATE_UNIT,
+                    "--collect",
+                    "--no-block",
+                    "--property=Type=exec",
+                    MULTIFX_SETUP_COMMAND,
+                    "multifx",
+                    "--tag", target,
+                    "--yes",
+                ],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                timeout=10,
+                check=False,
+            )
+        except (OSError, subprocess.SubprocessError) as exc:
+            raise RuntimeError(f"Could not start the PI-MULTIFX updater: {exc}") from exc
+        if result.returncode != 0:
+            raise RuntimeError(
+                "Could not start the PI-MULTIFX updater: "
+                + (result.stderr.strip() or result.stdout.strip() or "systemd-run failed")
+            )
+
+        current["jobState"] = "installing"
+        current["message"] = f"Installing PI-MULTIFX {target}..."
+        return current
+
+
 def _origin_allowed(handler):
     origin = handler.headers.get("Origin")
     if not origin:
@@ -1632,7 +1910,7 @@ def _origin_allowed(handler):
 
 
 class RuntimeHandler(BaseHTTPRequestHandler):
-    server_version = "PiPedalMultiFXRuntime/4.0"
+    server_version = "PiPedalMultiFXRuntime/5.0"
 
     def log_message(self, _format, *_args):
         return
@@ -1664,20 +1942,34 @@ class RuntimeHandler(BaseHTTPRequestHandler):
         self.end_headers()
 
     def do_GET(self):
-        if self.path != RUNTIME_STATE_PATH:
+        parsed = urlparse(self.path)
+        if parsed.path not in {RUNTIME_STATE_PATH, MULTIFX_UPDATE_PATH}:
             self._json(404, {"error": "not found"})
             return
         if _origin_allowed(self) == "":
             self._json(403, {"error": "origin not allowed"})
             return
-        self._json(200, get_state())
+        if parsed.path == RUNTIME_STATE_PATH:
+            self._json(200, get_state())
+            return
+        try:
+            force_check = parse_qs(parsed.query).get("refresh") == ["1"]
+            self._json(200, get_multifx_update_status(force_check))
+        except Exception as error:
+            print(f"PI-MULTIFX update check error: {error}", file=sys.stderr, flush=True)
+            self._json(500, {"error": "PI-MULTIFX update check failed"})
 
     def do_POST(self):
-        if self.path != RUNTIME_STATE_PATH:
+        parsed = urlparse(self.path)
+        if parsed.path not in {RUNTIME_STATE_PATH, MULTIFX_UPDATE_PATH}:
             self._json(404, {"error": "not found"})
             return
-        if _origin_allowed(self) == "":
+        allowed_origin = _origin_allowed(self)
+        if allowed_origin == "":
             self._json(403, {"error": "origin not allowed"})
+            return
+        if parsed.path == MULTIFX_UPDATE_PATH and not allowed_origin:
+            self._json(403, {"error": "browser origin required"})
             return
         try:
             length = int(self.headers.get("Content-Length", "0"))
@@ -1688,13 +1980,18 @@ class RuntimeHandler(BaseHTTPRequestHandler):
             return
         try:
             payload = json.loads(self.rfile.read(length).decode("utf-8"))
-            result = update_state(payload)
+            if parsed.path == MULTIFX_UPDATE_PATH:
+                if payload != {"action": "installLatest"}:
+                    raise ValueError("invalid update action")
+                result = start_multifx_update()
+            else:
+                result = update_state(payload)
         except (UnicodeDecodeError, json.JSONDecodeError, ValueError, KeyError) as error:
             self._json(400, {"error": str(error)})
             return
         except Exception as error:
-            print(f"Runtime update error: {error}", file=sys.stderr, flush=True)
-            self._json(500, {"error": "runtime update failed"})
+            print(f"Runtime request error: {error}", file=sys.stderr, flush=True)
+            self._json(500, {"error": str(error)})
             return
         self._json(200, result)
 

@@ -379,12 +379,15 @@ After the first run, the same menu is available as:
 sudo pipedal-multifx-setup
 ```
 
-In MultiFX Settings, open **PiPedal / System** and select PiPedal's existing
-**Check for updates** action. MultiFX displays the result in its own update
-view. Installing an update installs PiPedal's complete stock server and
-frontend. MultiFX-owned controller configuration, layouts and runtime state are
-retained, but MultiFX should be reinstalled only after its compatibility with
-the new PiPedal release has been confirmed.
+In PI-MULTIFX Settings, open **PiPedal / System** and select PiPedal's existing
+**Check for updates** action. The shared Updates screen checks both PiPedal and
+PI-MULTIFX. A newer stable PI-MULTIFX release can be installed directly from
+that screen through the existing verified setup utility; its Raspberry Pi ZIP
+and matching SHA-256 release asset are still required. Installing a PiPedal
+update installs PiPedal's complete stock server and frontend. PI-MULTIFX-owned
+controller configuration, layouts and runtime state are retained, but
+PI-MULTIFX should be reinstalled only after its compatibility with the new
+PiPedal release has been confirmed.
 
 Advanced command-line options for a specific release tag, a prerelease, or a
 local extracted package are documented in

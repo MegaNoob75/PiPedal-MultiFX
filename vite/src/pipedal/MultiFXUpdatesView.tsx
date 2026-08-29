@@ -9,6 +9,84 @@ import {
 
 const UPDATE_CHECK_TIMEOUT_MS = 15000;
 const REINSTALL_COMMAND = "sudo pipedal-multifx-setup multifx";
+const MULTIFX_UPDATE_POLL_MS = 2000;
+
+type MultiFXUpdateJobState = "idle" | "installing" | "complete" | "failed";
+
+interface MultiFXUpdateStatus {
+    installedVersion: string;
+    latestVersion: string;
+    latestName: string;
+    releaseUrl: string;
+    updateAvailable: boolean;
+    jobState: MultiFXUpdateJobState;
+    message: string;
+    error: string;
+}
+
+function multiFXUpdateUrl(refresh = false): string {
+    const hostname = window.location.hostname.includes(":")
+        ? `[${window.location.hostname}]`
+        : window.location.hostname;
+    return `http://${hostname}:8877/multifx-update${refresh ? "?refresh=1" : ""}`;
+}
+
+function normalizeMultiFXUpdateStatus(value: unknown): MultiFXUpdateStatus {
+    const source = value && typeof value === "object"
+        ? value as Record<string, unknown>
+        : {};
+    const rawJobState = source.jobState;
+    const jobState: MultiFXUpdateJobState = rawJobState === "installing"
+        || rawJobState === "complete"
+        || rawJobState === "failed"
+        ? rawJobState
+        : "idle";
+    const text = (key: string) => typeof source[key] === "string"
+        ? source[key] as string
+        : "";
+    return {
+        installedVersion: text("installedVersion"),
+        latestVersion: text("latestVersion"),
+        latestName: text("latestName"),
+        releaseUrl: text("releaseUrl"),
+        updateAvailable: source.updateAvailable === true,
+        jobState,
+        message: text("message"),
+        error: text("error")
+    };
+}
+
+async function requestMultiFXUpdate(
+    method: "GET" | "POST",
+    refresh = false
+): Promise<MultiFXUpdateStatus> {
+    const controller = new AbortController();
+    const timer = window.setTimeout(() => controller.abort(), 15000);
+    try {
+        const response = await fetch(multiFXUpdateUrl(refresh), {
+            method,
+            cache: "no-store",
+            headers: method === "POST"
+                ? { "Content-Type": "application/json" }
+                : undefined,
+            body: method === "POST"
+                ? JSON.stringify({ action: "installLatest" })
+                : undefined,
+            signal: controller.signal
+        });
+        const payload = await response.json() as unknown;
+        if (!response.ok) {
+            const detail = payload && typeof payload === "object"
+                && typeof (payload as Record<string, unknown>).error === "string"
+                ? (payload as Record<string, string>).error
+                : `HTTP ${response.status}`;
+            throw new Error(detail);
+        }
+        return normalizeMultiFXUpdateStatus(payload);
+    } finally {
+        window.clearTimeout(timer);
+    }
+}
 
 interface MultiFXUpdatesViewProps {
     onClose?: () => void;
@@ -20,6 +98,11 @@ export default function MultiFXUpdatesView({ onClose }: MultiFXUpdatesViewProps)
     const [checking, setChecking] = useState(false);
     const [installing, setInstalling] = useState(false);
     const [message, setMessage] = useState("");
+    const [multiFXStatus, setMultiFXStatus] =
+        useState<MultiFXUpdateStatus | null>(null);
+    const [multiFXChecking, setMultiFXChecking] = useState(false);
+    const [multiFXInstalling, setMultiFXInstalling] = useState(false);
+    const [multiFXMessage, setMultiFXMessage] = useState("");
 
     const checkForUpdates = useCallback(() => {
         setMessage("");
@@ -41,6 +124,63 @@ export default function MultiFXUpdatesView({ onClose }: MultiFXUpdatesViewProps)
         return () => model.updateStatus.removeOnChangedHandler(onChanged);
     }, [checkForUpdates, model]);
 
+    const checkMultiFXUpdates = useCallback(async (refresh = true) => {
+        setMultiFXChecking(true);
+        setMultiFXMessage("");
+        try {
+            const next = await requestMultiFXUpdate("GET", refresh);
+            setMultiFXStatus(next);
+            setMultiFXInstalling(next.jobState === "installing");
+        } catch (error) {
+            setMultiFXMessage(
+                `PI-MULTIFX update check failed: ${String(error)}`
+            );
+        } finally {
+            setMultiFXChecking(false);
+        }
+    }, []);
+
+    useEffect(() => {
+        void checkMultiFXUpdates(true);
+    }, [checkMultiFXUpdates]);
+
+    useEffect(() => {
+        if (!multiFXInstalling) return;
+        let stopped = false;
+        const poll = async () => {
+            try {
+                const next = await requestMultiFXUpdate("GET");
+                if (stopped) return;
+                setMultiFXStatus(next);
+                if (next.jobState !== "installing") {
+                    setMultiFXInstalling(false);
+                    setMultiFXMessage(next.message);
+                }
+            } catch {
+                // The bridge and PiPedal restart during a successful update.
+                // Keep polling until the new service is available.
+            }
+        };
+        const timer = window.setInterval(
+            () => void poll(),
+            MULTIFX_UPDATE_POLL_MS
+        );
+        void poll();
+        return () => {
+            stopped = true;
+            window.clearInterval(timer);
+        };
+    }, [multiFXInstalling]);
+
+    useEffect(() => {
+        if (multiFXStatus?.jobState !== "complete") return;
+        const timer = window.setTimeout(
+            () => window.location.reload(),
+            1800
+        );
+        return () => window.clearTimeout(timer);
+    }, [multiFXStatus?.jobState]);
+
     const release = status.getActiveRelease();
     const updateAvailable = status.isValid
         && status.isOnline
@@ -50,6 +190,14 @@ export default function MultiFXUpdatesView({ onClose }: MultiFXUpdatesViewProps)
         && status.isOnline
         && status.errorMessage === ""
         && !release.updateAvailable;
+    const multiFXUpToDate = Boolean(
+        multiFXStatus
+        && !multiFXStatus.error
+        && multiFXStatus.installedVersion
+        && multiFXStatus.latestVersion
+        && !multiFXStatus.updateAvailable
+        && multiFXStatus.jobState === "idle"
+    );
 
     const installUpdate = async () => {
         const approved = window.confirm(
@@ -66,6 +214,29 @@ export default function MultiFXUpdatesView({ onClose }: MultiFXUpdatesViewProps)
         } catch (error) {
             setInstalling(false);
             setMessage(`PiPedal update failed: ${String(error)}`);
+        }
+    };
+
+    const installMultiFXUpdate = async () => {
+        const target = multiFXStatus?.latestVersion || "the latest release";
+        const approved = window.confirm(
+            `Install PI-MULTIFX ${target} now?\n\n`
+            + "The verified release package will be installed using the existing setup utility. "
+            + "PiPedal audio settings, presets and saved PI-MULTIFX configuration will be kept. "
+            + "The interface and controller service will restart during installation."
+        );
+        if (!approved) return;
+        setMultiFXInstalling(true);
+        setMultiFXMessage(`Starting PI-MULTIFX ${target} installation...`);
+        try {
+            const next = await requestMultiFXUpdate("POST");
+            setMultiFXStatus(next);
+            setMultiFXMessage(next.message);
+        } catch (error) {
+            setMultiFXInstalling(false);
+            setMultiFXMessage(
+                `PI-MULTIFX update could not start: ${String(error)}`
+            );
         }
     };
 
@@ -126,10 +297,85 @@ export default function MultiFXUpdatesView({ onClose }: MultiFXUpdatesViewProps)
                 </section>
 
                 <section style={panelStyle}>
-                    <div style={sectionTitleStyle}>REINSTALL PI-MULTIFX LATER</div>
+                    <div style={sectionTitleStyle}>PI-MULTIFX UPDATE</div>
+                    <div style={versionGridStyle}>
+                        <span style={labelStyle}>Installed</span>
+                        <span>
+                            {multiFXStatus?.installedVersion || "Unknown"}
+                        </span>
+                        {multiFXStatus?.latestVersion && (
+                            <>
+                                <span style={labelStyle}>Latest</span>
+                                <span>{multiFXStatus.latestVersion}</span>
+                            </>
+                        )}
+                    </div>
+
+                    <div style={statusStyle}>
+                        {multiFXChecking && "Checking for PI-MULTIFX updates..."}
+                        {!multiFXChecking && multiFXInstalling
+                            && (multiFXStatus?.message || "Installing the PI-MULTIFX update...")}
+                        {!multiFXChecking && !multiFXInstalling
+                            && multiFXStatus?.updateAvailable
+                            && `PI-MULTIFX ${multiFXStatus.latestVersion} is available.`}
+                        {!multiFXChecking && !multiFXInstalling && multiFXUpToDate
+                            && "PI-MULTIFX is up to date."}
+                        {!multiFXChecking && !multiFXInstalling
+                            && multiFXStatus?.jobState === "complete"
+                            && `${multiFXStatus.message} Reloading the interface...`}
+                        {!multiFXChecking && !multiFXInstalling
+                            && multiFXStatus?.jobState === "failed"
+                            && multiFXStatus.message}
+                        {!multiFXChecking && !multiFXInstalling
+                            && multiFXStatus?.error
+                            && multiFXStatus.error}
+                        {!multiFXChecking && !multiFXInstalling
+                            && multiFXStatus?.jobState === "idle"
+                            && !multiFXStatus.updateAvailable
+                            && !multiFXUpToDate
+                            && !multiFXStatus.error
+                            && multiFXStatus.message}
+                    </div>
+
+                    <div style={{ ...bodyStyle, marginTop: 16 }}>
+                        PI-MULTIFX updates use the existing verified setup utility.
+                        Release checks require a Raspberry Pi package and matching
+                        SHA-256 checksum before an update is offered.
+                    </div>
+
+                    <div style={actionsStyle}>
+                        <button
+                            type="button"
+                            disabled={multiFXChecking || multiFXInstalling}
+                            onClick={() => void checkMultiFXUpdates(true)}
+                            style={normalButtonStyle}
+                        >
+                            {multiFXChecking ? "CHECKING..." : "CHECK AGAIN"}
+                        </button>
+                        {multiFXStatus?.updateAvailable && (
+                            <button
+                                type="button"
+                                disabled={multiFXChecking || multiFXInstalling}
+                                onClick={() => void installMultiFXUpdate()}
+                                style={accentButtonStyle}
+                            >
+                                {multiFXInstalling
+                                    ? "INSTALLING..."
+                                    : "INSTALL PI-MULTIFX UPDATE"}
+                            </button>
+                        )}
+                    </div>
+                    {multiFXMessage && (
+                        <div style={messageStyle}>{multiFXMessage}</div>
+                    )}
+                </section>
+
+                <section style={panelStyle}>
+                    <div style={sectionTitleStyle}>COMMAND-LINE RECOVERY</div>
                     <div style={bodyStyle}>
-                        After confirming that your PI-MULTIFX release supports the new PiPedal version, reinstall it
-                        with the existing setup utility. Your saved PI-MULTIFX configuration will be reused.
+                        If an update cannot be started from this screen, reinstall
+                        PI-MULTIFX with the existing setup utility. Saved
+                        configuration will be reused.
                     </div>
                     <pre style={commandStyle}>{REINSTALL_COMMAND}</pre>
                 </section>
