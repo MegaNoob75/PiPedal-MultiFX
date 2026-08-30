@@ -96,7 +96,37 @@ class MultiFXUpdateTests(unittest.TestCase):
             "multifx",
             "--tag", "multifx-v0.4.3",
             "--yes",
+            "--no-browser-refresh",
         ])
+
+    @mock.patch.object(bridge.os, "unlink")
+    @mock.patch.object(bridge, "_read_multifx_update_job")
+    @mock.patch.object(bridge, "_fetch_latest_multifx_release")
+    @mock.patch.object(bridge, "_read_text_file")
+    def test_completed_update_status_remains_available_after_read(
+        self,
+        read_text,
+        fetch_release,
+        read_job,
+        unlink,
+    ):
+        read_text.return_value = "multifx-v0.4.3"
+        fetch_release.return_value = ({
+            "tag": "multifx-v0.4.3",
+            "name": "PI-MULTIFX 0.4.3",
+            "publishedAt": "2026-08-29T00:00:00Z",
+            "url": "https://example.invalid/release",
+        }, "")
+        read_job.return_value = {
+            "targetVersion": "multifx-v0.4.3",
+            "unit": bridge.MULTIFX_UPDATE_UNIT,
+            "startedAt": 1,
+        }
+
+        status = bridge.get_multifx_update_status()
+
+        self.assertEqual(status["jobState"], "complete")
+        unlink.assert_not_called()
 
 
 if __name__ == "__main__":

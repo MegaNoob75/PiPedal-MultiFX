@@ -1906,10 +1906,6 @@ def get_multifx_update_status(force_check=False):
         if installed == target:
             job_state = "complete"
             message = f"PI-MULTIFX {target} was installed successfully."
-            try:
-                os.unlink(MULTIFX_UPDATE_JOB_FILE)
-            except OSError:
-                pass
         else:
             unit_state = _multifx_update_unit_state()
             started_at = job.get("startedAt")
@@ -1985,6 +1981,7 @@ def start_multifx_update():
                     "multifx",
                     "--tag", target,
                     "--yes",
+                    "--no-browser-refresh",
                 ],
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,

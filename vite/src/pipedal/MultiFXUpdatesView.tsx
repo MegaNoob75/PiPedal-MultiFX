@@ -10,6 +10,7 @@ import {
 const UPDATE_CHECK_TIMEOUT_MS = 15000;
 const REINSTALL_COMMAND = "sudo pipedal-multifx-setup multifx";
 const MULTIFX_UPDATE_POLL_MS = 2000;
+const MULTIFX_COMPLETED_RELOAD_KEY = "pipedal-multifx-completed-reload";
 
 type MultiFXUpdateJobState = "idle" | "installing" | "complete" | "failed";
 
@@ -174,12 +175,26 @@ export default function MultiFXUpdatesView({ onClose }: MultiFXUpdatesViewProps)
 
     useEffect(() => {
         if (multiFXStatus?.jobState !== "complete") return;
+        const completedVersion = multiFXStatus.installedVersion;
+        if (completedVersion
+            && window.sessionStorage.getItem(MULTIFX_COMPLETED_RELOAD_KEY)
+                === completedVersion) {
+            return;
+        }
         const timer = window.setTimeout(
-            () => window.location.reload(),
-            1800
+            () => {
+                if (completedVersion) {
+                    window.sessionStorage.setItem(
+                        MULTIFX_COMPLETED_RELOAD_KEY,
+                        completedVersion
+                    );
+                }
+                window.location.reload();
+            },
+            2500
         );
         return () => window.clearTimeout(timer);
-    }, [multiFXStatus?.jobState]);
+    }, [multiFXStatus?.installedVersion, multiFXStatus?.jobState]);
 
     const release = status.getActiveRelease();
     const updateAvailable = status.isValid

@@ -3,7 +3,7 @@ set -Eeuo pipefail
 
 # PiPedal MultiFX end-user setup utility.
 # Increment this version whenever installer behavior changes.
-INSTALLER_VERSION="1.4"
+INSTALLER_VERSION="1.5"
 #
 # Normal use:
 #   sudo ./mfxinstaller.sh
@@ -52,6 +52,7 @@ ASSUME_YES=0
 APT_UPDATED=0
 REBOOT_NEEDED=0
 REBOOT_REASON=""
+BROWSER_REFRESH=1
 MULTIFX_RESET_FOR_DOWNGRADE=0
 MULTIFX_CHANGE_IS_DOWNGRADE=0
 MULTIFX_CHRONOLOGY_KNOWN=0
@@ -118,6 +119,8 @@ Advanced options:
   --local DIRECTORY  Install an extracted MultiFX Raspberry Pi package
   --user USER        Use this normal account for touchscreen auto-login
   --full-upgrade     Run apt-get full-upgrade before the requested action
+  --no-browser-refresh
+                     Let the calling interface handle its own refresh
   -y, --yes          Accept confirmation prompts
   -h, --help         Show this help
 
@@ -163,6 +166,10 @@ parse_arguments() {
                 ;;
             --full-upgrade)
                 RUN_FULL_UPGRADE=1
+                shift
+                ;;
+            --no-browser-refresh)
+                BROWSER_REFRESH=0
                 shift
                 ;;
             -y|--yes)
@@ -1231,7 +1238,7 @@ install_multifx_payload() {
         "${SCRIPT_FILE}" "${package_root}/mfxinstaller.sh")"
     install_self "${installer_source}"
     install_home_copy "${installer_source}"
-    refresh_browser
+    [ "${BROWSER_REFRESH}" -eq 0 ] || refresh_browser
     echo "PiPedal MultiFX ${release_label} installation is complete."
 }
 
