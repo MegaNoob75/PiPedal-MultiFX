@@ -51,9 +51,11 @@ a compatibility shortcut and calls the same consolidated setup utility.
 The installer:
 
 - verifies that PiPedal is already present
-- installs the MultiFX runtime dependencies; on Debian 13/Trixie it explains
-  and offers to enable the official `trixie-backports` repository when needed
-  to install `ydotool`
+- installs the MultiFX runtime dependencies; it checks configured APT
+  repositories first and, only when needed on Debian 13/Trixie, automatically
+  enables official `trixie-backports` to install `ydotool`
+- reversibly masks Debian's conflicting per-user `ydotool` service while
+  MultiFX's system-level input daemon is installed
 - backs up the current PiPedal frontend the first time MultiFX is installed
 - installs the prebuilt MultiFX frontend
 - preserves an existing controller configuration during normal updates

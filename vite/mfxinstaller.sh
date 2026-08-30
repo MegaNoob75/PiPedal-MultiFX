@@ -3,7 +3,7 @@ set -Eeuo pipefail
 
 # PiPedal MultiFX end-user setup utility.
 # Increment this version whenever installer behavior changes.
-INSTALLER_VERSION="1.0"
+INSTALLER_VERSION="1.4"
 #
 # Normal use:
 #   sudo ./mfxinstaller.sh
@@ -373,8 +373,7 @@ ensure_ydotool_available() {
     echo
     echo "ydotool is not included in Debian 13's standard repository."
     echo "It is available from the official Debian trixie-backports repository."
-    confirm_default_yes "Enable official Debian trixie-backports for ydotool?" ||
-        die "MultiFX installation requires ydotool. No repository was changed."
+    echo "Enabling official Debian trixie-backports automatically."
 
     if [ ! -e "${YDOTOOL_BACKPORTS_SOURCE}" ]; then
         cat > "${YDOTOOL_BACKPORTS_SOURCE}" <<'BACKPORTS_SOURCE'
@@ -646,10 +645,7 @@ resolve_ydotool_service_conflict() {
     echo "A conflicting Debian ydotool user service is globally enabled."
     echo "MultiFX uses pipedal-ydotoold.service so its root controller bridge"
     echo "has one reliable daemon and one predictable socket."
-    if ! confirm_default_yes \
-        "Mask the conflicting user service while MultiFX is installed?"; then
-        die "Installation stopped to avoid running two ydotool daemons."
-    fi
+    echo "Temporarily masking the conflicting user service."
 
     mkdir -p "${INSTALLER_STATE_DIR}"
     touch "${INSTALLER_STATE_DIR}/ydotool-user-service.masked-by-installer"
@@ -1632,14 +1628,13 @@ configure_touchscreen_display() {
     get_target_user
     command -v raspi-config >/dev/null 2>&1 ||
         die "Touchscreen setup requires Raspberry Pi OS and raspi-config."
-    confirm "Configure this Pi to open PiPedal automatically with the on-screen keyboard?" || {
-        echo "Cancelled."
-        return 0
-    }
+    echo "Configuring automatic PiPedal touchscreen startup with Squeekboard..."
 
     apt_update_once
     apt-get install -y --no-install-recommends labwc chromium squeekboard
     [ -x /usr/bin/chromium ] || die "Chromium was not installed at /usr/bin/chromium."
+    [ -x /usr/bin/squeekboard ] ||
+        die "Squeekboard was installed, but /usr/bin/squeekboard is missing."
     mkdir -p "${DISPLAY_STATE_DIR}" /etc/xdg/labwc
     profile="${TARGET_HOME}/.bash_profile"
     backup_display_file_once /etc/xdg/labwc/rc.xml labwc-rc.xml
@@ -1682,7 +1677,7 @@ PROFILE
     chown "${TARGET_USER}:${TARGET_GROUP}" "${profile}"
     printf '%s\n' "${TARGET_USER}" > "${DISPLAY_STATE_DIR}/configured-user"
     install_self
-    echo "Touchscreen display setup is complete for ${TARGET_USER}."
+    echo "Touchscreen display setup is complete for ${TARGET_USER} using Squeekboard."
     echo "Reboot the Raspberry Pi when convenient to start it automatically."
     mark_reboot_needed "touchscreen auto-login and the Labwc session were configured"
 }
@@ -1764,6 +1759,7 @@ show_status() {
     echo "PiPedal MultiFX:    ${multifx_version}"
     if [ -f "${DISPLAY_STATE_DIR}/configured-user" ]; then
         echo "Touchscreen setup:  enabled for $(cat "${DISPLAY_STATE_DIR}/configured-user")"
+        echo "On-screen keyboard: Squeekboard"
     else
         echo "Touchscreen setup:  not configured by this installer"
     fi

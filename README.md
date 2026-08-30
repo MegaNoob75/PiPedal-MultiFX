@@ -325,9 +325,11 @@ or **Complete setup: PiPedal + MultiFX + touchscreen** for a new Pi.
 The installer:
 
 - verifies that PiPedal is present
-- installs required MultiFX runtime dependencies; on Debian 13/Trixie it can
-  enable the official `trixie-backports` repository after confirmation when
-  that repository is needed for `ydotool`
+- installs required MultiFX runtime dependencies; it checks configured APT
+  repositories first and, only when needed on Debian 13/Trixie, automatically
+  enables official `trixie-backports` for `ydotool`
+- prevents Debian's per-user `ydotool` daemon from competing with MultiFX's
+  system daemon, and restores the original service policy when MultiFX is removed
 - backs up the existing PiPedal frontend the first time MultiFX is installed
 - installs the prebuilt MultiFX frontend
 - installs the MultiFX bridge
