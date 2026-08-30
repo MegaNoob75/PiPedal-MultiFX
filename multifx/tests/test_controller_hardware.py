@@ -261,6 +261,52 @@ class ControllerHardwareConfigTests(unittest.TestCase):
             bridge.state.clear()
             bridge.state.update(original_state)
 
+    def test_keyboard_settings_and_theme_are_synced_together(self):
+        """Remote keyboard appearance is durable and rejects partial settings."""
+        original_state = bridge._deepcopy(bridge.state)
+        settings = {
+            "version": 4,
+            "mode": "auto",
+            "transparentBackground": False,
+            "themeId": "keyboard:Stage Keys",
+            "keyShape": "rounded",
+            "textSize": "large",
+            "hapticFeedback": True,
+            "size": "compact",
+            "placement": "bottom",
+        }
+        paint = {"kind": "solid", "colors": ["#101010"], "angle": 0}
+        theme = {
+            "version": 1,
+            "name": "Stage Keys",
+            "author": "User",
+            "backdrop": paint,
+            "panel": paint,
+            "valueBox": paint,
+            "key": paint,
+            "pressedKey": paint,
+            "border": "#ffffff",
+            "text": "#ffffff",
+            "secondaryText": "#aaaaaa",
+            "accent": "#00ffff",
+            "pressedText": "#000000",
+            "cancel": "#ff0000",
+        }
+        try:
+            with mock.patch.object(bridge, "_save_persistent_locked") as save:
+                result = bridge.update_state({
+                    "keyboardSettings": settings,
+                    "keyboardTheme": theme,
+                })
+            self.assertEqual(result["keyboardSettings"], settings)
+            self.assertEqual(result["keyboardTheme"], theme)
+            save.assert_called_once_with()
+            with self.assertRaisesRegex(ValueError, "complete version 4"):
+                bridge._validate_keyboard_settings({"version": 4})
+        finally:
+            bridge.state.clear()
+            bridge.state.update(original_state)
+
     def test_i2c_module_scan_request_and_results_are_correlated(self):
         """Discovery sends selected pins and accepts only its matching token."""
         original_state = bridge._deepcopy(bridge.state)

@@ -94,7 +94,7 @@ MULTIFX_RELEASE_PATTERN = re.compile(
 )
 MULTIFX_RELEASE_CACHE_SECONDS = 300
 STATE_SCHEMA_VERSION = 3
-RUNTIME_VERSION = 8
+RUNTIME_VERSION = 9
 MAX_PRESET_SNAPSHOT_STATES = 512
 MAX_SNAPSHOT_INDEX = 5
 
@@ -206,6 +206,8 @@ state = {
     "presetAssignments": {"version": 1, "banks": {}},
     "theme": None,
     "uiSettings": None,
+    "keyboardSettings": None,
+    "keyboardTheme": None,
     "controllerHardware": {
         "connected": False,
         "protocolVersion": None,
@@ -691,6 +693,8 @@ def _persistent_payload_locked():
         "presetAssignments": state.get("presetAssignments"),
         "theme": state.get("theme"),
         "uiSettings": state.get("uiSettings"),
+        "keyboardSettings": state.get("keyboardSettings"),
+        "keyboardTheme": state.get("keyboardTheme"),
     }
 
 
@@ -750,6 +754,50 @@ def _validate_ui_settings(value):
     return _deepcopy(value)
 
 
+def _validate_keyboard_settings(value):
+    if value is None:
+        return None
+    expected = {
+        "version", "mode", "transparentBackground", "themeId", "keyShape",
+        "textSize", "hapticFeedback", "size", "placement",
+    }
+    if not isinstance(value, dict) or set(value) != expected or value.get("version") != 4:
+        raise ValueError("keyboardSettings must use the complete version 4 schema")
+    if value.get("mode") not in {"auto", "multifx", "system", "off"}:
+        raise ValueError("keyboardSettings.mode is invalid")
+    if value.get("keyShape") not in {"rounded", "square"}:
+        raise ValueError("keyboardSettings.keyShape is invalid")
+    if value.get("textSize") not in {"normal", "large", "extra-large"}:
+        raise ValueError("keyboardSettings.textSize is invalid")
+    if value.get("size") not in {"full", "large", "compact"}:
+        raise ValueError("keyboardSettings.size is invalid")
+    if value.get("placement") not in {"top", "center", "bottom"}:
+        raise ValueError("keyboardSettings.placement is invalid")
+    if not isinstance(value.get("themeId"), str) or len(value["themeId"]) > 256:
+        raise ValueError("keyboardSettings.themeId is invalid")
+    for field in ("transparentBackground", "hapticFeedback"):
+        if not isinstance(value.get(field), bool):
+            raise ValueError(f"keyboardSettings.{field} must be boolean")
+    return _deepcopy(value)
+
+
+def _validate_keyboard_theme(value):
+    if value is None:
+        return None
+    expected = {
+        "version", "name", "author", "backdrop", "panel", "valueBox",
+        "key", "pressedKey", "border", "text", "secondaryText", "accent",
+        "pressedText", "cancel",
+    }
+    if not isinstance(value, dict) or set(value) != expected or value.get("version") != 1:
+        raise ValueError("keyboardTheme must use the complete version 1 schema")
+    if not isinstance(value.get("name"), str) or not value["name"].strip():
+        raise ValueError("keyboardTheme.name is invalid")
+    if len(json.dumps(value, separators=(",", ":"))) > 50000:
+        raise ValueError("keyboardTheme is too large")
+    return _deepcopy(value)
+
+
 def _save_persistent_locked():
     os.makedirs(os.path.dirname(PERSISTENT_STATE_FILE), exist_ok=True)
     temp = f"{PERSISTENT_STATE_FILE}.tmp"
@@ -778,11 +826,15 @@ def load_persistent_state():
         assignments = _normalize_assignments(saved.get("presetAssignments", {"version": 1, "banks": {}}))
         theme = _validate_theme(saved.get("theme"))
         ui_settings = _validate_ui_settings(saved.get("uiSettings"))
+        keyboard_settings = _validate_keyboard_settings(saved.get("keyboardSettings"))
+        keyboard_theme = _validate_keyboard_theme(saved.get("keyboardTheme"))
         with state_lock:
             state["controllerConfig"] = controller
             state["presetAssignments"] = assignments
             state["theme"] = theme
             state["uiSettings"] = ui_settings
+            state["keyboardSettings"] = keyboard_settings
+            state["keyboardTheme"] = keyboard_theme
         print(f"Restored MultiFX state from {PERSISTENT_STATE_FILE}.", flush=True)
     except Exception as error:
         # This feature is not released, so partial migration is riskier than a
@@ -793,6 +845,8 @@ def load_persistent_state():
             state["presetAssignments"] = {"version": 1, "banks": {}}
             state["theme"] = None
             state["uiSettings"] = None
+            state["keyboardSettings"] = None
+            state["keyboardTheme"] = None
             if state["controllerConfig"] is not None:
                 _save_persistent_locked()
 
@@ -925,6 +979,14 @@ def update_state(patch):
 
         if "uiSettings" in patch:
             state["uiSettings"] = _validate_ui_settings(patch["uiSettings"])
+            persistent_changed = True
+
+        if "keyboardSettings" in patch:
+            state["keyboardSettings"] = _validate_keyboard_settings(patch["keyboardSettings"])
+            persistent_changed = True
+
+        if "keyboardTheme" in patch:
+            state["keyboardTheme"] = _validate_keyboard_theme(patch["keyboardTheme"])
             persistent_changed = True
 
         if "controllerModuleScanStart" in patch:

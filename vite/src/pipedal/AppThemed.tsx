@@ -19,6 +19,7 @@
 
 
 import './AppThemed.css';
+import MultiFXKeyboardProvider from './multifx-keyboard/MultiFXKeyboardProvider';
 
 //import {alpha} from '@mui/material/styles';
 import AppBar from '@mui/material/AppBar';
@@ -1186,6 +1187,7 @@ export
                         </div>
                     </div>
                 </Modal >
+                <MultiFXKeyboardProvider />
             </div >
 
         );

@@ -3,7 +3,7 @@ set -Eeuo pipefail
 
 # PiPedal MultiFX end-user setup utility.
 # Increment this version whenever installer behavior changes.
-INSTALLER_VERSION="1.5"
+INSTALLER_VERSION="1.6"
 #
 # Normal use:
 #   sudo ./mfxinstaller.sh
@@ -1184,6 +1184,7 @@ install_multifx_payload() {
         die "Invalid MultiFX package: ${package_root}"
 
     install_multifx_dependencies
+    remove_legacy_squeekboard
     mkdir -p "${MFX_STATE_DIR}" "${MFX_LIB_DIR}" "${INSTALLER_STATE_DIR}"
     resolve_ydotool_service_conflict
     ensure_stock_frontend_backup
@@ -1630,18 +1631,30 @@ remove_touchscreen_configuration() {
     rm -rf -- "${DISPLAY_STATE_DIR}"
 }
 
+remove_legacy_squeekboard() {
+    local autostart="/etc/xdg/labwc/autostart"
+    pkill -x squeekboard 2>/dev/null || true
+    if [ -f "${autostart}" ]; then
+        sed -i '/^[[:space:]]*squeekboard[[:space:]]*&[[:space:]]*$/d' "${autostart}"
+    fi
+    if dpkg-query -W -f='${Status}' squeekboard 2>/dev/null |
+        grep -q 'install ok installed'; then
+        echo "Removing the obsolete Squeekboard system keyboard..."
+        apt-get purge -y squeekboard
+    fi
+}
+
 configure_touchscreen_display() {
     local profile
     get_target_user
     command -v raspi-config >/dev/null 2>&1 ||
         die "Touchscreen setup requires Raspberry Pi OS and raspi-config."
-    echo "Configuring automatic PiPedal touchscreen startup with Squeekboard..."
+    echo "Configuring automatic PiPedal touchscreen startup..."
 
     apt_update_once
-    apt-get install -y --no-install-recommends labwc chromium squeekboard
+    apt-get install -y --no-install-recommends labwc chromium
     [ -x /usr/bin/chromium ] || die "Chromium was not installed at /usr/bin/chromium."
-    [ -x /usr/bin/squeekboard ] ||
-        die "Squeekboard was installed, but /usr/bin/squeekboard is missing."
+    remove_legacy_squeekboard
     mkdir -p "${DISPLAY_STATE_DIR}" /etc/xdg/labwc
     profile="${TARGET_HOME}/.bash_profile"
     backup_display_file_once /etc/xdg/labwc/rc.xml labwc-rc.xml
@@ -1662,7 +1675,6 @@ RCXML
 
     cat > /etc/xdg/labwc/autostart <<'AUTOSTART'
 #!/bin/bash
-squeekboard &
 exec /usr/bin/chromium \
     --ozone-platform=wayland \
     --start-maximized \
@@ -1684,7 +1696,7 @@ PROFILE
     chown "${TARGET_USER}:${TARGET_GROUP}" "${profile}"
     printf '%s\n' "${TARGET_USER}" > "${DISPLAY_STATE_DIR}/configured-user"
     install_self
-    echo "Touchscreen display setup is complete for ${TARGET_USER} using Squeekboard."
+    echo "Touchscreen display setup is complete for ${TARGET_USER}."
     echo "Reboot the Raspberry Pi when convenient to start it automatically."
     mark_reboot_needed "touchscreen auto-login and the Labwc session were configured"
 }
@@ -1766,7 +1778,7 @@ show_status() {
     echo "PiPedal MultiFX:    ${multifx_version}"
     if [ -f "${DISPLAY_STATE_DIR}/configured-user" ]; then
         echo "Touchscreen setup:  enabled for $(cat "${DISPLAY_STATE_DIR}/configured-user")"
-        echo "On-screen keyboard: Squeekboard"
+        echo "On-screen keyboard: MultiFX"
     else
         echo "Touchscreen setup:  not configured by this installer"
     fi

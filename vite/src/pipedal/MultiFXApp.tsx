@@ -19,6 +19,7 @@ import MultiFXSettingsHub from "./MultiFXSettingsHub";
 import MultiFXControllerSettings from "./MultiFXControllerSettings";
 import MultiFXThemeManager from "./MultiFXThemeManager";
 import MultiFXUISettings from "./MultiFXUISettings";
+import MultiFXKeyboardSettingsView from "./multifx-keyboard/MultiFXKeyboardSettingsView";
 import MultiFXSnapshotManager from "./MultiFXSnapshotManager";
 import MultiFXSnapshotEditView from "./MultiFXSnapshotEditView";
 import FxAmplifierIcon from "./svg/fx_amplifier.svg?react";
@@ -43,6 +44,7 @@ export type MultiFXView =
     | "settings"
     | "controller"
     | "theme"
+    | "keyboard"
     | "multiFXUI"
     | "snapshots"
     | "snapshotEdit"
@@ -280,6 +282,7 @@ export default function MultiFXApp({ onExitToOriginal }: MultiFXAppProps) {
         settings: "SETTINGS",
         controller: "CONTROLLER",
         theme: "THEME",
+        keyboard: "KEYBOARD",
         multiFXUI: "PI-MULTIFX UI",
         snapshots: "SNAPSHOTS",
         snapshotEdit: "SNAPSHOT EDITOR",
@@ -361,6 +364,7 @@ export default function MultiFXApp({ onExitToOriginal }: MultiFXAppProps) {
                     <MultiFXSettingsHub
                         onController={() => goTo("controller")}
                         onTheme={() => goTo("theme")}
+                        onKeyboard={() => goTo("keyboard")}
                         onMultiFXUI={() => goTo("multiFXUI")}
                         onSystem={() => goTo("systemSettings")}
                     />
@@ -372,6 +376,7 @@ export default function MultiFXApp({ onExitToOriginal }: MultiFXAppProps) {
                     />
                 )}
                 {view === "theme" && <MultiFXThemeManager />}
+                {view === "keyboard" && <MultiFXKeyboardSettingsView />}
                 {view === "multiFXUI" && (
                     <MultiFXUISettings
                         onExitToOriginal={() => void exitToOriginal()}

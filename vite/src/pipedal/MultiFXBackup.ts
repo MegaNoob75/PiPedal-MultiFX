@@ -15,13 +15,20 @@ import {
 import { validateMultiFXPresetAssignments } from "./MultiFXPresetAssignments";
 import { validateControllerLayoutConfig } from "./ControllerConfig";
 import { validateMultiFXUIBehaviorSettings } from "./MultiFXUIBehavior";
+import { MULTIFX_KEYBOARD_SETTINGS_STORAGE_KEY } from "./multifx-keyboard/MultiFXKeyboardMode";
+import {
+    CUSTOM_KEYBOARD_THEMES_STORAGE_KEY,
+    validateMultiFXKeyboardTheme
+} from "./multifx-keyboard/MultiFXKeyboardTheme";
 
 export const MULTIFX_BACKUP_FORMAT = "pipedal-multifx-ui-backup";
-export const MULTIFX_BACKUP_VERSION = 7;
+export const MULTIFX_BACKUP_VERSION = 9;
 
 export const MULTIFX_BACKUP_LOCAL_STORAGE_KEYS = [
     THEME_STORAGE_KEY,
-    CUSTOM_THEMES_STORAGE_KEY
+    CUSTOM_THEMES_STORAGE_KEY,
+    CUSTOM_KEYBOARD_THEMES_STORAGE_KEY,
+    MULTIFX_KEYBOARD_SETTINGS_STORAGE_KEY
 ] as const;
 
 export type MultiFXBackupSettings = Record<string, string | null>;
@@ -105,6 +112,14 @@ export function validateMultiFXBackup(
                 (theme as { name: string }).name.trim().toLocaleLowerCase()
             );
             if (new Set(names).size !== names.length) return false;
+        }
+        const keyboardThemes = value.settings[CUSTOM_KEYBOARD_THEMES_STORAGE_KEY];
+        if (typeof keyboardThemes === "string") {
+            const parsed = JSON.parse(keyboardThemes) as unknown;
+            if (!Array.isArray(parsed)
+                || parsed.some((theme) => !validateMultiFXKeyboardTheme(theme))) {
+                return false;
+            }
         }
     } catch {
         return false;

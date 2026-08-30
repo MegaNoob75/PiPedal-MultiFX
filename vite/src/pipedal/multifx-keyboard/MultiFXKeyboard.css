@@ -1,0 +1,180 @@
+.multifx-keyboard-backdrop {
+    position: fixed;
+    inset: 0;
+    z-index: 2147483000;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: clamp(8px, 1.5vh, 14px);
+    box-sizing: border-box;
+    background: var(--mfx-keyboard-backdrop, #030408);
+    color: var(--mfx-keyboard-text, #f5f3f7);
+    font-family: var(--mfx-font-interface-family, system-ui, sans-serif);
+    user-select: none;
+    touch-action: manipulation;
+}
+
+.multifx-keyboard-panel {
+    width: 100%;
+    height: 100%;
+    max-width: 1100px;
+    min-height: 0;
+    margin: 0;
+    padding: clamp(10px, 2vh, 18px);
+    box-sizing: border-box;
+    display: flex;
+    flex-direction: column;
+    gap: clamp(7px, 1.2vh, 12px);
+    border: 2px solid var(--mfx-keyboard-border, #42384d);
+    border-radius: 16px;
+    background: var(--mfx-keyboard-background, #18151e);
+    box-shadow: 0 18px 60px rgba(0, 0, 0, 0.72);
+}
+
+.multifx-keyboard-backdrop.is-transparent {
+    background: transparent;
+}
+
+.multifx-keyboard-panel.is-transparent {
+    border-color: transparent;
+    background: transparent;
+    box-shadow: none;
+}
+
+.multifx-keyboard-heading {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 16px;
+}
+
+.multifx-keyboard-label {
+    color: var(--mfx-keyboard-accent, #22d3ee);
+    font-size: clamp(15px, 2.5vh, 22px);
+    font-weight: 900;
+    letter-spacing: 0.035em;
+}
+
+.multifx-keyboard-unit {
+    color: var(--mfx-keyboard-muted, #b7afbf);
+    font-size: clamp(12px, 2vh, 17px);
+}
+
+.multifx-keyboard-value {
+    min-height: clamp(58px, 11vh, 78px);
+    padding: 8px 14px;
+    overflow: hidden;
+    box-sizing: border-box;
+    border: 2px solid var(--mfx-keyboard-accent, #22d3ee);
+    border-radius: 10px;
+    background: var(--mfx-keyboard-value-background, #0d0b12);
+    color: var(--mfx-keyboard-text, #f5f3f7);
+    white-space: pre;
+}
+
+.multifx-keyboard-value-heading {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    line-height: 1.15;
+}
+
+.multifx-keyboard-value-text {
+    overflow: hidden;
+    font-size: clamp(20px, 4vh, 34px);
+    line-height: 1.2;
+}
+
+.multifx-keyboard-selection {
+    background: var(--mfx-keyboard-accent, #22d3ee);
+    color: var(--mfx-keyboard-value-background, #0d0b12);
+}
+
+.multifx-keyboard-caret {
+    display: inline-block;
+    width: 2px;
+    height: 1.1em;
+    vertical-align: -0.12em;
+    background: var(--mfx-keyboard-accent, #22d3ee);
+}
+
+.multifx-keyboard-rows {
+    min-height: 0;
+    /* Four character rows share space with the separate action row below. */
+    flex: 4 1 0;
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    gap: clamp(5px, 1vh, 9px);
+}
+
+.multifx-keyboard-row {
+    min-height: 0;
+    flex: 1 1 0;
+    display: flex;
+    justify-content: center;
+    gap: clamp(4px, 0.7vw, 8px);
+}
+
+.multifx-keyboard-key {
+    min-width: 0;
+    min-height: 42px;
+    height: 100%;
+    flex: 1 1 0;
+    padding: 4px;
+    border: 1px solid var(--mfx-keyboard-border, #42384d);
+    border-radius: 10px;
+    background: var(--mfx-keyboard-key-background, #211d27);
+    color: var(--mfx-keyboard-text, #f5f3f7);
+    box-shadow: 0 3px 0 rgba(0, 0, 0, 0.48);
+    font: inherit;
+    font-size: clamp(17px, 3.5vh, 28px);
+    font-weight: 800;
+}
+
+.multifx-keyboard-key:active,
+.multifx-keyboard-key.is-active {
+    transform: translateY(2px);
+    border-color: var(--mfx-keyboard-accent, #22d3ee);
+    background: var(--mfx-keyboard-active, #083344);
+    color: var(--mfx-keyboard-active-text, #ecfeff);
+    box-shadow: 0 1px 0 rgba(0, 0, 0, 0.5);
+}
+
+.multifx-keyboard-key.is-wide { flex-grow: 1.8; }
+.multifx-keyboard-key.is-space { flex-grow: 4; }
+.multifx-keyboard-key.is-cancel { color: var(--mfx-keyboard-danger, #f87171); }
+.multifx-keyboard-key.is-done {
+    border-color: var(--mfx-keyboard-accent, #22d3ee);
+    color: var(--mfx-keyboard-accent, #22d3ee);
+}
+
+.multifx-keyboard-panel.keys-square,
+.multifx-keyboard-panel.keys-square .multifx-keyboard-value,
+.multifx-keyboard-panel.keys-square .multifx-keyboard-key { border-radius: 2px; }
+.multifx-keyboard-backdrop.text-large .multifx-keyboard-key { font-size: clamp(20px, 4vh, 32px); }
+.multifx-keyboard-backdrop.text-extra-large .multifx-keyboard-key { font-size: clamp(24px, 4.7vh, 38px); }
+
+.multifx-keyboard-backdrop.size-large .multifx-keyboard-panel {
+    width: 92%;
+    height: 85%;
+}
+
+.multifx-keyboard-backdrop.size-compact .multifx-keyboard-panel {
+    width: 80%;
+    height: 72%;
+}
+
+.multifx-keyboard-backdrop.placement-top { align-items: flex-start; }
+.multifx-keyboard-backdrop.placement-center { align-items: center; }
+.multifx-keyboard-backdrop.placement-bottom { align-items: flex-end; }
+
+@media (max-height: 520px) {
+    .multifx-keyboard-panel { gap: 5px; padding: 8px; }
+    .multifx-keyboard-heading { min-height: 22px; }
+    .multifx-keyboard-label { font-size: 14px; }
+    .multifx-keyboard-unit { font-size: 11px; }
+    .multifx-keyboard-value { min-height: 50px; padding: 3px 10px; }
+    .multifx-keyboard-key { min-height: 34px; }
+}

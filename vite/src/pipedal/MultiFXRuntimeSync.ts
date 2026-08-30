@@ -3,8 +3,8 @@
  *
  * One singleton poller owns the bridge connection. Components subscribe to the
  * same normalized snapshot instead of running independent GET loops. Persistent
- * durable shared state is limited to controllerConfig, presetAssignments and
- * the active theme; Snapshot Mode, per-preset snapshot selections, and Chain
+ * durable shared state includes controller configuration, assignments, UI and
+ * keyboard themes/settings; Snapshot Mode, preset snapshots, and Chain
  * Bypass remain transient runtime state and reset with the bridge.
  */
 
@@ -23,6 +23,17 @@ import {
     MultiFXUIBehaviorSettings,
     validateMultiFXUIBehaviorSettings
 } from "./MultiFXUIBehavior";
+import {
+    MULTIFX_KEYBOARD_SETTINGS_CHANGED_EVENT,
+    MULTIFX_KEYBOARD_SETTINGS_STORAGE_KEY,
+    MultiFXKeyboardSettings,
+    validateMultiFXKeyboardSettings
+} from "./multifx-keyboard/MultiFXKeyboardMode";
+import {
+    MultiFXKeyboardThemeDefinition,
+    saveCustomMultiFXKeyboardTheme,
+    validateMultiFXKeyboardTheme
+} from "./multifx-keyboard/MultiFXKeyboardTheme";
 
 export type MultiFXControllerInputCapability = "digital" | "analog";
 export type MultiFXControllerLearnCapability =
@@ -116,6 +127,8 @@ export type MultiFXRuntimeState = {
     presetAssignments?: unknown;
     theme?: unknown | null;
     uiSettings?: unknown | null;
+    keyboardSettings?: unknown | null;
+    keyboardTheme?: unknown | null;
     controllerHardware: MultiFXControllerHardware;
     controllerLearn: MultiFXControllerLearn;
     controllerModuleScan: MultiFXControllerModuleScan;
@@ -154,6 +167,8 @@ export type MultiFXRuntimeStatePatch = Partial<Pick<
     | "controllerConfig"
     | "theme"
     | "uiSettings"
+    | "keyboardSettings"
+    | "keyboardTheme"
 >> & {
     presetSnapshotStateUpdate?: MultiFXPresetSnapshotStateUpdate;
     resetPresetSnapshotStates?: boolean;
@@ -501,6 +516,10 @@ function normalizeRuntimeState(value: unknown): MultiFXRuntimeState {
         uiSettings: Object.prototype.hasOwnProperty.call(source, "uiSettings")
             ? source.uiSettings
             : undefined,
+        keyboardSettings: Object.prototype.hasOwnProperty.call(source, "keyboardSettings")
+            ? source.keyboardSettings : undefined,
+        keyboardTheme: Object.prototype.hasOwnProperty.call(source, "keyboardTheme")
+            ? source.keyboardTheme : undefined,
         controllerHardware: normalizeControllerHardware(
             source.controllerHardware
         ),
@@ -774,6 +793,63 @@ function startUIBehaviorSync() {
     });
 }
 
+let keyboardSyncStarted = false;
+let lastKeyboardPayload = "";
+
+function applyRemoteKeyboard(
+    settingsValue: unknown,
+    themeValue: unknown
+) {
+    const settings = validateMultiFXKeyboardSettings(settingsValue);
+    const theme = validateMultiFXKeyboardTheme(themeValue);
+    if (!settings || !theme) return;
+    saveCustomMultiFXKeyboardTheme(theme);
+    const received: MultiFXKeyboardSettings = {
+        ...settings,
+        themeId: `keyboard:${theme.name}`
+    };
+    window.localStorage.setItem(
+        MULTIFX_KEYBOARD_SETTINGS_STORAGE_KEY,
+        JSON.stringify(received)
+    );
+    window.dispatchEvent(new Event(MULTIFX_KEYBOARD_SETTINGS_CHANGED_EVENT));
+}
+
+/** Publish the complete keyboard appearance and behavior to every display. */
+export async function syncMultiFXKeyboard(
+    settings: MultiFXKeyboardSettings,
+    theme: MultiFXKeyboardThemeDefinition
+): Promise<MultiFXRuntimeState> {
+    const validSettings = validateMultiFXKeyboardSettings(settings);
+    const validTheme = validateMultiFXKeyboardTheme(theme);
+    if (!validSettings || !validTheme) {
+        throw new Error("Keyboard settings or theme are invalid.");
+    }
+    return updateMultiFXRuntimeState({
+        keyboardSettings: validSettings,
+        keyboardTheme: validTheme
+    });
+}
+
+function startKeyboardSync() {
+    if (keyboardSyncStarted || typeof window === "undefined") return;
+    keyboardSyncStarted = true;
+    subscribeMultiFXRuntimeState((runtime) => {
+        if (runtime.keyboardSettings !== undefined
+            && runtime.keyboardSettings !== null
+            && runtime.keyboardTheme !== undefined
+            && runtime.keyboardTheme !== null) {
+            const payload = JSON.stringify([
+                runtime.keyboardSettings,
+                runtime.keyboardTheme
+            ]);
+            if (payload === lastKeyboardPayload) return;
+            lastKeyboardPayload = payload;
+            applyRemoteKeyboard(runtime.keyboardSettings, runtime.keyboardTheme);
+        }
+    });
+}
+
 function applyRemoteControllerConfig(value: unknown | null) {
     const current = readLocalControllerConfig();
     if (sameJson(current, value)) return;
@@ -817,4 +893,5 @@ if (typeof window !== "undefined") {
     startControllerSync();
     startThemeSync();
     startUIBehaviorSync();
+    startKeyboardSync();
 }

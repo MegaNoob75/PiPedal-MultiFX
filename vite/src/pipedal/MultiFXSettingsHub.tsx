@@ -7,6 +7,7 @@ import {
 interface MultiFXSettingsHubProps {
     onController: () => void;
     onTheme: () => void;
+    onKeyboard: () => void;
     onMultiFXUI: () => void;
     onSystem: () => void;
 }
@@ -14,6 +15,7 @@ interface MultiFXSettingsHubProps {
 export default function MultiFXSettingsHub({
     onController,
     onTheme,
+    onKeyboard,
     onMultiFXUI,
     onSystem
 }: MultiFXSettingsHubProps) {
@@ -49,6 +51,11 @@ export default function MultiFXSettingsHub({
                     title="THEME"
                     description="Built-in themes, custom colors, import and export"
                     onClick={onTheme}
+                />
+                <SettingsCard
+                    title="KEYBOARD"
+                    description="On-screen keyboard mode and overlay appearance"
+                    onClick={onKeyboard}
                 />
                 <SettingsCard
                     title="PI-MULTIFX UI"

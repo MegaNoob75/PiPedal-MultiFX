@@ -3,6 +3,7 @@ import { createPortal } from "react-dom";
 import {
     applyMultiFXTheme,
     BUILT_IN_THEMES,
+    CUSTOM_THEMES_STORAGE_KEY,
     deleteCustomMultiFXTheme,
     getMultiFXThemeStyleLabel,
     loadCustomMultiFXThemes,
@@ -27,6 +28,15 @@ import MultiFXFootswitchGraphic, {
 } from "./MultiFXFootswitchGraphic";
 import { syncMultiFXTheme } from "./MultiFXRuntimeSync";
 import "./MultiFXPerformanceAppearance.css";
+import {
+    CUSTOM_KEYBOARD_THEMES_STORAGE_KEY,
+    deleteCustomMultiFXKeyboardTheme,
+    keyboardThemeFromUITheme,
+    loadCustomMultiFXKeyboardThemes,
+    MultiFXKeyboardThemeDefinition,
+    saveCustomMultiFXKeyboardTheme,
+    validateMultiFXKeyboardTheme
+} from "./multifx-keyboard/MultiFXKeyboardTheme";
 
 type ThemeBrowseMode = "STYLE" | "COLOR";
 
@@ -44,7 +54,8 @@ type ThemeEditorTab =
     | "TILES"
     | "CONTROLS"
     | "MOTION"
-    | "FONTS";
+    | "FONTS"
+    | "KEYBOARD";
 
 const STYLE_CATEGORY_ORDER = [
     "MODERN TILES",
@@ -111,6 +122,12 @@ export default function MultiFXThemeManager() {
 
     const [customThemes, setCustomThemes] = useState<MultiFXThemeDefinition[]>(
         () => loadCustomMultiFXThemes()
+    );
+    const [keyboardTheme, setKeyboardTheme] = useState<MultiFXKeyboardThemeDefinition>(
+        () => keyboardThemeFromUITheme(originalRef.current)
+    );
+    const [customKeyboardThemes, setCustomKeyboardThemes] = useState(
+        loadCustomMultiFXKeyboardThemes
     );
 
     const groupedBuiltIns = useMemo(() => {
@@ -206,6 +223,9 @@ export default function MultiFXThemeManager() {
 
     const previewTheme = (preset: MultiFXThemeDefinition) => {
         setTheme(cloneTheme(preset));
+        if (editorTab === "KEYBOARD") {
+            setKeyboardTheme(keyboardThemeFromUITheme(preset));
+        }
         setMessage(`Previewing "${preset.name}".`);
     };
 
@@ -271,6 +291,36 @@ export default function MultiFXThemeManager() {
         setMessage(`Deleted custom theme "${name}".`);
     };
 
+    const saveKeyboardCustom = () => {
+        if (!keyboardTheme.name.trim()) {
+            setMessage("Enter a keyboard theme name before saving.");
+            return;
+        }
+        const saved = { ...keyboardTheme, author: "User" };
+        setCustomKeyboardThemes(saveCustomMultiFXKeyboardTheme(saved));
+        setKeyboardTheme(structuredClone(saved));
+        setMessage(`Saved keyboard theme "${saved.name}".`);
+    };
+
+    const exportAllThemes = () => {
+        const bundle = {
+            format: "pipedal-multifx-theme-backup",
+            version: 1,
+            createdAt: new Date().toISOString(),
+            activeUITheme: originalRef.current,
+            customUIThemes: customThemes,
+            customKeyboardThemes
+        };
+        const blob = new Blob([JSON.stringify(bundle, null, 2)], { type: "application/json" });
+        const url = URL.createObjectURL(blob);
+        const anchor = document.createElement("a");
+        anchor.href = url;
+        anchor.download = "pipedal-multifx-themes-backup.json";
+        anchor.click();
+        URL.revokeObjectURL(url);
+        setMessage("All UI and keyboard themes exported.");
+    };
+
     const exportTheme = () => {
         const blob = new Blob(
             [JSON.stringify(theme, null, 2)],
@@ -289,7 +339,42 @@ export default function MultiFXThemeManager() {
     const importTheme = async (file: File) => {
         try {
             const text = await file.text();
-            const parsed = validateMultiFXTheme(JSON.parse(text));
+            const raw = JSON.parse(text) as unknown;
+            if (raw && typeof raw === "object"
+                && (raw as { format?: unknown }).format === "pipedal-multifx-theme-backup") {
+                const bundle = raw as {
+                    version?: unknown;
+                    activeUITheme?: unknown;
+                    customUIThemes?: unknown;
+                    customKeyboardThemes?: unknown;
+                };
+                const active = validateMultiFXTheme(bundle.activeUITheme);
+                const uiThemes = Array.isArray(bundle.customUIThemes)
+                    ? bundle.customUIThemes.map(validateMultiFXTheme) : [];
+                const keyboardThemes = Array.isArray(bundle.customKeyboardThemes)
+                    ? bundle.customKeyboardThemes.map(validateMultiFXKeyboardTheme) : [];
+                if (bundle.version !== 1 || !active
+                    || !Array.isArray(bundle.customUIThemes)
+                    || uiThemes.some((item) => !item)
+                    || !Array.isArray(bundle.customKeyboardThemes)
+                    || keyboardThemes.some((item) => !item)) {
+                    setMessage("That theme backup is invalid.");
+                    return;
+                }
+                const restoredUI = uiThemes as MultiFXThemeDefinition[];
+                const restoredKeyboard = keyboardThemes as MultiFXKeyboardThemeDefinition[];
+                window.localStorage.setItem(CUSTOM_THEMES_STORAGE_KEY, JSON.stringify(restoredUI, null, 2));
+                window.localStorage.setItem(CUSTOM_KEYBOARD_THEMES_STORAGE_KEY, JSON.stringify(restoredKeyboard, null, 2));
+                saveMultiFXTheme(active);
+                originalRef.current = cloneTheme(active);
+                setTheme(cloneTheme(active));
+                setCustomThemes(restoredUI);
+                setCustomKeyboardThemes(restoredKeyboard);
+                setKeyboardTheme(keyboardThemeFromUITheme(active));
+                setMessage("UI and keyboard themes restored from backup.");
+                return;
+            }
+            const parsed = validateMultiFXTheme(raw);
 
             if (!parsed) {
                 setMessage("That file is not a valid PI-MULTIFX theme.");
@@ -403,7 +488,7 @@ export default function MultiFXThemeManager() {
                             <div
                                 style={{
                                     display: "grid",
-                                    gridTemplateColumns: "1fr 1fr",
+                                    gridTemplateColumns: "repeat(3, 1fr)",
                                     gap:
                                         "calc(7px * var(--mfx-ui-scale, 1))"
                                 }}
@@ -444,7 +529,11 @@ export default function MultiFXThemeManager() {
                                     }}
                                 >
                                     EXPORT
-                                    </button>
+                                </button>
+                                <button type="button" onClick={exportAllThemes}
+                                    style={{ ...buttonStyle, width: "100%", minWidth: 0 }}>
+                                    EXPORT ALL
+                                </button>
                             </div>
 
                             <div
@@ -549,6 +638,11 @@ export default function MultiFXThemeManager() {
                                                         setTheme(
                                                             cloneTheme(preset)
                                                         );
+                                                        if (editorTab === "KEYBOARD") {
+                                                            setKeyboardTheme(
+                                                                keyboardThemeFromUITheme(preset)
+                                                            );
+                                                        }
                                                         setMessage(
                                                             `Previewing custom theme "${preset.name}".`
                                                         );
@@ -629,6 +723,7 @@ export default function MultiFXThemeManager() {
                                 CUSTOMIZE
                             </div>
 
+                            {editorTab !== "KEYBOARD" ? <>
                             <button
                                 type="button"
                                 onClick={setThemeActive}
@@ -699,6 +794,18 @@ export default function MultiFXThemeManager() {
                             >
                                 REVERT
                             </button>
+                            </> : <>
+                            <button type="button" onClick={saveKeyboardCustom}
+                                style={{ ...primaryButtonStyle, minHeight: "calc(40px * var(--mfx-ui-scale, 1))" }}>
+                                SAVE KEYBOARD THEME
+                            </button>
+                            <button type="button" onClick={() => {
+                                setKeyboardTheme(keyboardThemeFromUITheme(theme));
+                                setMessage("Keyboard colors copied from the previewed UI theme.");
+                            }} style={{ ...buttonStyle, minHeight: "calc(40px * var(--mfx-ui-scale, 1))" }}>
+                                COPY UI THEME
+                            </button>
+                            </>}
                         </div>
 
                         <div
@@ -719,17 +826,14 @@ export default function MultiFXThemeManager() {
                                     fontSize: "0.8rem"
                                 }}
                             >
-                                Theme name
+                                {editorTab === "KEYBOARD" ? "Keyboard name" : "Theme name"}
                             </label>
 
                             <input
-                                value={theme.name}
-                                onChange={(event) =>
-                                    setTheme((current) => ({
-                                        ...current,
-                                        name: event.target.value
-                                    }))
-                                }
+                                value={editorTab === "KEYBOARD" ? keyboardTheme.name : theme.name}
+                                onChange={(event) => editorTab === "KEYBOARD"
+                                    ? setKeyboardTheme((current) => ({ ...current, name: event.target.value }))
+                                    : setTheme((current) => ({ ...current, name: event.target.value }))}
                                 style={{
                                     ...textInputStyle,
                                     height:
@@ -741,7 +845,12 @@ export default function MultiFXThemeManager() {
 
                         <ThemeEditorTabs
                             selected={editorTab}
-                            onSelect={setEditorTab}
+                            onSelect={(tab) => {
+                                if (tab === "KEYBOARD" && editorTab !== "KEYBOARD") {
+                                    setKeyboardTheme(keyboardThemeFromUITheme(theme));
+                                }
+                                setEditorTab(tab);
+                            }}
                         />
 
                         {editorTab === "COLORS" && <div
@@ -880,6 +989,18 @@ export default function MultiFXThemeManager() {
                                 onChange={updateAppearance}
                             />
                         )}
+                        {editorTab === "KEYBOARD" && (
+                            <KeyboardThemeEditor
+                                value={keyboardTheme}
+                                onChange={setKeyboardTheme}
+                                savedThemes={customKeyboardThemes}
+                                onLoad={(selected) => setKeyboardTheme(structuredClone(selected))}
+                                onDelete={(name) => {
+                                    setCustomKeyboardThemes(deleteCustomMultiFXKeyboardTheme(name));
+                                    setMessage(`Deleted keyboard theme "${name}".`);
+                                }}
+                            />
+                        )}
                     </div>
                 </div>
             </div>
@@ -895,7 +1016,7 @@ function ThemeEditorTabs({
     onSelect: (tab: ThemeEditorTab) => void;
 }) {
     const tabs: ThemeEditorTab[] = [
-        "COLORS", "SURFACES", "TILES", "CONTROLS", "MOTION", "FONTS"
+        "COLORS", "SURFACES", "TILES", "CONTROLS", "MOTION", "FONTS", "KEYBOARD"
     ];
     return (
         <div style={editorTabsStyle}>
@@ -1228,6 +1349,88 @@ function ControlStyleEditor({
                     </div>
                 </section>
             )}
+        </div>
+    );
+}
+
+function KeyboardThemeEditor({
+    value,
+    onChange,
+    savedThemes,
+    onLoad,
+    onDelete
+}: {
+    value: MultiFXKeyboardThemeDefinition;
+    onChange: (value: MultiFXKeyboardThemeDefinition) => void;
+    savedThemes: MultiFXKeyboardThemeDefinition[];
+    onLoad: (value: MultiFXKeyboardThemeDefinition) => void;
+    onDelete: (name: string) => void;
+}) {
+    const patch = (next: Partial<MultiFXKeyboardThemeDefinition>) =>
+        onChange({ ...value, ...next });
+    const previewKey = (text: string, background: MultiFXThemePaint, color: string) => (
+        <div style={{ padding: "10px 8px", minWidth: 54, flex: "1 1 0", textAlign: "center", borderRadius: 8, border: `1px solid ${value.border}`, background: themePaintToCss(background), color, fontWeight: 900 }}>
+            {text}
+        </div>
+    );
+    return (
+        <div style={editorScrollStyle}>
+            <section style={editorCardStyle}>
+                <div style={editorCardHeadingStyle}>KEYBOARD THEME LIBRARY</div>
+                <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+                    <select defaultValue="" style={{ ...textInputStyle, flex: "1 1 220px" }}
+                        onChange={(event) => {
+                            const selected = savedThemes.find((theme) => theme.name === event.target.value);
+                            if (selected) onLoad(selected);
+                            event.currentTarget.value = "";
+                        }}>
+                        <option value="">Load a saved keyboard theme…</option>
+                        {savedThemes.map((theme) => <option key={theme.name} value={theme.name}>{theme.name}</option>)}
+                    </select>
+                    <button type="button" style={buttonStyle}
+                        disabled={!savedThemes.some((theme) => theme.name === value.name)}
+                        onClick={() => onDelete(value.name)}>DELETE SAVED</button>
+                </div>
+            </section>
+            <section style={editorCardStyle}>
+                <div style={editorCardHeadingStyle}>LIVE KEYBOARD PREVIEW</div>
+                <div style={{ padding: 12, borderRadius: 10, background: themePaintToCss(value.backdrop) }}>
+                    <div style={{ padding: 12, borderRadius: 10, border: `2px solid ${value.border}`, background: themePaintToCss(value.panel) }}>
+                        <div style={{ color: value.accent, fontWeight: 900, marginBottom: 8 }}>PRESET NAME</div>
+                        <div style={{ padding: 8, marginBottom: 9, borderRadius: 7, border: `2px solid ${value.accent}`, background: themePaintToCss(value.valueBox), color: value.text }}>My Preset</div>
+                        <div style={{ display: "flex", gap: 7 }}>
+                            {previewKey("A", value.key, value.text)}
+                            {previewKey("PRESSED", value.pressedKey, value.pressedText)}
+                            {previewKey("CANCEL", value.key, value.cancel)}
+                            {previewKey("DONE", value.key, value.accent)}
+                        </div>
+                        <div style={{ color: value.secondaryText, marginTop: 7, fontSize: ".8rem" }}>Secondary label text</div>
+                    </div>
+                </div>
+            </section>
+            <div style={editorCardGridStyle}>
+                <section style={editorCardStyle}>
+                    <div style={editorCardHeadingStyle}>SURFACES</div>
+                    <div style={twoColumnEditorStyle}>
+                        <PaintField label="Backdrop" value={value.backdrop} onChange={(backdrop) => patch({ backdrop })} />
+                        <PaintField label="Panel" value={value.panel} onChange={(panel) => patch({ panel })} />
+                        <PaintField label="Value box" value={value.valueBox} onChange={(valueBox) => patch({ valueBox })} />
+                        <PaintField label="Keys" value={value.key} onChange={(key) => patch({ key })} />
+                        <PaintField label="Pressed key" value={value.pressedKey} onChange={(pressedKey) => patch({ pressedKey })} />
+                    </div>
+                </section>
+                <section style={editorCardStyle}>
+                    <div style={editorCardHeadingStyle}>COLORS</div>
+                    <div style={twoColumnEditorStyle}>
+                        <CompactColorField label="Border" value={value.border} onChange={(border) => patch({ border })} />
+                        <CompactColorField label="Text" value={value.text} onChange={(text) => patch({ text })} />
+                        <CompactColorField label="Secondary text" value={value.secondaryText} onChange={(secondaryText) => patch({ secondaryText })} />
+                        <CompactColorField label="Accent / Done" value={value.accent} onChange={(accent) => patch({ accent })} />
+                        <CompactColorField label="Pressed text" value={value.pressedText} onChange={(pressedText) => patch({ pressedText })} />
+                        <CompactColorField label="Cancel" value={value.cancel} onChange={(cancel) => patch({ cancel })} />
+                    </div>
+                </section>
+            </div>
         </div>
     );
 }
