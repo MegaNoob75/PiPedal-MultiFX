@@ -485,11 +485,31 @@ install_self() {
 }
 
 refresh_browser() {
-    if command -v ydotool >/dev/null 2>&1 &&
-        [ -S /tmp/.ydotool_socket ]; then
-        YDOTOOL_SOCKET=/tmp/.ydotool_socket \
-            ydotool key 29:1 19:1 19:0 29:0 || true
+    local attempt
+
+    if ! command -v ydotool >/dev/null 2>&1; then
+        echo "WARNING: The touchscreen was not refreshed because ydotool is unavailable."
+        return 0
     fi
+
+    # The MultiFX install restarts pipedal-ydotoold immediately before this
+    # call. Give its socket and the PiPedal browser time to become ready, then
+    # retry instead of silently losing the refresh during service startup.
+    for attempt in 1 2 3 4 5; do
+        if [ -S /tmp/.ydotool_socket ]; then
+            sleep 2
+            if YDOTOOL_SOCKET=/tmp/.ydotool_socket \
+                ydotool key 29:1 19:1 19:0 29:0; then
+                echo "PiPedal touchscreen refreshed."
+                return 0
+            fi
+        fi
+        sleep 1
+    done
+
+    echo "WARNING: MultiFX was updated, but the touchscreen refresh could not be sent."
+    echo "Refresh the PiPedal page manually or restart the touchscreen."
+    return 0
 }
 
 # Debian's ydotool package enables ydotool.service globally as a per-user

@@ -52,7 +52,6 @@ import {
 } from "./MultiFXPresetSafety";
 import { loadMultiFXUIBehaviorSettings } from "./MultiFXUIBehavior";
 import {
-    applyMultiFXPresetSnapshotState,
     beginMultiFXPerformanceTransition,
     finishMultiFXPerformanceTransition,
     getLatestMultiFXPresetSnapshotState,
@@ -623,6 +622,27 @@ export default function FootControllerView({
             .catch((error) =>
                 console.warn("MultiFX runtime sync update failed.", error)
             );
+    };
+
+    const recordCleanBasePreset = (bankId: number, presetId: number) => {
+        const currentPresets = model.presets.get();
+        if (
+            model.banks.get().selectedBank !== bankId
+            || currentPresets.selectedInstanceId !== presetId
+            || model.selectedSnapshot.get() >= 0
+        ) return;
+
+        // A native selectSnapshot(-1) can leave presetChanged sticky when a
+        // preset was saved with a snapshot marker. MultiFX has just confirmed
+        // a fresh BASE load, so capture the actual base sound as the semantic
+        // clean state without masking any later user edits.
+        const signature = stablePedalboardStateSignature(model.pedalboard.get());
+        cleanPresetBaselineCache.set(
+            presetSnapshotSessionKey(bankId, presetId),
+            signature
+        );
+        setCleanPresetBaseline({ bankId, presetId, signature });
+        previousNativePresetChangedRef.current = currentPresets.presetChanged;
     };
 
     const showStatusToast = (message: string) => {
@@ -1324,6 +1344,7 @@ export default function FootControllerView({
                             presetId,
                             transition
                         );
+                        recordCleanBasePreset(bankId, presetId);
                         showStatusToast(
                             `SNAPSHOT ${next.snapshotIndex + 1} IS EMPTY`
                         );
@@ -1354,6 +1375,7 @@ export default function FootControllerView({
                             presetId,
                             transition
                         );
+                        recordCleanBasePreset(bankId, presetId);
                         showStatusToast("BASE PRESET");
                     }
                     return;
@@ -1370,12 +1392,15 @@ export default function FootControllerView({
                     targetState = remembered;
                 }
 
-                await applyMultiFXPresetSnapshotState(
-                    model,
-                    presetId,
-                    targetState,
-                    transition
-                );
+                await loadMultiFXBasePreset(model, presetId, transition);
+                recordCleanBasePreset(bankId, presetId);
+                if (targetState?.enabled) {
+                    await recallMultiFXSnapshot(
+                        model,
+                        targetState.snapshotIndex,
+                        transition
+                    );
+                }
 
                 if (
                     targetState?.enabled
@@ -1463,6 +1488,7 @@ export default function FootControllerView({
                     );
                 } else {
                     await loadMultiFXBasePreset(model, presetId, transition);
+                    recordCleanBasePreset(bankId, presetId);
                     showStatusToast(
                         `SNAPSHOT ${snapshotIndex + 1} CLEARED • BASE PRESET`
                     );
