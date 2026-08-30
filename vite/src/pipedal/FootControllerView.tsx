@@ -51,6 +51,27 @@ import {
     restoreChainBypassForSafeWrite
 } from "./MultiFXPresetSafety";
 import { loadMultiFXUIBehaviorSettings } from "./MultiFXUIBehavior";
+import {
+    applyMultiFXPresetSnapshotState,
+    beginMultiFXPerformanceTransition,
+    finishMultiFXPerformanceTransition,
+    getLatestMultiFXPresetSnapshotState,
+    initializeMultiFXSnapshotSession,
+    isMultiFXPerformanceTransitionActive,
+    isMultiFXTransitionCancellation,
+    loadMultiFXBasePreset,
+    MultiFXPerformanceTransition,
+    readMultiFXPresetSnapshotState,
+    recallMultiFXSnapshot,
+    writeMultiFXPresetSnapshotState
+} from "./MultiFXPerformanceSession";
+import {
+    isSnapshotSessionConfirmed,
+    performancePresetLightState,
+    performancePresetPress,
+    presetSnapshotSessionKey,
+    snapshotViewPress
+} from "./MultiFXSnapshotSessionState";
 
 type MarqueeTextProps = {
     className?: string;
@@ -421,6 +442,7 @@ type PresetDragCandidate = {
 };
 
 type CleanPresetBaseline = {
+    bankId: number;
     presetId: number;
     signature: string;
 };
@@ -463,7 +485,7 @@ function stablePedalboardStateSignature(pedalboard: Pedalboard): string {
 // of the app. Performance View can unmount while the editor is open; without
 // this cache PiPedal's native sticky presetChanged flag would make a reverted
 // edit look dirty when Performance View mounts again.
-const cleanPresetBaselineCache = new Map<number, string>();
+const cleanPresetBaselineCache = new Map<string, string>();
 
 export type NewPresetDraft = {
     presetId: number;
@@ -513,10 +535,14 @@ export default function FootControllerView({
     const hardwareLongPressFiredRef = useRef<Set<number>>(new Set());
     const hardwarePressPendingRef = useRef<Set<number>>(new Set());
     const [chainBypassed, setChainBypassed] = useState(false);
+    const chainBypassedRef = useRef(false);
     const chainBypassSnapshotRef = useRef<Map<number, boolean>>(new Map());
+    const chainBypassBankIdRef = useRef<number | null>(null);
     const chainBypassPresetIdRef = useRef<number | null>(null);
+    const chainBypassSnapshotIndexRef = useRef<number | null>(null);
     const chainBypassWasPresetChangedRef = useRef(false);
     const [snapshotMode, setSnapshotMode] = useState(false);
+    const snapshotModeBankIdRef = useRef<number | null>(null);
     const snapshotModePresetIdRef = useRef<number | null>(null);
     const [snapshotPedalboard, setSnapshotPedalboard] = useState<Pedalboard>(
         () => model.pedalboard.get().clone()
@@ -524,8 +550,14 @@ export default function FootControllerView({
     const [selectedSnapshot, setSelectedSnapshot] = useState<number>(
         () => model.selectedSnapshot.get()
     );
+    const [snapshotSessionRevision, setSnapshotSessionRevision] = useState(0);
+    const [snapshotSessionInitialized, setSnapshotSessionInitialized] =
+        useState(false);
+    const [snapshotSessionInitAttempt, setSnapshotSessionInitAttempt] =
+        useState(0);
 
     const initialPresetState = model.presets.get();
+    const initialBankId = model.banks.get().selectedBank;
     const [cleanPresetBaseline, setCleanPresetBaseline] =
         useState<CleanPresetBaseline | null>(() => {
             const presetId = initialPresetState.selectedInstanceId;
@@ -533,9 +565,11 @@ export default function FootControllerView({
                 return null;
             }
 
-            const cachedSignature = cleanPresetBaselineCache.get(presetId);
+            const cacheKey = presetSnapshotSessionKey(initialBankId, presetId);
+            const cachedSignature = cleanPresetBaselineCache.get(cacheKey);
             if (cachedSignature !== undefined) {
                 return {
+                    bankId: initialBankId,
                     presetId,
                     signature: cachedSignature
                 };
@@ -546,8 +580,9 @@ export default function FootControllerView({
             }
 
             const signature = stablePedalboardStateSignature(model.pedalboard.get());
-            cleanPresetBaselineCache.set(presetId, signature);
+            cleanPresetBaselineCache.set(cacheKey, signature);
             return {
+                bankId: initialBankId,
                 presetId,
                 signature
             };
@@ -556,7 +591,10 @@ export default function FootControllerView({
         useRef(initialPresetState.presetChanged);
 
     const applyRuntimeState = (state: MultiFXRuntimeState) => {
+        chainBypassBankIdRef.current = state.chainBypassBankId;
         chainBypassPresetIdRef.current = state.chainBypassPresetId;
+        chainBypassSnapshotIndexRef.current =
+            state.chainBypassSnapshotIndex;
         chainBypassWasPresetChangedRef.current =
             state.chainBypassWasPresetChanged;
 
@@ -570,9 +608,13 @@ export default function FootControllerView({
             }
         }
         chainBypassSnapshotRef.current = enabledStates;
+        chainBypassedRef.current = state.chainBypassed;
         setChainBypassed(state.chainBypassed);
+        snapshotModeBankIdRef.current = state.snapshotModeBankId;
         snapshotModePresetIdRef.current = state.snapshotPresetId;
         setSnapshotMode(state.snapshotMode);
+        setSnapshotSessionInitialized(state.snapshotSessionInitialized);
+        setSnapshotSessionRevision(state.revision);
     };
 
     const publishRuntimeState = (patch: MultiFXRuntimeStatePatch) => {
@@ -1034,6 +1076,7 @@ export default function FootControllerView({
 
     useEffect(() => {
         const presetId = presets.selectedInstanceId;
+        const bankId = banks.selectedBank;
         if (presetId < 0) {
             setCleanPresetBaseline(null);
             previousNativePresetChangedRef.current = presets.presetChanged;
@@ -1048,7 +1091,8 @@ export default function FootControllerView({
         }
 
         const needsNewPresetBaseline =
-            cleanPresetBaseline?.presetId !== presetId;
+            cleanPresetBaseline?.bankId !== bankId
+            || cleanPresetBaseline?.presetId !== presetId;
         const presetWasJustSavedOrReloaded =
             previousChanged && !presets.presetChanged;
 
@@ -1059,13 +1103,18 @@ export default function FootControllerView({
                 const current = model.presets.get();
                 if (
                     current.selectedInstanceId === presetId
+                    && model.banks.get().selectedBank === bankId
                     && !current.presetChanged
                     && model.selectedSnapshot.get() < 0
                 ) {
                     const signature =
                         stablePedalboardStateSignature(model.pedalboard.get());
-                    cleanPresetBaselineCache.set(presetId, signature);
+                    cleanPresetBaselineCache.set(
+                        presetSnapshotSessionKey(bankId, presetId),
+                        signature
+                    );
                     setCleanPresetBaseline({
+                        bankId,
                         presetId,
                         signature
                     });
@@ -1076,10 +1125,12 @@ export default function FootControllerView({
         }
     }, [
         model,
+        banks.selectedBank,
         presets.selectedInstanceId,
         presets.presetChanged,
         selectedSnapshot,
         chainBypassed,
+        cleanPresetBaseline?.bankId,
         cleanPresetBaseline?.presetId
     ]);
 
@@ -1125,23 +1176,33 @@ export default function FootControllerView({
         return subscribeMultiFXRuntimeState((state) => {
             const currentPresetId =
                 model.presets.get().selectedInstanceId;
+            const currentBankId = model.banks.get().selectedBank;
             const staleBypass =
                 state.chainBypassed
-                && state.chainBypassPresetId !== currentPresetId;
+                && (
+                    state.chainBypassBankId !== currentBankId
+                    || state.chainBypassPresetId !== currentPresetId
+                );
             const staleSnapshotMode =
                 state.snapshotMode
-                && state.snapshotPresetId !== currentPresetId;
+                && (
+                    state.snapshotModeBankId !== currentBankId
+                    || state.snapshotPresetId !== currentPresetId
+                );
 
             if (staleBypass || staleSnapshotMode) {
                 const patch: MultiFXRuntimeStatePatch = {};
                 if (staleBypass) {
                     patch.chainBypassed = false;
+                    patch.chainBypassBankId = null;
                     patch.chainBypassPresetId = null;
+                    patch.chainBypassSnapshotIndex = null;
                     patch.chainBypassWasPresetChanged = false;
                     patch.chainBypassEnabledStates = {};
                 }
                 if (staleSnapshotMode) {
                     patch.snapshotMode = false;
+                    patch.snapshotModeBankId = null;
                     patch.snapshotPresetId = null;
                 }
 
@@ -1154,6 +1215,50 @@ export default function FootControllerView({
             applyRuntimeState(state);
         });
     }, [model]);
+
+    useEffect(() => {
+        if (
+            snapshotSessionInitialized
+            || model.state.get() !== State.Ready
+            || presets.selectedInstanceId < 0
+        ) return;
+
+        let cancelled = false;
+        const retry = () => {
+            if (!cancelled) {
+                window.setTimeout(
+                    () => setSnapshotSessionInitAttempt((value) => value + 1),
+                    250
+                );
+            }
+        };
+
+        if (isMultiFXPerformanceTransitionActive()) {
+            retry();
+            return () => { cancelled = true; };
+        }
+
+        const transition = beginMultiFXPerformanceTransition();
+        void initializeMultiFXSnapshotSession(model, transition)
+            .catch((error) => {
+                if (!isMultiFXTransitionCancellation(error)) {
+                    console.warn("PI-MULTIFX snapshot session initialization failed.", error);
+                }
+                retry();
+            })
+            .finally(() => finishMultiFXPerformanceTransition(transition));
+
+        return () => {
+            cancelled = true;
+        };
+    }, [
+        model,
+        snapshotSessionInitialized,
+        snapshotSessionRevision,
+        snapshotSessionInitAttempt,
+        presets.selectedInstanceId,
+        banks.selectedBank
+    ]);
 
     useEffect(() => {
         if (!controllerConfigLoaded) return;
@@ -1186,17 +1291,190 @@ export default function FootControllerView({
     const selectedSlotPreset = getPresetForSlot(selectedPresetSlot);
 
     const requestPresetLoad = (presetId: number) => {
-        const selectedPresetId = model.presets.get().selectedInstanceId;
-        if (presetId === selectedPresetId) {
-            if (selectedSnapshot < 0) return;
-            snapshotModePresetIdRef.current = null;
-            setSnapshotMode(false);
-            publishRuntimeState({ snapshotMode: false, snapshotPresetId: null });
-            model.loadPreset(selectedPresetId);
-            showStatusToast("BASE PRESET");
+        const transition = beginMultiFXPerformanceTransition();
+        void (async () => {
+            try {
+                await initializeMultiFXSnapshotSession(model, transition);
+                await restoreChainBypass(transition, false);
+
+                const bankId = model.banks.get().selectedBank;
+                const selectedPresetId = model.presets.get().selectedInstanceId;
+                const remembered = await readMultiFXPresetSnapshotState(
+                    bankId,
+                    presetId,
+                    transition
+                );
+
+                if (presetId === selectedPresetId) {
+                    const next = performancePresetPress(remembered);
+                    if (!next) return;
+
+                    if (
+                        next.enabled
+                        && !model.pedalboard.get().snapshots[next.snapshotIndex]
+                    ) {
+                        await writeMultiFXPresetSnapshotState(
+                            bankId,
+                            presetId,
+                            null,
+                            transition
+                        );
+                        await loadMultiFXBasePreset(
+                            model,
+                            presetId,
+                            transition
+                        );
+                        showStatusToast(
+                            `SNAPSHOT ${next.snapshotIndex + 1} IS EMPTY`
+                        );
+                        return;
+                    }
+
+                    await writeMultiFXPresetSnapshotState(
+                        bankId,
+                        presetId,
+                        next,
+                        transition
+                    );
+                    if (next.enabled) {
+                        await recallMultiFXSnapshot(
+                            model,
+                            next.snapshotIndex,
+                            transition
+                        );
+                        const snapshot = model.pedalboard.get()
+                            .snapshots[next.snapshotIndex];
+                        showStatusToast(
+                            snapshot?.name
+                            || `SNAPSHOT ${next.snapshotIndex + 1} ACTIVE`
+                        );
+                    } else {
+                        await loadMultiFXBasePreset(
+                            model,
+                            presetId,
+                            transition
+                        );
+                        showStatusToast("BASE PRESET");
+                    }
+                    return;
+                }
+
+                let targetState = remembered;
+                if (
+                    targetState
+                    && !model.pedalboard.get().snapshots[targetState.snapshotIndex]
+                ) {
+                    // Snapshot availability is rechecked after the target base
+                    // is loaded below; this early check only handles a known
+                    // empty slot on an already loaded preset.
+                    targetState = remembered;
+                }
+
+                await applyMultiFXPresetSnapshotState(
+                    model,
+                    presetId,
+                    targetState,
+                    transition
+                );
+
+                if (
+                    targetState?.enabled
+                    && model.selectedSnapshot.get() !== targetState.snapshotIndex
+                ) {
+                    await writeMultiFXPresetSnapshotState(
+                        bankId,
+                        presetId,
+                        null,
+                        transition
+                    );
+                } else if (targetState?.enabled) {
+                    showStatusToast(
+                        model.pedalboard.get().snapshots[targetState.snapshotIndex]?.name
+                        || `SNAPSHOT ${targetState.snapshotIndex + 1} ACTIVE`
+                    );
+                }
+            } catch (error) {
+                if (!isMultiFXTransitionCancellation(error)) {
+                    // A remembered slot may have been deleted since it was
+                    // selected. Forget it and leave PiPedal on the loaded base.
+                    const bankId = model.banks.get().selectedBank;
+                    if (String(error).includes("is empty")) {
+                        const remembered = getLatestMultiFXPresetSnapshotState(
+                            bankId,
+                            presetId
+                        );
+                        if (remembered) {
+                            try {
+                                await writeMultiFXPresetSnapshotState(
+                                    bankId,
+                                    presetId,
+                                    null,
+                                    transition
+                                );
+                            } catch {
+                                // Preserve the original actionable error.
+                            }
+                        }
+                    }
+                    model.showAlert(String(error));
+                }
+            } finally {
+                finishMultiFXPerformanceTransition(transition);
+            }
+        })();
+    };
+
+    const requestSnapshotSelection = (snapshotIndex: number) => {
+        const snapshot = model.pedalboard.get().snapshots[snapshotIndex];
+        if (!snapshot) {
+            showStatusToast(`SNAPSHOT ${snapshotIndex + 1} IS EMPTY`);
             return;
         }
-        model.loadPreset(presetId);
+
+        const transition = beginMultiFXPerformanceTransition();
+        void (async () => {
+            try {
+                await initializeMultiFXSnapshotSession(model, transition);
+                await restoreChainBypass(transition, false);
+
+                const bankId = model.banks.get().selectedBank;
+                const presetId = model.presets.get().selectedInstanceId;
+                const current = await readMultiFXPresetSnapshotState(
+                    bankId,
+                    presetId,
+                    transition
+                );
+                const next = snapshotViewPress(current, snapshotIndex);
+                await writeMultiFXPresetSnapshotState(
+                    bankId,
+                    presetId,
+                    next,
+                    transition
+                );
+
+                if (next) {
+                    await recallMultiFXSnapshot(
+                        model,
+                        snapshotIndex,
+                        transition
+                    );
+                    showStatusToast(
+                        snapshot.name || `SNAPSHOT ${snapshotIndex + 1} ACTIVE`
+                    );
+                } else {
+                    await loadMultiFXBasePreset(model, presetId, transition);
+                    showStatusToast(
+                        `SNAPSHOT ${snapshotIndex + 1} CLEARED • BASE PRESET`
+                    );
+                }
+            } catch (error) {
+                if (!isMultiFXTransitionCancellation(error)) {
+                    model.showAlert(String(error));
+                }
+            } finally {
+                finishMultiFXPerformanceTransition(transition);
+            }
+        })();
     };
 
     const openPresetOptionsForSlot = (slotIndex: number) => {
@@ -1326,7 +1604,16 @@ export default function FootControllerView({
         onOpenEditor?.(undefined, preset.instanceId);
     };
 
-    const snapshotPerformanceActive = selectedSnapshot >= 0;
+    const currentSnapshotSessionState = snapshotSessionRevision >= 0
+        ? getLatestMultiFXPresetSnapshotState(
+            banks.selectedBank,
+            presets.selectedInstanceId
+        )
+        : null;
+    const snapshotPerformanceActive = isSnapshotSessionConfirmed(
+        currentSnapshotSessionState,
+        selectedSnapshot
+    );
 
     const getPresetOptions = () => {
         const preset = getPresetForSlot(selectedPresetSlot);
@@ -1585,30 +1872,50 @@ export default function FootControllerView({
 
     useEffect(() => {
         if (!chainBypassed) return;
+        const bypassBankId = chainBypassBankIdRef.current;
         const bypassPresetId = chainBypassPresetIdRef.current;
-        if (bypassPresetId !== null && bypassPresetId !== presets.selectedInstanceId) {
-            chainBypassSnapshotRef.current = new Map();
-            chainBypassPresetIdRef.current = null;
-            chainBypassWasPresetChangedRef.current = false;
-            setChainBypassed(false);
+        if (
+            bypassBankId !== null
+            && bypassPresetId !== null
+            && (
+                bypassBankId !== banks.selectedBank
+                || bypassPresetId !== presets.selectedInstanceId
+            )
+        ) {
+            clearChainBypassRuntimeLocal();
             publishRuntimeState({
                 chainBypassed: false,
+                chainBypassBankId: null,
                 chainBypassPresetId: null,
+                chainBypassSnapshotIndex: null,
                 chainBypassWasPresetChanged: false,
                 chainBypassEnabledStates: {}
             });
         }
-    }, [presets.selectedInstanceId, chainBypassed]);
+    }, [banks.selectedBank, presets.selectedInstanceId, chainBypassed]);
 
     useEffect(() => {
         if (!snapshotMode) return;
+        const snapshotBankId = snapshotModeBankIdRef.current;
         const snapshotPresetId = snapshotModePresetIdRef.current;
-        if (snapshotPresetId !== null && snapshotPresetId !== presets.selectedInstanceId) {
+        if (
+            snapshotBankId !== null
+            && snapshotPresetId !== null
+            && (
+                snapshotBankId !== banks.selectedBank
+                || snapshotPresetId !== presets.selectedInstanceId
+            )
+        ) {
+            snapshotModeBankIdRef.current = null;
             snapshotModePresetIdRef.current = null;
             setSnapshotMode(false);
-            publishRuntimeState({ snapshotMode: false, snapshotPresetId: null });
+            publishRuntimeState({
+                snapshotMode: false,
+                snapshotModeBankId: null,
+                snapshotPresetId: null
+            });
         }
-    }, [presets.selectedInstanceId, snapshotMode]);
+    }, [banks.selectedBank, presets.selectedInstanceId, snapshotMode]);
 
     useEffect(() => {
         if (pendingBankSlotRef.current === null) return;
@@ -1687,7 +1994,8 @@ export default function FootControllerView({
     const currentPedalboardSignature =
         stablePedalboardStateSignature(snapshotPedalboard);
     const hasCleanPresetBaseline =
-        cleanPresetBaseline?.presetId === presets.selectedInstanceId;
+        cleanPresetBaseline?.bankId === banks.selectedBank
+        && cleanPresetBaseline?.presetId === presets.selectedInstanceId;
     const matchesCleanPresetBaseline =
         hasCleanPresetBaseline
         && cleanPresetBaseline.signature === currentPedalboardSignature;
@@ -1782,87 +2090,51 @@ export default function FootControllerView({
         return getPresetForSlot(slotIndex);
     };
 
-    const waitForCleanBasePreset = (presetId: number): Promise<void> => {
-        return new Promise<void>((resolve, reject) => {
-            let settled = false;
-
-            const cleanup = () => {
-                model.presets.removeOnChangedHandler(check);
-                model.selectedSnapshot.removeOnChangedHandler(check);
-                model.presetChanged.removeOnChangedHandler(check);
-                model.state.removeOnChangedHandler(onState);
-            };
-
-            const finish = () => {
-                if (settled) return;
-                settled = true;
-                cleanup();
-                resolve();
-            };
-
-            const fail = (message: string) => {
-                if (settled) return;
-                settled = true;
-                cleanup();
-                reject(new Error(message));
-            };
-
-            function check() {
-                if (
-                    model.presets.get().selectedInstanceId === presetId
-                    && model.selectedSnapshot.get() < 0
-                    && !model.presetChanged.get()
-                ) {
-                    finish();
-                }
-            }
-
-            const onState = (state: State) => {
-                if (state === State.Error) {
-                    fail("PiPedal disconnected while restoring the base preset.");
-                }
-            };
-
-            model.presets.addOnChangedHandler(check);
-            model.selectedSnapshot.addOnChangedHandler(check);
-            model.presetChanged.addOnChangedHandler(check);
-            model.state.addOnChangedHandler(onState);
-            check();
-        });
-    };
-
-    const clearChainBypassRuntime = () => {
+    const clearChainBypassRuntimeLocal = () => {
         chainBypassSnapshotRef.current = new Map();
+        chainBypassBankIdRef.current = null;
         chainBypassPresetIdRef.current = null;
+        chainBypassSnapshotIndexRef.current = null;
         chainBypassWasPresetChangedRef.current = false;
+        chainBypassedRef.current = false;
         setChainBypassed(false);
-        publishRuntimeState({
-            chainBypassed: false,
-            chainBypassPresetId: null,
-            chainBypassWasPresetChanged: false,
-            chainBypassEnabledStates: {}
-        });
     };
 
-    const restoreChainBypass = async (): Promise<void> => {
-        if (!chainBypassed) return;
+    const restoreChainBypass = async (
+        transition: MultiFXPerformanceTransition,
+        showToast = true
+    ): Promise<void> => {
+        if (!chainBypassedRef.current) return;
 
+        const currentBankId = model.banks.get().selectedBank;
         const currentPresetId = model.presets.get().selectedInstanceId;
-        const samePreset = chainBypassPresetIdRef.current === currentPresetId;
+        const samePreset =
+            chainBypassBankIdRef.current === currentBankId
+            && chainBypassPresetIdRef.current === currentPresetId;
         const originalWasDirty = chainBypassWasPresetChangedRef.current;
+        const originalSnapshotIndex = chainBypassSnapshotIndexRef.current;
         const enabledSnapshot = new Map(chainBypassSnapshotRef.current);
 
         if (samePreset) {
             if (!originalWasDirty) {
-                // The base was clean before bypass. A real preset reload is the
-                // safest restoration because it atomically restores every
-                // plugin's saved enabled/control state.
-                model.loadPreset(currentPresetId);
-                await waitForCleanBasePreset(currentPresetId);
+                // PiPedal marks every enable change as a preset/snapshot edit.
+                // Reload the clean base to remove those bypass-only edits, then
+                // restore the exact snapshot that was underneath the overlay.
+                await loadMultiFXBasePreset(
+                    model,
+                    currentPresetId,
+                    transition
+                );
+                if (originalSnapshotIndex !== null) {
+                    await recallMultiFXSnapshot(
+                        model,
+                        originalSnapshotIndex,
+                        transition
+                    );
+                }
             } else {
-                // A dirty base cannot be reloaded without losing the user's
-                // unsaved edits. Restore only the enabled flags that bypass
-                // changed and leave the rest of the live pedalboard untouched.
+                // Preserve edits that existed before bypass. Only the enabled
+                // flags changed by the overlay are put back.
                 const items = model.pedalboard.get().items.filter(
                     (item) => !item.isEmpty() && !item.isSyntheticItem()
                 );
@@ -1872,115 +2144,177 @@ export default function FootControllerView({
                         model.setPedalboardItemEnabled(item.instanceId, enabled);
                     }
                 }
+                if (transition.signal.aborted) {
+                    throw new DOMException("Performance action replaced.", "AbortError");
+                }
             }
         }
 
-        clearChainBypassRuntime();
-        showStatusToast("CHAIN ACTIVE");
-    };
-
-    const toggleChainBypass = async () => {
-        if (chainBypassed) {
-            try {
-                await restoreChainBypass();
-            } catch (error) {
-                model.showAlert(String(error));
-            }
-            return;
-        }
-
-        // Snapshot Mode and Chain Bypass are mutually exclusive temporary
-        // modes. Leaving Snapshot Mode changes only the UI mode; an already
-        // recalled native snapshot is still owned by PiPedal.
-        if (snapshotMode) {
-            snapshotModePresetIdRef.current = null;
-            setSnapshotMode(false);
-        }
-
-        const pedalboard = model.pedalboard.get();
-        const items = pedalboard.items.filter(
-            (item) => !item.isEmpty() && !item.isSyntheticItem()
-        );
-        const enabledSnapshot = new Map<number, boolean>();
-        for (const item of items) {
-            enabledSnapshot.set(item.instanceId, item.isEnabled);
-        }
-
-        const currentPresetId = model.presets.get().selectedInstanceId;
-        chainBypassSnapshotRef.current = enabledSnapshot;
-        chainBypassPresetIdRef.current = currentPresetId;
-        chainBypassWasPresetChangedRef.current = effectivePresetChanged;
-
-        for (const item of items) {
-            if (item.isEnabled) {
-                model.setPedalboardItemEnabled(item.instanceId, false);
-            }
-        }
-
-        setChainBypassed(true);
-        publishRuntimeState({
-            snapshotMode: false,
-            snapshotPresetId: null,
-            chainBypassed: true,
-            chainBypassPresetId: currentPresetId,
-            chainBypassWasPresetChanged: effectivePresetChanged,
-            chainBypassEnabledStates: Object.fromEntries(
-                Array.from(enabledSnapshot.entries()).map(
-                    ([instanceId, enabled]) => [String(instanceId), enabled]
-                )
-            )
-        });
-        showStatusToast("CHAIN BYPASSED");
-    };
-
-    const toggleSnapshotMode = async () => {
-        if (snapshotMode) {
-            snapshotModePresetIdRef.current = null;
-            setSnapshotMode(false);
-            publishRuntimeState({ snapshotMode: false, snapshotPresetId: null });
-            showStatusToast(
-                selectedSnapshot >= 0
-                    ? `SNAPSHOT ${selectedSnapshot + 1} ACTIVE`
-                    : "SNAPSHOT MODE OFF"
-            );
-            return;
-        }
-
-        const nativeSnapshotAlreadyActive = selectedSnapshot >= 0;
-        const hasUnsavedBasePresetChanges =
-            effectivePresetChanged
-            && !nativeSnapshotAlreadyActive
-            && (!chainBypassed || chainBypassWasPresetChangedRef.current);
-        if (hasUnsavedBasePresetChanges) {
-            model.showAlert(
-                "Save or discard the base preset changes before entering Snapshot Mode."
-            );
-            return;
-        }
-
-        try {
-            // This used to call toggleChainBypass() and immediately continue,
-            // racing the asynchronous clean-base reload. Await restoration
-            // before capturing the snapshot layout or enabling Snapshot Mode.
-            await restoreChainBypass();
-        } catch (error) {
-            model.showAlert(String(error));
-            return;
-        }
-
-        const currentPresetId = model.presets.get().selectedInstanceId;
-        snapshotModePresetIdRef.current = currentPresetId;
-        setSnapshotPedalboard(model.pedalboard.get().clone());
-        setSnapshotMode(true);
-        publishRuntimeState({
-            snapshotMode: true,
-            snapshotPresetId: currentPresetId,
+        const state = await updateMultiFXRuntimeState({
             chainBypassed: false,
+            chainBypassBankId: null,
             chainBypassPresetId: null,
+            chainBypassSnapshotIndex: null,
             chainBypassWasPresetChanged: false,
             chainBypassEnabledStates: {}
-        });
-        showStatusToast("SNAPSHOT MODE");
+        }, transition.signal);
+        clearChainBypassRuntimeLocal();
+        applyRuntimeState(state);
+        if (showToast) {
+            showStatusToast(
+                originalSnapshotIndex !== null && samePreset
+                    ? `CHAIN ACTIVE • SNAPSHOT ${originalSnapshotIndex + 1}`
+                    : "CHAIN ACTIVE"
+            );
+        }
+    };
+
+    const toggleChainBypass = () => {
+        const transition = beginMultiFXPerformanceTransition();
+        void (async () => {
+            try {
+                await initializeMultiFXSnapshotSession(model, transition);
+                if (chainBypassedRef.current) {
+                    await restoreChainBypass(transition);
+                    return;
+                }
+
+                // Snapshot Mode and Chain Bypass are mutually exclusive views.
+                // Closing the view does not alter the remembered snapshot.
+                if (snapshotMode) {
+                    snapshotModeBankIdRef.current = null;
+                    snapshotModePresetIdRef.current = null;
+                    setSnapshotMode(false);
+                }
+
+                const pedalboard = model.pedalboard.get();
+                const items = pedalboard.items.filter(
+                    (item) => !item.isEmpty() && !item.isSyntheticItem()
+                );
+                const enabledSnapshot = new Map<number, boolean>();
+                for (const item of items) {
+                    enabledSnapshot.set(item.instanceId, item.isEnabled);
+                }
+
+                const currentBankId = model.banks.get().selectedBank;
+                const currentPresetId = model.presets.get().selectedInstanceId;
+                const currentSnapshotIndex = model.selectedSnapshot.get();
+                const currentSnapshot = currentSnapshotIndex >= 0
+                    ? pedalboard.snapshots[currentSnapshotIndex]
+                    : null;
+                const originalWasDirty = currentSnapshot
+                    ? currentSnapshot.isModified
+                    : effectivePresetChanged;
+
+                chainBypassSnapshotRef.current = enabledSnapshot;
+                chainBypassBankIdRef.current = currentBankId;
+                chainBypassPresetIdRef.current = currentPresetId;
+                chainBypassSnapshotIndexRef.current =
+                    currentSnapshotIndex >= 0 ? currentSnapshotIndex : null;
+                chainBypassWasPresetChangedRef.current = originalWasDirty;
+                chainBypassedRef.current = true;
+                setChainBypassed(true);
+
+                for (const item of items) {
+                    if (item.isEnabled) {
+                        model.setPedalboardItemEnabled(item.instanceId, false);
+                    }
+                }
+
+                const state = await updateMultiFXRuntimeState({
+                    snapshotMode: false,
+                    snapshotModeBankId: null,
+                    snapshotPresetId: null,
+                    chainBypassed: true,
+                    chainBypassBankId: currentBankId,
+                    chainBypassPresetId: currentPresetId,
+                    chainBypassSnapshotIndex:
+                        currentSnapshotIndex >= 0 ? currentSnapshotIndex : null,
+                    chainBypassWasPresetChanged: originalWasDirty,
+                    chainBypassEnabledStates: Object.fromEntries(
+                        Array.from(enabledSnapshot.entries()).map(
+                            ([instanceId, enabled]) => [String(instanceId), enabled]
+                        )
+                    )
+                }, transition.signal);
+                applyRuntimeState(state);
+                showStatusToast("CHAIN BYPASSED");
+            } catch (error) {
+                if (!isMultiFXTransitionCancellation(error)) {
+                    model.showAlert(String(error));
+                }
+            } finally {
+                finishMultiFXPerformanceTransition(transition);
+            }
+        })();
+    };
+
+    const toggleSnapshotMode = () => {
+        const transition = beginMultiFXPerformanceTransition();
+        void (async () => {
+            try {
+                await initializeMultiFXSnapshotSession(model, transition);
+                if (snapshotMode) {
+                    snapshotModeBankIdRef.current = null;
+                    snapshotModePresetIdRef.current = null;
+                    setSnapshotMode(false);
+                    const state = await updateMultiFXRuntimeState({
+                        snapshotMode: false,
+                        snapshotModeBankId: null,
+                        snapshotPresetId: null
+                    }, transition.signal);
+                    applyRuntimeState(state);
+                    showStatusToast(
+                        snapshotPerformanceActive
+                            ? `SNAPSHOT ${selectedSnapshot + 1} ACTIVE`
+                            : "SNAPSHOT MODE OFF"
+                    );
+                    return;
+                }
+
+                const hasUnsavedBasePresetChanges =
+                    effectivePresetChanged
+                    && !snapshotPerformanceActive
+                    && (
+                        !chainBypassedRef.current
+                        || chainBypassWasPresetChangedRef.current
+                    );
+                if (hasUnsavedBasePresetChanges) {
+                    model.showAlert(
+                        "Save or discard the base preset changes before entering Snapshot Mode."
+                    );
+                    return;
+                }
+
+                await restoreChainBypass(transition, false);
+
+                const currentBankId = model.banks.get().selectedBank;
+                const currentPresetId = model.presets.get().selectedInstanceId;
+                snapshotModeBankIdRef.current = currentBankId;
+                snapshotModePresetIdRef.current = currentPresetId;
+                setSnapshotPedalboard(model.pedalboard.get().clone());
+                setSnapshotMode(true);
+                const state = await updateMultiFXRuntimeState({
+                    snapshotMode: true,
+                    snapshotModeBankId: currentBankId,
+                    snapshotPresetId: currentPresetId,
+                    chainBypassed: false,
+                    chainBypassBankId: null,
+                    chainBypassPresetId: null,
+                    chainBypassSnapshotIndex: null,
+                    chainBypassWasPresetChanged: false,
+                    chainBypassEnabledStates: {}
+                }, transition.signal);
+                applyRuntimeState(state);
+                showStatusToast("SNAPSHOT MODE");
+            } catch (error) {
+                if (!isMultiFXTransitionCancellation(error)) {
+                    model.showAlert(String(error));
+                }
+            } finally {
+                finishMultiFXPerformanceTransition(transition);
+            }
+        })();
     };
 
     useEffect(() => onSnapshotModeChange?.(snapshotMode), [snapshotMode, onSnapshotModeChange]);
@@ -2003,8 +2337,7 @@ export default function FootControllerView({
                     if (presetSlotIndex >= 0 && presetSlotIndex < Snapshot.MAX_SNAPSHOTS) {
                         const snapshot = snapshotPedalboard.snapshots[presetSlotIndex];
                         if (snapshot) {
-                            model.selectSnapshot(presetSlotIndex);
-                            showStatusToast(snapshot.name || `SNAPSHOT ${presetSlotIndex + 1}`);
+                            requestSnapshotSelection(presetSlotIndex);
                         } else showStatusToast(`SNAPSHOT ${presetSlotIndex + 1} IS EMPTY`);
                     }
                     return;
@@ -2144,15 +2477,12 @@ export default function FootControllerView({
         // The active preset owns the main performance-state light, matching
         // the original MultiFX LED behavior. Temporary states override its
         // normal active color in priority order: bypass, snapshot, modified.
-        const activePresetLightState = isPresetAction && isActive
-            ? chainBypassed
-                ? "bypass"
-                : snapshotPerformanceActive
-                    ? "snapshot"
-                    : showPresetChanged
-                        ? "modified"
-                        : "active"
-            : "inactive";
+        const activePresetLightState = performancePresetLightState({
+            presetIsActive: isPresetAction && isActive,
+            chainBypassed,
+            snapshotConfirmed: snapshotPerformanceActive,
+            presetModified: showPresetChanged
+        });
         const isModifiedActivePreset = activePresetLightState === "modified";
         const isBypassedActivePreset = activePresetLightState === "bypass";
         const isSnapshotActivePreset = activePresetLightState === "snapshot";
@@ -2457,7 +2787,8 @@ export default function FootControllerView({
 
     const renderSnapshotTile = (index: number) => {
         const snapshot = snapshotPedalboard.snapshots[index];
-        const active = selectedSnapshot === index;
+        const active = snapshotPerformanceActive
+            && currentSnapshotSessionState?.snapshotIndex === index;
         const visualState = getSwitchVisualState(
             { type: "snapshotMode" },
             active
@@ -2475,8 +2806,7 @@ export default function FootControllerView({
                 onClick={(event) => {
                     if (snapshotSuppressNextClickRef.current) { snapshotSuppressNextClickRef.current = false; event.preventDefault(); return; }
                     if (!snapshot) { showStatusToast(`SNAPSHOT ${index + 1} IS EMPTY — HOLD TO CREATE`); return; }
-                    model.selectSnapshot(index);
-                    showStatusToast(snapshot.name || `SNAPSHOT ${index + 1}`);
+                    requestSnapshotSelection(index);
                 }}
                 style={{
                     position: "relative", minWidth: 0, minHeight: 0, padding: sizing.switchPadding,
@@ -3336,7 +3666,7 @@ export default function FootControllerView({
                             <button type="button" onClick={savePerformanceSnapshotRename}>SAVE</button>
                         </div>}
                         {snapshotPedalboard.snapshots[snapshotOptionsIndex] ? <>
-                            <button type="button" onClick={() => { model.selectSnapshot(snapshotOptionsIndex); setSnapshotOptionsOpen(false); }} style={dropdownItemStyle(true, false)}>RECALL SNAPSHOT</button>
+                            <button type="button" onClick={() => { requestSnapshotSelection(snapshotOptionsIndex); setSnapshotOptionsOpen(false); }} style={dropdownItemStyle(true, false)}>RECALL SNAPSHOT</button>
                             <button type="button" onClick={() => openSnapshotEditor(snapshotOptionsIndex)} style={dropdownItemStyle(false, false)}>EDIT SNAPSHOT</button>
                             <button type="button" onClick={() => setSnapshotRenameOpen(true)} style={dropdownItemStyle(false, false)}>RENAME</button>
                             <button type="button" onClick={() => deletePerformanceSnapshot(snapshotOptionsIndex)} style={{ ...dropdownItemStyle(false, false), color: colors.configErrorText }}>DELETE SNAPSHOT</button>

@@ -1,25 +1,32 @@
 /*
  * PiPedal-MultiFX — Native Snapshot Manager
  *
- * This screen is deliberately a thin UI over PiPedal's snapshot API.
- *
- * Native operations used here:
- *   model.selectSnapshot(index)          recall a stored snapshot
- *   model.selectSnapshot(-1)             return to the preset base state
- *   pedalboard.makeSnapshot()            capture the current live controls
- *   model.setSnapshots(array, index)     replace snapshot data/metadata and
- *                                        optionally select a snapshot
- *
- * Do NOT save the base preset from this file. A snapshot is native PiPedal
- * snapshot data and must never be promoted into the preset's base sound.
- * Do NOT introduce local active-snapshot persistence; model.selectedSnapshot
- * is authoritative and follows PiPedal's own model/server lifecycle.
+ * Snapshot data remains native PiPedal data. PI-MULTIFX's bridge stores only
+ * transient per-preset selection/on-off intent so both displays behave alike.
  */
 
 import React, { useEffect, useState } from "react";
 import { createPortal } from "react-dom";
 import { Pedalboard, Snapshot } from "./Pedalboard";
 import { PiPedalModelFactory } from "./PiPedalModel";
+import {
+    beginMultiFXPerformanceTransition,
+    finishMultiFXPerformanceTransition,
+    getLatestMultiFXPresetSnapshotState,
+    initializeMultiFXSnapshotSession,
+    isMultiFXTransitionCancellation,
+    loadMultiFXBasePreset,
+    persistMultiFXSnapshots,
+    readMultiFXPresetSnapshotState,
+    recallMultiFXSnapshot,
+    writeMultiFXPresetSnapshotState
+} from "./MultiFXPerformanceSession";
+import {
+    isSnapshotSessionConfirmed,
+    PresetSnapshotSessionState,
+    snapshotViewPress
+} from "./MultiFXSnapshotSessionState";
+import { subscribeMultiFXRuntimeState } from "./MultiFXRuntimeSync";
 import {
     MFX_COLORS,
     MFX_SURFACES,
@@ -50,6 +57,7 @@ export default function MultiFXSnapshotManager() {
     const [selectedSnapshot, setSelectedSnapshot] = useState<number>(
         () => model.selectedSnapshot.get()
     );
+    const [snapshotSessionRevision, setSnapshotSessionRevision] = useState(0);
 
     // Subscribe to the same native observables used by PiPedal's stock
     // SnapshotPanel. No polling or duplicated active-snapshot state is needed.
@@ -72,6 +80,10 @@ export default function MultiFXSnapshotManager() {
         };
     }, [model]);
 
+    useEffect(() => subscribeMultiFXRuntimeState((state) => {
+        setSnapshotSessionRevision(state.revision);
+    }), []);
+
     useEffect(() => {
         if (!message) {
             return;
@@ -91,115 +103,46 @@ export default function MultiFXSnapshotManager() {
 
     const normalizedSnapshots =
         Snapshot.cloneSnapshots(pedalboard.snapshots);
+    const currentBankId = model.banks.get().selectedBank;
+    const currentPresetId = model.presets.get().selectedInstanceId;
+    const currentSnapshotState = snapshotSessionRevision >= 0
+        ? getLatestMultiFXPresetSnapshotState(
+            currentBankId,
+            currentPresetId
+        )
+        : null;
 
-    // Persist one snapshot-array mutation safely.
-    //
-    // setSnapshots() alone only changes the in-memory preset. To survive a
-    // preset change, snapshot data must ultimately pass through
-    // saveCurrentPreset(). Because that function saves the CURRENT live
-    // pedalboard, we first reload the saved base preset whenever necessary.
-    //
-    // After the clean base acknowledgement, WebSocket ordering guarantees:
-    //   setSnapshots(...,-1) -> saveCurrentPreset() -> optional recall
-    //
-    // That ordering saves base controls + new snapshot metadata/data without
-    // ever promoting snapshot-modified controls into the base preset.
     const persistSnapshots = (
         snapshots: Array<Snapshot | null>,
-        finalSelectedIndex: number,
+        finalState: PresetSnapshotSessionState | null,
         successMessage: string
     ) => {
-        if (operationBusy) {
-            return;
-        }
-
+        if (operationBusy) return;
+        const bankId = model.banks.get().selectedBank;
         const presetId = model.presets.get().selectedInstanceId;
+        const transition = beginMultiFXPerformanceTransition();
         setOperationBusy(true);
-
-        let finished = false;
-
-        const cleanup = () => {
-            model.presets.removeOnChangedHandler(checkReady);
-            model.selectedSnapshot.removeOnChangedHandler(checkReady);
-            model.pedalboard.removeOnChangedHandler(checkPedalboard);
-        };
-
-        const complete = () => {
-            if (finished) {
-                return;
-            }
-            finished = true;
-            cleanup();
-            setOperationBusy(false);
-            setMessage(successMessage);
-        };
-
-        const checkPedalboard = () => checkReady();
-
-        const checkReady = () => {
-            if (finished) {
-                return;
-            }
-
-            const cleanBase =
-                model.presets.get().selectedInstanceId === presetId
-                && model.selectedSnapshot.get() < 0
-                && !model.presets.get().presetChanged;
-
-            if (!cleanBase) {
-                return;
-            }
-
-            // Stop listening for the base-load acknowledgement before sending
-            // the persistence sequence; later events are handled by finishWait.
-            cleanup();
-
-            const finishWait = () => {
-                if (
-                    model.presets.get().selectedInstanceId !== presetId
-                    || model.presets.get().presetChanged
-                ) {
-                    return;
+        void (async () => {
+            try {
+                await initializeMultiFXSnapshotSession(model, transition);
+                await persistMultiFXSnapshots(
+                    model,
+                    bankId,
+                    presetId,
+                    snapshots,
+                    finalState,
+                    transition
+                );
+                setMessage(successMessage);
+            } catch (error) {
+                if (!isMultiFXTransitionCancellation(error)) {
+                    model.showAlert(String(error));
                 }
-
-                if (
-                    finalSelectedIndex >= 0
-                    && model.selectedSnapshot.get() !== finalSelectedIndex
-                ) {
-                    return;
-                }
-
-                model.presets.removeOnChangedHandler(finishWait);
-                model.selectedSnapshot.removeOnChangedHandler(finishWait);
-                complete();
-            };
-
-            model.presets.addOnChangedHandler(finishWait);
-            model.selectedSnapshot.addOnChangedHandler(finishWait);
-
-            model.setSnapshots(snapshots, -1);
-            model.saveCurrentPreset();
-
-            if (finalSelectedIndex >= 0) {
-                model.selectSnapshot(finalSelectedIndex);
+            } finally {
+                finishMultiFXPerformanceTransition(transition);
+                setOperationBusy(false);
             }
-
-            finishWait();
-        };
-
-        model.presets.addOnChangedHandler(checkReady);
-        model.selectedSnapshot.addOnChangedHandler(checkReady);
-        model.pedalboard.addOnChangedHandler(checkPedalboard);
-
-        const alreadyCleanBase =
-            model.selectedSnapshot.get() < 0
-            && !model.presets.get().presetChanged;
-
-        if (alreadyCleanBase) {
-            checkReady();
-        } else {
-            model.loadPreset(presetId);
-        }
+        })();
     };
 
     // Capture the LIVE pedalboard into an empty slot. This mirrors PiPedal's
@@ -222,7 +165,7 @@ export default function MultiFXSnapshotManager() {
 
         persistSnapshots(
             snapshots,
-            index,
+            { snapshotIndex: index, enabled: true },
             `SNAPSHOT ${index + 1} CREATED`
         );
     };
@@ -254,25 +197,54 @@ export default function MultiFXSnapshotManager() {
 
         persistSnapshots(
             snapshots,
-            index,
+            { snapshotIndex: index, enabled: true },
             `${updated.name || `SNAPSHOT ${index + 1}`} UPDATED`
         );
     };
 
     const recallSnapshot = (index: number) => {
-        if (operationBusy) {
-            return;
-        }
+        if (operationBusy) return;
 
         const snapshot = normalizedSnapshots[index];
-        if (!snapshot) {
-            return;
-        }
+        if (!snapshot) return;
 
-        model.selectSnapshot(index);
-        setMessage(
-            `${snapshot.name || `SNAPSHOT ${index + 1}`} RECALLED`
-        );
+        const transition = beginMultiFXPerformanceTransition();
+        setOperationBusy(true);
+        void (async () => {
+            try {
+                await initializeMultiFXSnapshotSession(model, transition);
+                const bankId = model.banks.get().selectedBank;
+                const presetId = model.presets.get().selectedInstanceId;
+                const current = await readMultiFXPresetSnapshotState(
+                    bankId,
+                    presetId,
+                    transition
+                );
+                const next = snapshotViewPress(current, index);
+                await writeMultiFXPresetSnapshotState(
+                    bankId,
+                    presetId,
+                    next,
+                    transition
+                );
+                if (next) {
+                    await recallMultiFXSnapshot(model, index, transition);
+                    setMessage(
+                        `${snapshot.name || `SNAPSHOT ${index + 1}`} ACTIVE`
+                    );
+                } else {
+                    await loadMultiFXBasePreset(model, presetId, transition);
+                    setMessage(`SNAPSHOT ${index + 1} CLEARED • BASE PRESET`);
+                }
+            } catch (error) {
+                if (!isMultiFXTransitionCancellation(error)) {
+                    model.showAlert(String(error));
+                }
+            } finally {
+                finishMultiFXPerformanceTransition(transition);
+                setOperationBusy(false);
+            }
+        })();
     };
 
     const beginRename = (index: number) => {
@@ -322,7 +294,7 @@ export default function MultiFXSnapshotManager() {
 
         persistSnapshots(
             snapshots,
-            -1,
+            currentSnapshotState,
             "SNAPSHOT RENAMED"
         );
     };
@@ -351,7 +323,7 @@ export default function MultiFXSnapshotManager() {
 
         persistSnapshots(
             snapshots,
-            -1,
+            currentSnapshotState,
             "SNAPSHOT COLOR SAVED"
         );
     };
@@ -376,7 +348,9 @@ export default function MultiFXSnapshotManager() {
 
         persistSnapshots(
             snapshots,
-            -1,
+            currentSnapshotState?.snapshotIndex === index
+                ? null
+                : currentSnapshotState,
             `SNAPSHOT ${index + 1} DELETED`
         );
     };
@@ -419,7 +393,12 @@ export default function MultiFXSnapshotManager() {
 
             <div style={gridStyle}>
                 {normalizedSnapshots.map((snapshot, index) => {
-                    const active = selectedSnapshot === index;
+                    const active =
+                        currentSnapshotState?.snapshotIndex === index
+                        && isSnapshotSessionConfirmed(
+                            currentSnapshotState,
+                            selectedSnapshot
+                        );
                     const modified =
                         active && Boolean(snapshot?.isModified);
                     const color =

@@ -16,10 +16,10 @@ Only user configuration is durable:
   * uiSettings (shared MultiFX interaction and timing preferences)
 
 Those values are stored atomically in /var/lib/pipedal-multifx/state.json.
-Snapshot Mode and Chain Bypass are transient live-performance state and always
-start neutral when this service restarts. Schema 3 is a clean unreleased-format
-break: incompatible state is reported and then atomically replaced with the
-checked-in factory controller configuration.
+Snapshot Mode, per-preset snapshot selections, and Chain Bypass are transient
+live-performance state and always start neutral when this service restarts.
+Schema 3 is a clean unreleased-format break: incompatible state is reported and
+then atomically replaced with the checked-in factory controller configuration.
 
 Encoder transport
 -----------------
@@ -94,7 +94,9 @@ MULTIFX_RELEASE_PATTERN = re.compile(
 )
 MULTIFX_RELEASE_CACHE_SECONDS = 300
 STATE_SCHEMA_VERSION = 3
-RUNTIME_VERSION = 7
+RUNTIME_VERSION = 8
+MAX_PRESET_SNAPSHOT_STATES = 512
+MAX_SNAPSHOT_INDEX = 5
 
 MFX_SYSEX_PREFIX = (0x7D, 0x4D, 0x46, 0x58)
 CONTROLLER_PROTOCOL_VERSION = 2
@@ -190,9 +192,14 @@ state = {
     "revision": 0,
     "instanceId": uuid.uuid4().hex,
     "snapshotMode": False,
+    "snapshotModeBankId": None,
     "snapshotPresetId": None,
+    "snapshotSessionInitialized": False,
+    "presetSnapshotStates": {},
     "chainBypassed": False,
+    "chainBypassBankId": None,
     "chainBypassPresetId": None,
+    "chainBypassSnapshotIndex": None,
     "chainBypassWasPresetChanged": False,
     "chainBypassEnabledStates": {},
     "controllerConfig": None,
@@ -350,6 +357,51 @@ def controller_input_descriptor(raw, reason_code=0):
 
 def _valid_nonnegative_int(value):
     return isinstance(value, int) and not isinstance(value, bool) and value >= 0
+
+
+def _valid_snapshot_index(value):
+    return (
+        isinstance(value, int)
+        and not isinstance(value, bool)
+        and 0 <= value <= MAX_SNAPSHOT_INDEX
+    )
+
+
+def _preset_snapshot_state_key(bank_id, preset_id):
+    if not _valid_nonnegative_int(bank_id) or not _valid_nonnegative_int(preset_id):
+        raise ValueError("preset snapshot bankId and presetId must be non-negative integers")
+    return f"{bank_id}:{preset_id}"
+
+
+def _normalize_preset_snapshot_states(value):
+    """Validate and canonicalize the bounded transient per-preset snapshot map."""
+    if not isinstance(value, dict):
+        raise ValueError("presetSnapshotStates must be an object")
+    if len(value) > MAX_PRESET_SNAPSHOT_STATES:
+        raise ValueError("presetSnapshotStates has too many entries")
+
+    result = {}
+    for raw_key, raw_state in value.items():
+        if not isinstance(raw_key, str) or not isinstance(raw_state, dict):
+            raise ValueError("presetSnapshotStates contains an invalid entry")
+        key_parts = raw_key.split(":")
+        if len(key_parts) != 2 or any(not part.isdigit() for part in key_parts):
+            raise ValueError("presetSnapshotStates contains an invalid key")
+        bank_id, preset_id = (int(part) for part in key_parts)
+        key = _preset_snapshot_state_key(bank_id, preset_id)
+        if key != raw_key:
+            raise ValueError("presetSnapshotStates keys must be canonical")
+        if set(raw_state) != {"snapshotIndex", "enabled"}:
+            raise ValueError("presetSnapshotStates contains an invalid value")
+        snapshot_index = raw_state.get("snapshotIndex")
+        enabled = raw_state.get("enabled")
+        if not _valid_snapshot_index(snapshot_index) or not isinstance(enabled, bool):
+            raise ValueError("presetSnapshotStates contains an invalid value")
+        result[key] = {
+            "snapshotIndex": snapshot_index,
+            "enabled": enabled,
+        }
+    return result
 
 
 def _normalize_enabled_states(value):
@@ -784,14 +836,74 @@ def update_state(patch):
     with state_lock:
         if "snapshotMode" in patch:
             state["snapshotMode"] = bool(patch["snapshotMode"])
+        if "snapshotModeBankId" in patch:
+            value = patch["snapshotModeBankId"]
+            if value is not None and not _valid_nonnegative_int(value):
+                raise ValueError("snapshotModeBankId must be a non-negative integer or null")
+            state["snapshotModeBankId"] = value
         if "snapshotPresetId" in patch:
             value = patch["snapshotPresetId"]
             state["snapshotPresetId"] = value if _valid_nonnegative_int(value) else None
+        if "snapshotSessionInitialized" in patch:
+            value = patch["snapshotSessionInitialized"]
+            if not isinstance(value, bool):
+                raise ValueError("snapshotSessionInitialized must be boolean")
+            state["snapshotSessionInitialized"] = value
+        if "presetSnapshotStateUpdate" in patch:
+            op = patch["presetSnapshotStateUpdate"]
+            if not isinstance(op, dict) or set(op) != {
+                    "bankId", "presetId", "snapshotIndex", "enabled"}:
+                raise ValueError("presetSnapshotStateUpdate must use the complete schema")
+            bank_id = op.get("bankId")
+            preset_id = op.get("presetId")
+            snapshot_index = op.get("snapshotIndex")
+            enabled = op.get("enabled")
+            key = _preset_snapshot_state_key(bank_id, preset_id)
+            if not isinstance(enabled, bool):
+                raise ValueError("presetSnapshotStateUpdate.enabled must be boolean")
+            if snapshot_index is None:
+                state["presetSnapshotStates"].pop(key, None)
+            else:
+                if not _valid_snapshot_index(snapshot_index):
+                    raise ValueError(
+                        "presetSnapshotStateUpdate.snapshotIndex must be between 0 and 5"
+                    )
+                # Treat insertion order as a lightweight LRU. A long-running UI
+                # session therefore stays bounded without making a valid update
+                # fail merely because many banks and presets were visited.
+                state["presetSnapshotStates"].pop(key, None)
+                while len(state["presetSnapshotStates"]) >= MAX_PRESET_SNAPSHOT_STATES:
+                    state["presetSnapshotStates"].pop(
+                        next(iter(state["presetSnapshotStates"]))
+                    )
+                state["presetSnapshotStates"][key] = {
+                    "snapshotIndex": snapshot_index,
+                    "enabled": enabled,
+                }
+            state["presetSnapshotStates"] = _normalize_preset_snapshot_states(
+                state["presetSnapshotStates"]
+            )
+        if "resetPresetSnapshotStates" in patch:
+            value = patch["resetPresetSnapshotStates"]
+            if not isinstance(value, bool):
+                raise ValueError("resetPresetSnapshotStates must be boolean")
+            if value:
+                state["presetSnapshotStates"] = {}
         if "chainBypassed" in patch:
             state["chainBypassed"] = bool(patch["chainBypassed"])
+        if "chainBypassBankId" in patch:
+            value = patch["chainBypassBankId"]
+            if value is not None and not _valid_nonnegative_int(value):
+                raise ValueError("chainBypassBankId must be a non-negative integer or null")
+            state["chainBypassBankId"] = value
         if "chainBypassPresetId" in patch:
             value = patch["chainBypassPresetId"]
             state["chainBypassPresetId"] = value if _valid_nonnegative_int(value) else None
+        if "chainBypassSnapshotIndex" in patch:
+            value = patch["chainBypassSnapshotIndex"]
+            if value is not None and not _valid_snapshot_index(value):
+                raise ValueError("chainBypassSnapshotIndex must be between 0 and 5 or null")
+            state["chainBypassSnapshotIndex"] = value
         if "chainBypassWasPresetChanged" in patch:
             state["chainBypassWasPresetChanged"] = bool(patch["chainBypassWasPresetChanged"])
         if "chainBypassEnabledStates" in patch:

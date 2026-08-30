@@ -4,8 +4,8 @@
  * One singleton poller owns the bridge connection. Components subscribe to the
  * same normalized snapshot instead of running independent GET loops. Persistent
  * durable shared state is limited to controllerConfig, presetAssignments and
- * the active theme; Snapshot Mode / Chain Bypass remain transient runtime
- * state and reset with the bridge.
+ * the active theme; Snapshot Mode, per-preset snapshot selections, and Chain
+ * Bypass remain transient runtime state and reset with the bridge.
  */
 
 import {
@@ -101,9 +101,14 @@ export type MultiFXRuntimeState = {
     instanceId: string;
 
     snapshotMode: boolean;
+    snapshotModeBankId: number | null;
     snapshotPresetId: number | null;
+    snapshotSessionInitialized: boolean;
+    presetSnapshotStates: Record<string, MultiFXPresetSnapshotState>;
     chainBypassed: boolean;
+    chainBypassBankId: number | null;
     chainBypassPresetId: number | null;
+    chainBypassSnapshotIndex: number | null;
     chainBypassWasPresetChanged: boolean;
     chainBypassEnabledStates: Record<string, boolean>;
 
@@ -122,18 +127,36 @@ export type MultiFXPresetAssignmentUpdate = {
     presetId: number | null;
 };
 
+export type MultiFXPresetSnapshotState = {
+    snapshotIndex: number;
+    enabled: boolean;
+};
+
+export type MultiFXPresetSnapshotStateUpdate = {
+    bankId: number;
+    presetId: number;
+    snapshotIndex: number | null;
+    enabled: boolean;
+};
+
 export type MultiFXRuntimeStatePatch = Partial<Pick<
     MultiFXRuntimeState,
     | "snapshotMode"
+    | "snapshotModeBankId"
     | "snapshotPresetId"
+    | "snapshotSessionInitialized"
     | "chainBypassed"
+    | "chainBypassBankId"
     | "chainBypassPresetId"
+    | "chainBypassSnapshotIndex"
     | "chainBypassWasPresetChanged"
     | "chainBypassEnabledStates"
     | "controllerConfig"
     | "theme"
     | "uiSettings"
 >> & {
+    presetSnapshotStateUpdate?: MultiFXPresetSnapshotStateUpdate;
+    resetPresetSnapshotStates?: boolean;
     presetAssignmentUpdate?: MultiFXPresetAssignmentUpdate;
     presetAssignmentSwap?: { bankId: number; leftSwitchId: string; rightSwitchId: string };
     replacePresetAssignments?: unknown;
@@ -163,6 +186,58 @@ function numberOrNull(value: unknown): number | null {
     return typeof value === "number" && Number.isFinite(value)
         ? value
         : null;
+}
+
+const MAX_PRESET_SNAPSHOT_STATES = 512;
+
+function nonnegativeIntegerOrNull(value: unknown): number | null {
+    return typeof value === "number"
+        && Number.isSafeInteger(value)
+        && value >= 0
+        ? value
+        : null;
+}
+
+function snapshotIndexOrNull(value: unknown): number | null {
+    return typeof value === "number"
+        && Number.isInteger(value)
+        && value >= 0
+        && value <= 5
+        ? value
+        : null;
+}
+
+function normalizePresetSnapshotStates(
+    value: unknown
+): Record<string, MultiFXPresetSnapshotState> {
+    const result: Record<string, MultiFXPresetSnapshotState> = {};
+    if (!value || typeof value !== "object" || Array.isArray(value)) {
+        return result;
+    }
+
+    for (const [key, rawState] of Object.entries(
+        value as Record<string, unknown>
+    )) {
+        if (Object.keys(result).length >= MAX_PRESET_SNAPSHOT_STATES) break;
+        const match = /^(0|[1-9]\d*):(0|[1-9]\d*)$/.exec(key);
+        if (!match || !rawState || typeof rawState !== "object"
+            || Array.isArray(rawState)) continue;
+        const bankId = Number(match[1]);
+        const presetId = Number(match[2]);
+        if (!Number.isSafeInteger(bankId) || !Number.isSafeInteger(presetId)) {
+            continue;
+        }
+        const source = rawState as Record<string, unknown>;
+        const snapshotIndex = snapshotIndexOrNull(source.snapshotIndex);
+        if (snapshotIndex === null || typeof source.enabled !== "boolean") {
+            continue;
+        }
+        result[`${bankId}:${presetId}`] = {
+            snapshotIndex,
+            enabled: source.enabled
+        };
+    }
+    return result;
 }
 
 function normalizeControllerInput(
@@ -380,6 +455,10 @@ function normalizeRuntimeState(value: unknown): MultiFXRuntimeState {
         }
     }
 
+    const presetSnapshotStates = normalizePresetSnapshotStates(
+        source.presetSnapshotStates
+    );
+
     return {
         version: typeof source.version === "number" ? source.version : 0,
         revision: typeof source.revision === "number" ? source.revision : 0,
@@ -388,9 +467,23 @@ function normalizeRuntimeState(value: unknown): MultiFXRuntimeState {
                 ? source.instanceId
                 : "unknown",
         snapshotMode: Boolean(source.snapshotMode),
+        snapshotModeBankId: nonnegativeIntegerOrNull(
+            source.snapshotModeBankId
+        ),
         snapshotPresetId: numberOrNull(source.snapshotPresetId),
+        snapshotSessionInitialized:
+            typeof source.snapshotSessionInitialized === "boolean"
+                ? source.snapshotSessionInitialized
+                : false,
+        presetSnapshotStates,
         chainBypassed: Boolean(source.chainBypassed),
+        chainBypassBankId: nonnegativeIntegerOrNull(
+            source.chainBypassBankId
+        ),
         chainBypassPresetId: numberOrNull(source.chainBypassPresetId),
+        chainBypassSnapshotIndex: snapshotIndexOrNull(
+            source.chainBypassSnapshotIndex
+        ),
         chainBypassWasPresetChanged:
             Boolean(source.chainBypassWasPresetChanged),
         chainBypassEnabledStates: enabledStates,

@@ -108,9 +108,10 @@ async function waitForEnabledStates(
 /**
  * Restore Chain Bypass without losing pre-existing dirty base edits.
  *
- * A clean base is restored with a native preset reload. If the base was dirty
- * before bypass, only the enabled flags changed by bypass are restored because
- * reloading would discard the user's unsaved edits.
+ * Chain Bypass changes only item enabled flags, so ending it restores only
+ * those captured flags. Reloading the preset here would discard an active
+ * snapshot (and can also discard unsaved base edits). Callers that genuinely
+ * need BASE state do that independently after bypass has been restored.
  */
 export async function restoreChainBypassForSafeWrite(
     model: PiPedalModel
@@ -119,11 +120,12 @@ export async function restoreChainBypassForSafeWrite(
     if (!runtime.chainBypassed) return;
 
     const currentPresetId = model.presets.get().selectedInstanceId;
-    const samePreset = runtime.chainBypassPresetId === currentPresetId;
+    const currentBankId = model.banks.get().selectedBank;
+    const samePreset =
+        runtime.chainBypassBankId === currentBankId
+        && runtime.chainBypassPresetId === currentPresetId;
 
-    if (samePreset && !runtime.chainBypassWasPresetChanged) {
-        await loadCleanBasePreset(model, currentPresetId);
-    } else if (samePreset) {
+    if (samePreset) {
         const enabled = runtime.chainBypassEnabledStates;
         for (const item of model.pedalboard.get().items) {
             if (item.isEmpty() || item.isSyntheticItem()) continue;
@@ -137,7 +139,9 @@ export async function restoreChainBypassForSafeWrite(
 
     await updateMultiFXRuntimeState({
         chainBypassed: false,
+        chainBypassBankId: null,
         chainBypassPresetId: null,
+        chainBypassSnapshotIndex: null,
         chainBypassWasPresetChanged: false,
         chainBypassEnabledStates: {}
     });
@@ -159,9 +163,12 @@ export async function prepareBasePresetForWrite(
 
     await updateMultiFXRuntimeState({
         snapshotMode: false,
+        snapshotModeBankId: null,
         snapshotPresetId: null,
         chainBypassed: false,
+        chainBypassBankId: null,
         chainBypassPresetId: null,
+        chainBypassSnapshotIndex: null,
         chainBypassWasPresetChanged: false,
         chainBypassEnabledStates: {}
     });
