@@ -495,12 +495,26 @@ export default function FootControllerView({
     );
     const [presets, setPresets] = useState<PresetIndex>(() => model.presets.get().clone());
     const [banks, setBanks] = useState<BankIndex>(() => model.banks.get().clone());
+    // Performance bank selection is intentionally separate from PiPedal's
+    // active bank. Browsing banks must not change the sound; the selected bank
+    // is opened only when the player chooses one of its presets.
+    const initialBankId = model.banks.get().selectedBank;
+    const [performanceBankId, setPerformanceBankId] = useState(initialBankId);
+    const performanceBankIdRef = useRef(initialBankId);
+    const [performanceBankPresets, setPerformanceBankPresets] =
+        useState<PresetIndexEntry[]>(() => [...model.presets.get().presets]);
+    const performancePresetRequestRef = useRef(0);
+    const actualBankIdRef = useRef(initialBankId);
     const [bankMenuOpen, setBankMenuOpen] = useState(false);
     const [presetMenuOpen, setPresetMenuOpen] = useState(false);
     const [menuIndex, setMenuIndex] = useState(0);
     const menuItemRefs = useRef<Array<HTMLButtonElement | null>>([]);
     const [selectedPresetSlot, setSelectedPresetSlot] = useState(0);
     const [presetAssignmentsBySlot, setPresetAssignmentsBySlot] = useState<Array<number | null>>([]);
+    // Bank and preset notifications arrive independently. Remember which bank
+    // owns the rendered assignment array so a newly selected bank can never
+    // reuse the previous bank's buttons while React is between notifications.
+    const presetAssignmentsBankIdRef = useRef<number | null>(null);
     // Momentary press state is separate from persistent states such as the
     // active preset and Chain Bypass. It lets both touchscreen presses and
     // physical controller key events illuminate navigation/utility switches.
@@ -794,13 +808,33 @@ export default function FootControllerView({
         return presetSwitchConfigs[slotIndex]?.id ?? null;
     };
 
-    const reloadPresetAssignments = () => {
-        const bank = getBankPresetAssignments(banks.selectedBank);
+    const reloadPresetAssignments = (bankId = performanceBankIdRef.current) => {
+        const bank = getBankPresetAssignments(bankId);
+        presetAssignmentsBankIdRef.current = bankId;
         setPresetAssignmentsBySlot(
             presetSwitchConfigs.map((switchConfig) =>
                 bank[switchConfig.id] ?? null
             )
         );
+    };
+
+    const choosePerformanceBank = (bankId: number) => {
+        if (!banks.getEntry(bankId)) return;
+        performanceBankIdRef.current = bankId;
+        setPerformanceBankId(bankId);
+        setBankMenuOpen(false);
+    };
+
+    const movePerformanceBank = (direction: number) => {
+        if (banks.entries.length === 0) return;
+        const currentIndex = banks.entries.findIndex(
+            (bank) => bank.instanceId === performanceBankIdRef.current
+        );
+        const baseIndex = currentIndex >= 0 ? currentIndex : 0;
+        const nextIndex = (
+            baseIndex + (direction >= 0 ? 1 : -1) + banks.entries.length
+        ) % banks.entries.length;
+        choosePerformanceBank(banks.entries[nextIndex].instanceId);
     };
 
     const moveOrSwapPerformancePreset = (
@@ -831,7 +865,7 @@ export default function FootControllerView({
         });
 
         void swapPresetAssignments(
-            banks.selectedBank,
+            performanceBankIdRef.current,
             sourceSwitchId,
             targetSwitchId
         ).catch((error) => model.showAlert(String(error)));
@@ -854,7 +888,7 @@ export default function FootControllerView({
         });
 
         void setPresetAssignment(
-            banks.selectedBank,
+            performanceBankIdRef.current,
             switchId,
             null
         ).catch((error) => model.showAlert(String(error)));
@@ -878,7 +912,7 @@ export default function FootControllerView({
         });
 
         void setPresetAssignment(
-            banks.selectedBank,
+            performanceBankIdRef.current,
             switchId,
             presetId
         ).catch((error) => model.showAlert(String(error)));
@@ -1007,8 +1041,28 @@ export default function FootControllerView({
     }, []);
 
     useEffect(() => {
-        const presetsChanged = () => setPresets(model.presets.get().clone());
-        const banksChanged = () => setBanks(model.banks.get().clone());
+        const presetsChanged = () => {
+            const nextPresets = model.presets.get().clone();
+            setPresets(nextPresets);
+            if (
+                performanceBankIdRef.current
+                === model.banks.get().selectedBank
+            ) {
+                setPerformanceBankPresets([...nextPresets.presets]);
+            }
+        };
+        const banksChanged = () => {
+            const nextBanks = model.banks.get().clone();
+            setBanks(nextBanks);
+            if (actualBankIdRef.current !== nextBanks.selectedBank) {
+                actualBankIdRef.current = nextBanks.selectedBank;
+                performanceBankIdRef.current = nextBanks.selectedBank;
+                setPerformanceBankId(nextBanks.selectedBank);
+                setPerformanceBankPresets([
+                    ...model.presets.get().presets
+                ]);
+            }
+        };
         model.presets.addOnChangedHandler(presetsChanged);
         model.banks.addOnChangedHandler(banksChanged);
         presetsChanged();
@@ -1158,7 +1212,7 @@ export default function FootControllerView({
     useEffect(() => {
         if (!controllerConfigLoaded) return;
 
-        const reload = () => reloadPresetAssignments();
+        const reload = () => reloadPresetAssignments(performanceBankId);
         reload();
         window.addEventListener(
             MULTIFX_PRESET_ASSIGNMENTS_CHANGED_EVENT,
@@ -1172,23 +1226,65 @@ export default function FootControllerView({
         };
     }, [
         controllerConfigLoaded,
-        banks.selectedBank,
+        performanceBankId,
         presetSwitchConfigs.map((item) => item.id).join("|")
     ]);
 
+    useEffect(() => {
+        const requestId = ++performancePresetRequestRef.current;
+        if (!banks.getEntry(performanceBankId)) {
+            setPerformanceBankPresets([]);
+            return;
+        }
+        if (performanceBankId === banks.selectedBank) {
+            setPerformanceBankPresets([...presets.presets]);
+            return;
+        }
+
+        setPerformanceBankPresets([]);
+        void model.requestBankPresets(performanceBankId)
+            .then((bankPresets) => {
+                if (
+                    performancePresetRequestRef.current === requestId
+                    && performanceBankIdRef.current === performanceBankId
+                ) {
+                    setPerformanceBankPresets([...bankPresets]);
+                }
+            })
+            .catch((error) => {
+                if (performancePresetRequestRef.current === requestId) {
+                    model.showAlert(`Unable to read bank presets: ${String(error)}`);
+                }
+            });
+    }, [model, performanceBankId, banks.selectedBank, presets]);
+
     const getPresetForSlot = (slotIndex: number): PresetIndexEntry | undefined => {
         if (slotIndex < 0 || slotIndex >= presetSlotCount) return undefined;
+        if (presetAssignmentsBankIdRef.current !== performanceBankId) return undefined;
         const presetId = presetAssignmentsBySlot[slotIndex];
         if (presetId === null || presetId === undefined) return undefined;
-        return presets.getItem(presetId) ?? undefined;
+        return performanceBankPresets.find(
+            (preset) => preset.instanceId === presetId
+        );
     };
 
     const selectedSlotPreset = getPresetForSlot(selectedPresetSlot);
 
     const requestPresetLoad = (presetId: number) => {
+        const targetBankId = performanceBankIdRef.current;
+        if (targetBankId !== model.banks.get().selectedBank) {
+            void model.openBank(targetBankId)
+                .then(() => model.loadPreset(presetId))
+                .catch((error) => model.showAlert(String(error)));
+            return;
+        }
+
         const selectedPresetId = model.presets.get().selectedInstanceId;
         if (presetId === selectedPresetId) {
-            if (selectedSnapshot < 0) return;
+            // Read the model at click time. Its observable is authoritative and
+            // can already contain the bank-change result while this component's
+            // selectedSnapshot render value is still one notification behind.
+            if (model.selectedSnapshot.get() < 0) return;
             snapshotModePresetIdRef.current = null;
             setSnapshotMode(false);
             publishRuntimeState({ snapshotMode: false, snapshotPresetId: null });
@@ -1229,6 +1325,10 @@ export default function FootControllerView({
     };
 
     const renameSelectedSlotPreset = async () => {
+        if (performanceBankIdRef.current !== model.banks.get().selectedBank) {
+            model.showAlert("Load a preset from this bank before renaming it.");
+            return;
+        }
         const preset = getPresetForSlot(selectedPresetSlot);
         const nextName = presetRenameValue.trim();
         if (!preset || presetActionBusy || !nextName || nextName === preset.name) return;
@@ -1245,6 +1345,10 @@ export default function FootControllerView({
     };
 
     const deleteSelectedSlotPreset = async () => {
+        if (performanceBankIdRef.current !== model.banks.get().selectedBank) {
+            model.showAlert("Load a preset from this bank before deleting it.");
+            return;
+        }
         const preset = getPresetForSlot(selectedPresetSlot);
         if (!preset || presetActionBusy) return;
         const deletedPresetId = preset.instanceId;
@@ -1252,7 +1356,7 @@ export default function FootControllerView({
         try {
             await model.deletePresetItems(new Set<number>([deletedPresetId]));
             await clearPresetAssignmentsForPreset(
-                banks.selectedBank,
+                performanceBankIdRef.current,
                 deletedPresetId
             );
             reloadPresetAssignments();
@@ -1275,11 +1379,14 @@ export default function FootControllerView({
         // Crossing the first/last preset switch moves to the adjacent PiPedal
         // bank. Banks are the only grouping layer; there is no nested paging.
         pendingBankSlotRef.current = direction > 0 ? 0 : -1;
-        if (direction > 0) model.nextBank();
-        else model.previousBank();
+        movePerformanceBank(direction);
     };
 
     const createNewPresetFromCurrent = async () => {
+        if (performanceBankIdRef.current !== model.banks.get().selectedBank) {
+            model.showAlert("Load a preset from this bank before creating a new preset.");
+            return;
+        }
         if (blockPresetWriteWhileSnapshotActive("Creating a preset")) return;
         const currentPresets = model.presets.get();
         const selectedId = currentPresets.selectedInstanceId;
@@ -1313,6 +1420,10 @@ export default function FootControllerView({
     };
 
     const editSelectedSlotPreset = () => {
+        if (performanceBankIdRef.current !== model.banks.get().selectedBank) {
+            model.showAlert("Load this preset before editing it.");
+            return;
+        }
         if (blockPresetWriteWhileSnapshotActive("Editing the base preset")) return;
         const preset = getPresetForSlot(selectedPresetSlot);
         if (!preset) {
@@ -1330,7 +1441,13 @@ export default function FootControllerView({
 
     const getPresetOptions = () => {
         const preset = getPresetForSlot(selectedPresetSlot);
-        if (!preset) return ["Assign Preset to This Switch", "Create New Preset", "Cancel"];
+        const pendingBank = performanceBankId !== banks.selectedBank;
+        if (!preset) return pendingBank
+            ? ["Assign Preset to This Switch", "Cancel"]
+            : ["Assign Preset to This Switch", "Create New Preset", "Cancel"];
+        if (pendingBank) {
+            return ["Load Preset", "Assign Different Preset", "Remove From Switch", "Cancel"];
+        }
         const options = ["Load Preset", "Edit Preset"];
         if (
             preset.instanceId === model.presets.get().selectedInstanceId
@@ -1497,7 +1614,9 @@ export default function FootControllerView({
                 return;
             }
 
-            const itemCount = bankMenuOpen ? banks.entries.length : presets.presets.length;
+            const itemCount = bankMenuOpen
+                ? banks.entries.length
+                : performanceBankPresets.length;
             if (itemCount === 0) return;
             if (event.key === "ArrowDown") setMenuIndex((i) => (i + 1) % itemCount);
             else if (event.key === "ArrowUp") setMenuIndex((i) => (i - 1 + itemCount) % itemCount);
@@ -1509,10 +1628,10 @@ export default function FootControllerView({
                     const bank = banks.entries[menuIndex];
                     if (bank) {
                         setBankMenuOpen(false);
-                        model.openBank(bank.instanceId).catch((error) => model.showAlert(error.toString()));
+                        choosePerformanceBank(bank.instanceId);
                     }
                 } else {
-                    const preset = presets.presets[menuIndex];
+                    const preset = performanceBankPresets[menuIndex];
                     if (preset) {
                         setPresetMenuOpen(false);
                         requestPresetLoad(preset.instanceId);
@@ -1564,7 +1683,8 @@ export default function FootControllerView({
     }, [
         bankMenuOpen, presetMenuOpen, presetOptionsOpen, presetOptionIndex, menuIndex,
         selectedPresetSlot, presetSlotCount, presetAssignmentsBySlot,
-        controllerConfig, banks, presets, chainBypassed, snapshotMode,
+        controllerConfig, banks, presets, performanceBankPresets,
+        performanceBankId, chainBypassed, snapshotMode,
         snapshotPedalboard, selectedSnapshot, model
     ]);
 
@@ -1576,12 +1696,19 @@ export default function FootControllerView({
     useEffect(() => setSelectedPresetSlot((slot) => Math.min(Math.max(0, slot), presetSlotCount - 1)), [presetSlotCount]);
 
     useEffect(() => {
+        if (performanceBankId !== banks.selectedBank) return;
         const activePresetId = presets.selectedInstanceId;
         const activeIndex = presetAssignmentsBySlot.findIndex((id) => id === activePresetId);
         if (activeIndex < 0 || lastRevealedActivePresetIdRef.current === activePresetId) return;
         lastRevealedActivePresetIdRef.current = activePresetId;
         setSelectedPresetSlot(activeIndex);
-    }, [presets.selectedInstanceId, presetSlotCount, presetAssignmentsBySlot]);
+    }, [
+        presets.selectedInstanceId,
+        presetSlotCount,
+        presetAssignmentsBySlot,
+        performanceBankId,
+        banks.selectedBank
+    ]);
 
     useEffect(() => {
         if (!chainBypassed) return;
@@ -1630,13 +1757,19 @@ export default function FootControllerView({
 
     const openBankMenu = () => {
         setPresetMenuOpen(false);
-        setMenuIndex(Math.max(0, banks.entries.findIndex((bank) => bank.instanceId === banks.selectedBank)));
+        setMenuIndex(Math.max(0, banks.entries.findIndex(
+            (bank) => bank.instanceId === performanceBankId
+        )));
         setBankMenuOpen(true);
     };
 
     const openPresetMenu = () => {
         setBankMenuOpen(false);
-        setMenuIndex(Math.max(0, presets.presets.findIndex((preset) => preset.instanceId === presets.selectedInstanceId)));
+        setMenuIndex(Math.max(0, performanceBankPresets.findIndex(
+            (preset) =>
+                performanceBankId === banks.selectedBank
+                && preset.instanceId === presets.selectedInstanceId
+        )));
         setPresetMenuOpen(true);
     };
 
@@ -1684,6 +1817,8 @@ export default function FootControllerView({
     };
     const sizing = controllerConfig.sizing;
     const currentPreset = presets.getItem(presets.selectedInstanceId);
+    const performanceBankName =
+        banks.getEntry(performanceBankId)?.name ?? "No Bank";
     const currentPedalboardSignature =
         stablePedalboardStateSignature(snapshotPedalboard);
     const hasCleanPresetBaseline =
@@ -1733,8 +1868,7 @@ export default function FootControllerView({
     };
 
     const selectBank = (bankId: number) => {
-        setBankMenuOpen(false);
-        model.openBank(bankId).catch((error) => model.showAlert(error.toString()));
+        choosePerformanceBank(bankId);
     };
 
     const dropdownPanelStyle = {
@@ -2019,10 +2153,10 @@ export default function FootControllerView({
                 selectPreset(preset);
                 return;
             case "bankUp":
-                if (snapshotMode) void toggleSnapshotMode(); else model.nextBank();
+                if (snapshotMode) void toggleSnapshotMode(); else movePerformanceBank(1);
                 return;
             case "bankDown":
-                if (snapshotMode) void toggleSnapshotMode(); else model.previousBank();
+                if (snapshotMode) void toggleSnapshotMode(); else movePerformanceBank(-1);
                 return;
             case "chainBypass":
                 void toggleChainBypass();
@@ -2118,7 +2252,8 @@ export default function FootControllerView({
             && presetDropIndex === absolutePresetIndex;
         const isEncoderSelected = isPresetAction && presetSlotIndex === selectedPresetSlot;
         const isActive = Boolean(isPresetAction
-            ? preset?.instanceId === presets.selectedInstanceId
+            ? performanceBankId === banks.selectedBank
+                && preset?.instanceId === presets.selectedInstanceId
             : switchConfig.action.type === "chainBypass"
                 ? chainBypassed
                 : switchConfig.action.type === "snapshotMode"
@@ -2529,7 +2664,7 @@ export default function FootControllerView({
             <div style={{ minWidth: 0, minHeight: 0 }}>
                 <ResponsiveMarqueeText
                     className="mfx-performance-ui-label"
-                    text="CURRENT BANK"
+                    text="SELECTED BANK"
                     color={colors.bankTitleText}
                     fontSize={MFX_LABEL_TEXT_SIZE}
                     fontWeight={800}
@@ -2565,7 +2700,7 @@ export default function FootControllerView({
                 >
                     <ResponsiveMarqueeText
                         className="mfx-performance-ui-value"
-                        text={`${banks.getSelectedEntryName() || "No Bank"} \u25BE`}
+                        text={`${performanceBankName} \u25BE`}
                         color={colors.bankNameText}
                         fontSize={MFX_PRIMARY_TEXT_SIZE}
                         fontWeight={900}
@@ -2587,7 +2722,7 @@ export default function FootControllerView({
                                 onMouseEnter={() => setMenuIndex(index)}
                                 onClick={() => selectBank(bank.instanceId)}
                                 style={dropdownItemStyle(
-                                    bank.instanceId === banks.selectedBank,
+                                    bank.instanceId === performanceBankId,
                                     index === menuIndex
                                 )}
                             >
@@ -2611,7 +2746,7 @@ export default function FootControllerView({
                 overflow: "hidden",
                 textOverflow: "ellipsis"
             }}>
-                Current Bank
+                Selected Bank
             </div>
             <div style={{
                 position: "relative",
@@ -2643,7 +2778,7 @@ export default function FootControllerView({
                         textOverflow: "ellipsis"
                     }}
                 >
-                    {`${banks.getSelectedEntryName() || "No Bank"} \u25BE`}
+                    {`${performanceBankName} \u25BE`}
                 </button>
                 {bankMenuOpen && (
                     <div style={dropdownPanelStyle}>
@@ -2657,7 +2792,7 @@ export default function FootControllerView({
                                 onMouseEnter={() => setMenuIndex(index)}
                                 onClick={() => selectBank(bank.instanceId)}
                                 style={dropdownItemStyle(
-                                    bank.instanceId === banks.selectedBank,
+                                    bank.instanceId === performanceBankId,
                                     index === menuIndex
                                 )}
                             >
@@ -2732,7 +2867,7 @@ export default function FootControllerView({
                 </button>
                 {presetMenuOpen && (
                     <div style={dropdownPanelStyle}>
-                        {presets.presets.map((preset, index) => (
+                        {performanceBankPresets.map((preset, index) => (
                             <button
                                 key={preset.instanceId}
                                 ref={(element) => {
@@ -2742,7 +2877,8 @@ export default function FootControllerView({
                                 onMouseEnter={() => setMenuIndex(index)}
                                 onClick={() => selectPreset(preset)}
                                 style={dropdownItemStyle(
-                                    preset.instanceId === presets.selectedInstanceId,
+                                    performanceBankId === banks.selectedBank
+                                        && preset.instanceId === presets.selectedInstanceId,
                                     index === menuIndex
                                 )}
                             >
@@ -2804,7 +2940,7 @@ export default function FootControllerView({
             </button>
             {presetMenuOpen && (
                 <div style={dropdownPanelStyle}>
-                    {presets.presets.map((preset, index) => (
+                    {performanceBankPresets.map((preset, index) => (
                         <button
                             key={preset.instanceId}
                             ref={(element) => {
@@ -2814,7 +2950,8 @@ export default function FootControllerView({
                             onMouseEnter={() => setMenuIndex(index)}
                             onClick={() => selectPreset(preset)}
                             style={dropdownItemStyle(
-                                preset.instanceId === presets.selectedInstanceId,
+                                performanceBankId === banks.selectedBank
+                                    && preset.instanceId === presets.selectedInstanceId,
                                 index === menuIndex
                             )}
                         >
@@ -3309,7 +3446,7 @@ export default function FootControllerView({
                 <div style={{ position: "absolute", inset: 0, zIndex: 520, background: "rgba(0,0,0,.78)", display: "flex", alignItems: "center", justifyContent: "center" }} onClick={() => { setPresetAssignPickerOpen(false); setPresetAssignTargetIndex(null); }}>
                     <div style={{ width: "min(680px,94vw)", maxHeight: "84vh", overflowY: "auto", padding: 18, borderRadius: 12, border: "3px solid transparent", background: colors.popupBackground, color: colors.popupText, boxShadow: colors.popupShadow }} onClick={(event) => event.stopPropagation()}>
                         <div style={{ color: colors.popupAccent, fontWeight: 900, marginBottom: 10 }}>ASSIGN PRESET TO SWITCH</div>
-                        {presets.presets.map((preset) => <button key={preset.instanceId} type="button" onClick={() => assignPresetIdToSlot(preset.instanceId, presetAssignTargetIndex)} style={{ ...dropdownItemStyle(preset.instanceId === presets.selectedInstanceId, false), margin: "5px 0" }}>{preset.name}</button>)}
+                        {performanceBankPresets.map((preset) => <button key={preset.instanceId} type="button" onClick={() => assignPresetIdToSlot(preset.instanceId, presetAssignTargetIndex)} style={{ ...dropdownItemStyle(performanceBankId === banks.selectedBank && preset.instanceId === presets.selectedInstanceId, false), margin: "5px 0" }}>{preset.name}</button>)}
                         <button type="button" onClick={() => { setPresetAssignPickerOpen(false); setPresetAssignTargetIndex(null); }} style={{ ...dropdownItemStyle(false, false), marginTop: 10 }}>CANCEL</button>
                     </div>
                 </div>
