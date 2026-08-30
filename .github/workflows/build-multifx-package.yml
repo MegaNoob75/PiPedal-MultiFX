@@ -89,7 +89,7 @@ jobs:
           cp source/README.md source/LICENSE.md "${STAGE}/"
           cp tooling/docs/INSTALLATION.md "${STAGE}/docs/"
           cp \
-            tooling/mfxinstaller.sh \
+            tooling/vite/mfxinstaller.sh \
             tooling/install-multifx.sh \
             tooling/uninstall-multifx.sh \
             "${STAGE}/"

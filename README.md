@@ -299,18 +299,28 @@ optionally configure the fullscreen touchscreen display.
 
 A physical ESP32 controller is **not required**. Performance switches can be used entirely by touchscreen or mouse.
 
-### Option A — Add MultiFX to an Existing PiPedal Installation
+### Recommended — Download the Latest Setup Utility
 
-For packaged installs, download and extract the Raspberry Pi ZIP from a published PiPedal MultiFX release.
-
-From inside the extracted package, launch the all-in-one menu:
+On the Raspberry Pi, download the current setup utility to your home folder:
 
 ```bash
+cd ~
+curl -fL https://raw.githubusercontent.com/MegaNoob75/PiPedal-MultiFX/main/vite/mfxinstaller.sh -o mfxinstaller.sh
+chmod +x mfxinstaller.sh
 sudo ./mfxinstaller.sh
 ```
 
-Choose **Install / change MultiFX version**. The older `install-multifx.sh` command is
-kept as a compatibility shortcut and now calls the same consolidated installer.
+If `curl` is unavailable, use `wget` instead:
+
+```bash
+cd ~
+wget -O mfxinstaller.sh https://raw.githubusercontent.com/MegaNoob75/PiPedal-MultiFX/main/vite/mfxinstaller.sh
+chmod +x mfxinstaller.sh
+sudo ./mfxinstaller.sh
+```
+
+Choose **Install / change MultiFX version** when PiPedal is already installed,
+or **Complete setup: PiPedal + MultiFX + touchscreen** for a new Pi.
 
 The installer:
 
@@ -325,19 +335,22 @@ The installer:
 - creates the frontend link to the controller configuration
 - keeps PiPedal's audio engine and native musical data under PiPedal's control
 
-At startup, the setup utility checks `mfxinstaller.sh` on the repository's
-`main` branch. A changed script is accepted only after its GitHub blob SHA and
-Bash syntax are verified, and the user is asked before the installed setup tool
-is replaced and restarted. Use `--no-self-update` to skip this check.
+After a successful install or update, the packaged setup utility refreshes
+`~/mfxinstaller.sh` and installs the management command
+`sudo pipedal-multifx-setup`. This keeps the easy home-folder command and the
+system management command on the same installer version. The running and
+packaged installer versions are compared, and the newer one is kept so an
+older MultiFX package cannot downgrade the setup utility.
 
 MultiFX does not change PiPedal's audio-device settings. Configure and test the
 interface in PiPedal itself; 48000 Hz is the recommended starting sample rate.
 
 For the full install/update procedure, see [Installation and Updates](docs/INSTALLATION.md).
 
-### Option B — All-in-One PiPedal / MultiFX Setup Menu
+### Alternative — Download the Raspberry Pi Release Package
 
-The Raspberry Pi package also includes:
+The latest published Release also includes a verified Raspberry Pi ZIP. Download
+and extract it on the Pi, enter the extracted directory, and run:
 
 ```bash
 sudo ./mfxinstaller.sh

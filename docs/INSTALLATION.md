@@ -17,11 +17,29 @@ Recommended:
 - 7-inch or larger touchscreen
 - 1024×600 or higher resolution
 
-Download the latest Raspberry Pi ZIP from the [PiPedal MultiFX Releases](https://github.com/MegaNoob75/PiPedal-MultiFX/releases/latest) page and extract it on the Raspberry Pi.
+Download the current setup utility directly to the Raspberry Pi user's home folder:
+
+```bash
+cd ~
+curl -fL https://raw.githubusercontent.com/MegaNoob75/PiPedal-MultiFX/main/vite/mfxinstaller.sh -o mfxinstaller.sh
+chmod +x mfxinstaller.sh
+sudo ./mfxinstaller.sh
+```
+
+If `curl` is unavailable, replace the download line with:
+
+```bash
+wget -O mfxinstaller.sh https://raw.githubusercontent.com/MegaNoob75/PiPedal-MultiFX/main/vite/mfxinstaller.sh
+```
+
+After a successful installation or update, MultiFX keeps this home-folder copy
+current and also installs `sudo pipedal-multifx-setup` as the system management
+command. The installer compares its version with the copy inside the selected
+package and keeps the newer version, including during a MultiFX downgrade.
 
 ## Option A — Add MultiFX to an Existing PiPedal Installation
 
-From inside the extracted release folder:
+From the home folder:
 
 ```bash
 sudo ./mfxinstaller.sh
@@ -99,12 +117,10 @@ The installer saves itself as:
 sudo pipedal-multifx-setup
 ```
 
-When the setup menu or an install action starts, it checks the installer on the
-repository's `main` branch. The downloaded script must match the Git blob SHA
-reported by GitHub and pass a Bash syntax check. The installer then asks before
-replacing the saved setup utility and restarting the same action. This allows
-installer-only fixes to be distributed without publishing a new MultiFX
-release. Pass `--no-self-update` when an update check is not wanted.
+Each successful packaged install or update refreshes both the system management
+command and the normal user's `~/mfxinstaller.sh` copy from the installer that
+performed the operation. To obtain a newer installer before running an update,
+repeat the `curl` or `wget` command at the beginning of this guide.
 
 PiPedal and PI-MULTIFX can be checked by opening **PiPedal / System** in
 PI-MULTIFX Settings and selecting **Check for updates**. A newer stable

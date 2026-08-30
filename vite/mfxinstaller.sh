@@ -2,6 +2,8 @@
 set -Eeuo pipefail
 
 # PiPedal MultiFX end-user setup utility.
+# Increment this version whenever installer behavior changes.
+INSTALLER_VERSION="1.0"
 #
 # Normal use:
 #   sudo ./mfxinstaller.sh
@@ -32,6 +34,7 @@ DISPLAY_STATE_DIR="/var/lib/pipedal-touchscreen"
 SERVICE_DIR="/etc/systemd/system"
 SETUP_COMMAND="/usr/local/sbin/pipedal-multifx-setup"
 UNINSTALL_COMMAND="/usr/local/sbin/uninstall-pipedal-multifx"
+INSTALLER_LOCK_FILE="/run/lock/pipedal-multifx-installer.lock"
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 SCRIPT_FILE="${SCRIPT_DIR}/$(basename -- "${BASH_SOURCE[0]}")"
@@ -79,6 +82,14 @@ make_temp_dir() {
 
 require_root() {
     [ "$(id -u)" -eq 0 ] || die "Run this installer with sudo."
+}
+
+acquire_installer_lock() {
+    command -v flock >/dev/null 2>&1 ||
+        die "This installer requires flock from the util-linux package."
+    exec 9>"${INSTALLER_LOCK_FILE}"
+    flock -n 9 ||
+        die "Another PiPedal MultiFX setup session is already running."
 }
 
 usage() {
@@ -207,18 +218,21 @@ draw_banner() {
 | |_|  |_|_|    /_/\_\                                           |
 +----------------------------------------------------------------+
 BANNER
-    printf '\033[0m'
+    printf '\033[0m  Installer v%s\n' "${INSTALLER_VERSION}"
 }
 
 # Display a scrollable terminal menu. Arrow keys move the highlight, Enter
 # accepts it, and users may edit an item number before pressing Enter.
 select_menu() {
     local title="$1"
+    local default_selected="$2"
     shift 2
     local -a options=("$@")
-    local selected=0 first=0 key rest digits="" number rows count
+    local selected="${default_selected}" first=0 key rest digits="" number rows count
     count="${#options[@]}"
     [ "${count}" -gt 0 ] || return 1
+    [[ "${selected}" =~ ^[0-9]+$ ]] || selected=0
+    [ "${selected}" -lt "${count}" ] || selected=0
 
     if [ ! -t 0 ] || [ ! -t 1 ]; then
         echo "${title}"
@@ -484,12 +498,122 @@ install_self() {
     done
 }
 
-refresh_browser() {
-    if command -v ydotool >/dev/null 2>&1 &&
-        [ -S /tmp/.ydotool_socket ]; then
-        YDOTOOL_SOCKET=/tmp/.ydotool_socket \
-            ydotool key 29:1 19:1 19:0 29:0 || true
+installer_version_from_file() {
+    local file="$1" version
+    [ -f "${file}" ] || return 1
+    version="$(sed -n 's/^INSTALLER_VERSION="\([0-9][0-9.]*\)"$/\1/p' \
+        "${file}" | head -n 1)"
+    [[ "${version}" =~ ^[0-9]+([.][0-9]+)*$ ]] || return 1
+    printf '%s\n' "${version}"
+}
+
+newest_installer_source() {
+    local running="$1" packaged="$2"
+    local running_version="0" packaged_version="0"
+
+    running_version="$(installer_version_from_file "${running}")" ||
+        running_version="0"
+    packaged_version="$(installer_version_from_file "${packaged}")" ||
+        packaged_version="0"
+
+    if dpkg --compare-versions "${packaged_version}" gt "${running_version}"; then
+        echo "Using newer packaged installer v${packaged_version}." >&2
+        printf '%s\n' "${packaged}"
+    else
+        echo "Keeping installer v${running_version}; packaged installer is v${packaged_version}." >&2
+        printf '%s\n' "${running}"
     fi
+}
+
+install_home_copy() {
+    local source="${1:-${SCRIPT_FILE}}" destination
+    [ -f "${source}" ] || return 0
+    get_target_user
+    destination="${TARGET_HOME}/mfxinstaller.sh"
+
+    if [ "${source}" -ef "${destination}" ] 2>/dev/null; then
+        chown "${TARGET_USER}:${TARGET_GROUP}" "${destination}"
+        chmod 0755 "${destination}"
+    else
+        install -o "${TARGET_USER}" -g "${TARGET_GROUP}" -m 0755 \
+            "${source}" "${destination}"
+    fi
+    echo "Home installer updated: ${destination}"
+}
+
+refresh_browser() {
+    local attempt
+
+    if ! command -v ydotool >/dev/null 2>&1; then
+        echo "WARNING: The touchscreen was not refreshed because ydotool is unavailable."
+        return 0
+    fi
+
+    for attempt in 1 2 3 4 5; do
+        if [ -S /tmp/.ydotool_socket ]; then
+            sleep 2
+            if YDOTOOL_SOCKET=/tmp/.ydotool_socket \
+                ydotool key 29:1 19:1 19:0 29:0; then
+                echo "PiPedal touchscreen refreshed."
+                return 0
+            fi
+        fi
+        sleep 1
+    done
+
+    echo "WARNING: MultiFX was updated, but the touchscreen refresh could not be sent."
+    echo "Refresh the PiPedal page manually or restart the touchscreen."
+    return 0
+}
+
+wait_for_service_active() {
+    local service="$1" attempt
+    for attempt in $(seq 1 20); do
+        systemctl is-active --quiet "${service}" && return 0
+        sleep 1
+    done
+    systemctl status "${service}" --no-pager 2>/dev/null || true
+    journalctl -u "${service}" -n 20 --no-pager 2>/dev/null || true
+    die "${service} did not become active after installation."
+}
+
+pipedal_local_url() {
+    local exec_line port_spec host port
+    exec_line="$(systemctl cat pipedald.service 2>/dev/null |
+        sed -n 's/^ExecStart=//p' | tail -n 1)"
+    port_spec="$(printf '%s\n' "${exec_line}" | awk '
+        { for (i=1; i<=NF; i++) if ($i == "-port" && i < NF) print $(i+1) }
+    ' | tail -n 1)"
+    port_spec="${port_spec:-80}"
+
+    if [[ "${port_spec}" == *:* ]]; then
+        host="${port_spec%:*}"
+        port="${port_spec##*:}"
+        case "${host}" in
+            0.0.0.0|\*) host="127.0.0.1" ;;
+        esac
+    else
+        host="127.0.0.1"
+        port="${port_spec}"
+    fi
+    [[ "${port}" =~ ^[0-9]+$ ]] || return 1
+    printf 'http://%s:%s/var/config.json\n' "${host}" "${port}"
+}
+
+wait_for_pipedal_web() {
+    local url attempt
+    url="$(pipedal_local_url)" || {
+        echo "WARNING: Could not determine PiPedal's local web address."
+        return 0
+    }
+    for attempt in $(seq 1 15); do
+        if curl -fsS --max-time 2 "${url}" -o /dev/null; then
+            echo "PiPedal web interface is ready."
+            return 0
+        fi
+        sleep 1
+    done
+    die "PiPedal is active, but its web interface did not become ready at ${url}."
 }
 
 # Debian's ydotool package enables ydotool.service globally as a per-user
@@ -787,6 +911,7 @@ install_or_update_pipedal() {
             "${PIPEDAL_VERSION}"; then
             echo "That PiPedal version is already installed."
             install_self
+            install_home_copy
             return 0
         fi
         confirm "Change PiPedal from ${installed_version} to ${PIPEDAL_VERSION}?" || {
@@ -841,6 +966,7 @@ install_or_update_pipedal() {
     fi
 
     install_self
+    install_home_copy
     echo "PiPedal ${PIPEDAL_VERSION} installation is complete."
 }
 
@@ -1047,7 +1173,7 @@ backup_service_once() {
 }
 
 install_multifx_payload() {
-    local package_root="$1" release_label="$2" service source_file
+    local package_root="$1" release_label="$2" service source_file installer_source
     [ -d /etc/pipedal ] ||
         die "PiPedal is not installed. Use menu option 1 or 5 first."
     [ -d "${REACT_DIR}" ] || die "PiPedal frontend is missing: ${REACT_DIR}"
@@ -1091,22 +1217,24 @@ install_multifx_payload() {
         install -m 0644 "${source_file}" "${SERVICE_DIR}/${service}"
     done
 
-    printf '%s\n' "${release_label}" > "${INSTALLER_STATE_DIR}/installed-release"
-    # Keep the installer that is currently running. A published MultiFX payload
-    # may contain an older setup utility, especially when a newer standalone
-    # installer is being used to repair or install an existing release.
-    install_self
     systemctl daemon-reload
     systemctl enable pipedal-ydotoold.service pipedal-encoder.service
     # PiPedal must finish opening and configuring ALSA before the controller
     # bridge opens the ESP32's MIDI interface. Starting the bridge first can
     # race USB/ALSA enumeration during boot and leave PiPedal underrunning
     # until pipedald is restarted manually.
-    systemctl restart pipedald 2>/dev/null || true
+    systemctl restart pipedald.service
     systemctl restart pipedal-ydotoold.service
     systemctl restart pipedal-encoder.service
-    systemctl is-active --quiet pipedal-encoder.service ||
-        die "MultiFX installed, but pipedal-encoder.service did not start."
+    wait_for_service_active pipedald.service
+    wait_for_service_active pipedal-ydotoold.service
+    wait_for_service_active pipedal-encoder.service
+    wait_for_pipedal_web
+    printf '%s\n' "${release_label}" > "${INSTALLER_STATE_DIR}/installed-release"
+    installer_source="$(newest_installer_source \
+        "${SCRIPT_FILE}" "${package_root}/mfxinstaller.sh")"
+    install_self "${installer_source}"
+    install_home_copy "${installer_source}"
     refresh_browser
     echo "PiPedal MultiFX ${release_label} installation is complete."
 }
@@ -1631,6 +1759,7 @@ show_status() {
         multifx_version="installed (version unknown)"
     fi
     echo
+    echo "Installer:          v${INSTALLER_VERSION}"
     echo "PiPedal:            ${pipedal_version}"
     echo "PiPedal MultiFX:    ${multifx_version}"
     if [ -f "${DISPLAY_STATE_DIR}/configured-user" ]; then
@@ -1729,6 +1858,7 @@ main() {
         parse_arguments "$@"
     fi
     require_root
+    acquire_installer_lock
     command -v apt-get >/dev/null 2>&1 ||
         die "This installer requires Raspberry Pi OS, Debian or Ubuntu."
     maybe_full_upgrade
