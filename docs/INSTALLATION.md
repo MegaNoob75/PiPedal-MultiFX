@@ -34,8 +34,10 @@ wget -O mfxinstaller.sh https://raw.githubusercontent.com/MegaNoob75/PiPedal-Mul
 
 After a successful installation or update, MultiFX keeps this home-folder copy
 current and also installs `sudo pipedal-multifx-setup` as the system management
-command. The installer compares its version with the copy inside the selected
-package and keeps the newer version, including during a MultiFX downgrade.
+command. Every invocation first downloads and validates the authoritative
+installer from the default branch, updates both local copies, and continues the
+requested action with that version. This also applies to updates started from
+the MultiFX interface.
 
 ## Option A — Add MultiFX to an Existing PiPedal Installation
 
@@ -86,8 +88,9 @@ The menu provides:
 6) Completely remove MultiFX
 7) Completely remove PiPedal + MultiFX
 8) Set up touchscreen display
-9) Status and diagnostics
-0) Exit
+9) Raspberry Pi performance optimizations
+10) Status and diagnostics
+11) Exit
 ```
 
 The setup script checks GitHub instead of relying on hard-coded versions. It
@@ -109,9 +112,22 @@ checksum is verified before the ZIP is extracted.
 
 The optional touchscreen action automatically detects the normal login user
 and configures the same display mode used by the project: console auto-login,
-Labwc, maximized Chromium app mode, and the Squeekboard keyboard. Chromium's
-`--kiosk` mode is deliberately not used because it interferes with the
-on-screen keyboard.
+Labwc, maximized Chromium app mode, and MultiFX's custom on-screen keyboard.
+Chromium's strict `--kiosk` mode is deliberately not used.
+
+The Raspberry Pi optimization menu offers a recommended reversible Pi 5 audio
+profile and separate optional changes. The recommended profile removes safe
+network-online/cloud-init boot waits after provisioning, selects the CPU
+performance governor, supplies PiPedal real-time resource limits, disables
+Wi-Fi power saving, and lowers swapping pressure without removing zram/swap.
+Optional actions can disable Bluetooth or detected unused service groups
+without removing packages. Available groups cover printing, cellular modem
+management, PackageKit, desktop location/color management, Samba/NFS sharing,
+and graphical remote-desktop servers. Each group has its own warning so users
+do not disable hardware or sharing features they rely on. SSH, NetworkManager,
+Ethernet, Wi-Fi configuration, Avahi, users, passwords, and SSH keys are
+preserved. A restore action returns every installer-managed setting to its
+recorded prior state.
 
 The installer saves itself as:
 
@@ -119,10 +135,8 @@ The installer saves itself as:
 sudo pipedal-multifx-setup
 ```
 
-Each successful packaged install or update refreshes both the system management
-command and the normal user's `~/mfxinstaller.sh` copy from the installer that
-performed the operation. To obtain a newer installer before running an update,
-repeat the `curl` or `wget` command at the beginning of this guide.
+Every installer action refreshes both the system management command and the
+normal user's `~/mfxinstaller.sh` copy before performing any other work.
 
 PiPedal and PI-MULTIFX can be checked by opening **PiPedal / System** in
 PI-MULTIFX Settings and selecting **Check for updates**. A newer stable

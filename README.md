@@ -324,6 +324,8 @@ or **Complete setup: PiPedal + MultiFX + touchscreen** for a new Pi.
 
 The installer:
 
+- downloads and validates the newest installer before performing any action,
+  then updates both the home and installed management copies
 - verifies that PiPedal is present
 - installs required MultiFX runtime dependencies; it checks configured APT
   repositories first and, only when needed on Debian 13/Trixie, automatically
@@ -369,9 +371,17 @@ The streamlined setup menu provides:
 6) Completely remove MultiFX
 7) Completely remove PiPedal + MultiFX
 8) Set up touchscreen display
-9) Status and diagnostics
-0) Exit
+9) Raspberry Pi performance optimizations
+10) Status and diagnostics
+11) Exit
 ```
+
+The optimization menu provides a reversible recommended Pi 5 audio profile
+plus separate choices for Bluetooth, unused background-service groups, and
+minor boot-display changes. Optional groups include printing, cellular modem,
+PackageKit, desktop location/color, file-sharing, and remote-desktop services.
+It preserves SSH and networking, keeps packages installed, and can restore
+every installer-managed operating-system setting.
 
 The setup script lists compatible published PiPedal and MultiFX versions. The
 latest stable version is selected by default and marked **Latest**, while older
@@ -384,9 +394,9 @@ configuration, uploaded NAM/IR files, LV2 locations, MultiFX controller/runtime
 state, service definitions and touchscreen configuration.
 
 The optional touchscreen action reproduces the Raspberry Pi display setup used
-by the project: Labwc, an automatically maximized Chromium app window, and the
-Squeekboard on-screen keyboard. It deliberately does not use Chromium kiosk
-mode because kiosk mode prevents the keyboard from working correctly.
+by the project: Labwc, an automatically maximized Chromium app window, and
+MultiFX's custom on-screen keyboard. It deliberately does not use Chromium's
+strict kiosk mode.
 
 After the first run, the same menu is available as:
 

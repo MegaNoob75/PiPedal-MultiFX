@@ -3,7 +3,7 @@ set -Eeuo pipefail
 
 # PiPedal MultiFX end-user setup utility.
 # Increment this version whenever installer behavior changes.
-INSTALLER_VERSION="1.6"
+INSTALLER_VERSION="1.7"
 #
 # Normal use:
 #   sudo ./mfxinstaller.sh
@@ -21,6 +21,7 @@ INSTALLER_VERSION="1.6"
 MULTIFX_REPOSITORY="${MULTIFX_REPOSITORY:-MegaNoob75/PiPedal-MultiFX}"
 MULTIFX_RELEASES_API="https://api.github.com/repos/${MULTIFX_REPOSITORY}/releases"
 PIPEDAL_RELEASES_API="https://api.github.com/repos/rerdavies/pipedal/releases"
+INSTALLER_RAW_URL="https://raw.githubusercontent.com/${MULTIFX_REPOSITORY}/main/vite/mfxinstaller.sh"
 
 REACT_DIR="/etc/pipedal/react"
 CONTROLLER_CONFIG="/etc/pipedal/controller-config.json"
@@ -35,6 +36,8 @@ SERVICE_DIR="/etc/systemd/system"
 SETUP_COMMAND="/usr/local/sbin/pipedal-multifx-setup"
 UNINSTALL_COMMAND="/usr/local/sbin/uninstall-pipedal-multifx"
 INSTALLER_LOCK_FILE="/run/lock/pipedal-multifx-installer.lock"
+OPTIMIZATION_STATE_DIR="${INSTALLER_STATE_DIR}/optimizations"
+PERFORMANCE_SERVICE="pipedal-performance.service"
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 SCRIPT_FILE="${SCRIPT_DIR}/$(basename -- "${BASH_SOURCE[0]}")"
@@ -57,6 +60,7 @@ MULTIFX_RESET_FOR_DOWNGRADE=0
 MULTIFX_CHANGE_IS_DOWNGRADE=0
 MULTIFX_CHRONOLOGY_KNOWN=0
 TEMP_DIRS=()
+ORIGINAL_ARGUMENTS=("$@")
 
 die() {
     echo "ERROR: $*" >&2
@@ -109,6 +113,7 @@ Actions:
   uninstall   Completely remove MultiFX and restore stock PiPedal
   uninstall-pipedal  Completely remove PiPedal and MultiFX
   display     Configure the fullscreen touchscreen display
+  optimize    Configure or restore Raspberry Pi performance optimizations
   all         Install/update PiPedal, MultiFX and the touchscreen display
   status      Show installed versions and service diagnostics
 
@@ -187,7 +192,7 @@ parse_arguments() {
     done
 
     case "${ACTION}" in
-        menu|pipedal|multifx|backup|restore|uninstall|uninstall-pipedal|display|all|status) ;;
+        menu|pipedal|multifx|backup|restore|uninstall|uninstall-pipedal|display|optimize|all|status) ;;
         *) die "Unknown action: ${ACTION}" ;;
     esac
 }
@@ -511,6 +516,52 @@ installer_version_from_file() {
         "${file}" | head -n 1)"
     [[ "${version}" =~ ^[0-9]+([.][0-9]+)*$ ]] || return 1
     printf '%s\n' "${version}"
+}
+
+refresh_installer_before_action() {
+    local latest current_version latest_version needs_restart=0
+    local -a restart_arguments=("${ORIGINAL_ARGUMENTS[@]}")
+
+    [ "${MFX_INSTALLER_REFRESHED:-0}" != "1" ] || return 0
+    make_temp_dir "/tmp/pipedal-installer-refresh.XXXXXX"
+    latest="${TEMP_DIR}/mfxinstaller.sh"
+
+    echo "Checking for the newest PiPedal MultiFX installer..."
+    if command -v curl >/dev/null 2>&1; then
+        curl -fL --connect-timeout 10 --max-time 45 \
+            "${INSTALLER_RAW_URL}" -o "${latest}" ||
+            die "Could not download the newest installer. Check the internet connection and try again."
+    elif command -v wget >/dev/null 2>&1; then
+        wget -q --timeout=45 -O "${latest}" "${INSTALLER_RAW_URL}" ||
+            die "Could not download the newest installer. Check the internet connection and try again."
+    else
+        die "curl or wget is required to refresh the installer before use."
+    fi
+
+    bash -n "${latest}" || die "The downloaded installer failed its syntax check."
+    latest_version="$(installer_version_from_file "${latest}")" ||
+        die "The downloaded installer has no valid version number."
+    current_version="$(installer_version_from_file "${SCRIPT_FILE}")" ||
+        current_version="0"
+    if dpkg --compare-versions "${current_version}" gt "${latest_version}"; then
+        die "The downloaded installer v${latest_version} is older than the running v${current_version}. Refusing to downgrade the setup tool."
+    fi
+
+    cmp -s "${SCRIPT_FILE}" "${latest}" || needs_restart=1
+    install_self "${latest}"
+    install_home_copy "${latest}"
+    if [ "${needs_restart}" -eq 0 ]; then
+        echo "Installer v${latest_version} is current."
+        return 0
+    fi
+
+    echo "Installer updated to v${latest_version}; continuing with the new version."
+    if [ "${INVOKED_AS}" = "uninstall-pipedal-multifx" ]; then
+        restart_arguments=(uninstall "${ORIGINAL_ARGUMENTS[@]}")
+    fi
+    rm -rf -- "${TEMP_DIR}"
+    exec env MFX_INSTALLER_REFRESHED=1 \
+        "${SETUP_COMMAND}" "${restart_arguments[@]}"
 }
 
 newest_installer_source() {
@@ -1499,6 +1550,7 @@ has_multifx_remnants() {
         [ -e "${INSTALLER_STATE_DIR}/dependency-ydotool.was-installed" ] ||
         [ -e "${INSTALLER_STATE_DIR}/dependency-ydotool.was-absent" ] ||
         [ -e "${INSTALLER_STATE_DIR}/ydotool-backports-source.created-by-installer" ] ||
+        [ -d "${OPTIMIZATION_STATE_DIR}" ] ||
         [ -e "${CONTROLLER_CONFIG}" ] ||
         [ -e "${SERVICE_DIR}/pipedal-encoder.service" ]
 }
@@ -1515,6 +1567,10 @@ remove_multifx_components() {
         ydotool_was_present=1
     systemctl disable --now pipedal-encoder.service 2>/dev/null || true
     systemctl disable --now pipedal-ydotoold.service 2>/dev/null || true
+    if [ -d "${OPTIMIZATION_STATE_DIR}" ]; then
+        echo "Restoring installer-managed operating-system optimizations..."
+        restore_all_optimizations 0
+    fi
 
     if [ "${restore_stock}" -eq 1 ] && is_multifx_installed &&
         [ -d "${REACT_DIR}" ]; then
@@ -1629,6 +1685,448 @@ remove_touchscreen_configuration() {
         raspi-config nonint do_boot_behaviour B1 || true
     fi
     rm -rf -- "${DISPLAY_STATE_DIR}"
+}
+
+optimization_unit_exists() {
+    systemctl list-unit-files "$1" --no-legend 2>/dev/null |
+        grep -q "^$1"
+}
+
+record_optimization_unit_state_once() {
+    local unit="$1" key state_file active_file state
+    key="${unit//[^A-Za-z0-9_.-]/_}"
+    state_file="${OPTIMIZATION_STATE_DIR}/unit-${key}.enabled"
+    active_file="${OPTIMIZATION_STATE_DIR}/unit-${key}.active"
+    if [ ! -e "${state_file}" ]; then
+        state="$(systemctl is-enabled "${unit}" 2>/dev/null || true)"
+        printf '%s\n' "${state:-not-found}" > "${state_file}"
+    fi
+    if [ ! -e "${active_file}" ]; then
+        state="$(systemctl is-active "${unit}" 2>/dev/null || true)"
+        printf '%s\n' "${state:-inactive}" > "${active_file}"
+    fi
+}
+
+disable_optimization_unit() {
+    local unit="$1" mode="${2:-disable}"
+    optimization_unit_exists "${unit}" || return 0
+    record_optimization_unit_state_once "${unit}"
+    if [ "${mode}" = "mask" ]; then
+        systemctl mask --now "${unit}" 2>/dev/null ||
+            systemctl stop "${unit}" 2>/dev/null || true
+    else
+        systemctl disable --now "${unit}" 2>/dev/null ||
+            systemctl stop "${unit}" 2>/dev/null || true
+    fi
+}
+
+restore_optimization_unit() {
+    local unit="$1" key enabled_file active_file prior_enabled prior_active
+    key="${unit//[^A-Za-z0-9_.-]/_}"
+    enabled_file="${OPTIMIZATION_STATE_DIR}/unit-${key}.enabled"
+    active_file="${OPTIMIZATION_STATE_DIR}/unit-${key}.active"
+    [ -f "${enabled_file}" ] || return 0
+    prior_enabled="$(cat "${enabled_file}")"
+    prior_active="$(cat "${active_file}" 2>/dev/null || echo inactive)"
+    systemctl unmask "${unit}" 2>/dev/null || true
+    case "${prior_enabled}" in
+        enabled|enabled-runtime|linked|linked-runtime|alias)
+            systemctl enable "${unit}" 2>/dev/null || true
+            ;;
+        masked|masked-runtime)
+            systemctl mask "${unit}" 2>/dev/null || true
+            ;;
+        disabled)
+            systemctl disable "${unit}" 2>/dev/null || true
+            ;;
+    esac
+    if [ "${prior_active}" = "active" ]; then
+        systemctl start "${unit}" 2>/dev/null || true
+    else
+        systemctl stop "${unit}" 2>/dev/null || true
+    fi
+}
+
+save_cpu_governors_once() {
+    local policy governor
+    [ -f "${OPTIMIZATION_STATE_DIR}/cpu-governors" ] && return 0
+    : > "${OPTIMIZATION_STATE_DIR}/cpu-governors"
+    for policy in /sys/devices/system/cpu/cpufreq/policy*; do
+        [ -r "${policy}/scaling_governor" ] || continue
+        governor="$(cat "${policy}/scaling_governor")"
+        printf '%s\t%s\n' "${policy}" "${governor}" >> \
+            "${OPTIMIZATION_STATE_DIR}/cpu-governors"
+    done
+}
+
+install_pipedal_performance_service() {
+    local service_file="${SERVICE_DIR}/${PERFORMANCE_SERVICE}"
+    save_cpu_governors_once
+    backup_file_once "${service_file}" optimization-performance-service
+    cat > "${service_file}" <<'SERVICE'
+[Unit]
+Description=PiPedal CPU performance profile
+Before=pipedald.service
+
+[Service]
+Type=oneshot
+ExecStart=/bin/sh -c 'for policy in /sys/devices/system/cpu/cpufreq/policy*; do test ! -w "$policy/scaling_governor" || echo performance > "$policy/scaling_governor"; done'
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target
+SERVICE
+    chmod 0644 "${service_file}"
+    systemctl daemon-reload
+    systemctl enable --now "${PERFORMANCE_SERVICE}"
+}
+
+configure_pipedal_realtime_limits() {
+    local override_dir="${SERVICE_DIR}/pipedald.service.d"
+    local override="${override_dir}/90-pipedal-multifx-performance.conf"
+    backup_file_once "${override}" optimization-pipedald-performance-override
+    mkdir -p "${override_dir}"
+    cat > "${override}" <<'OVERRIDE'
+[Service]
+LimitRTPRIO=95
+LimitMEMLOCK=infinity
+Nice=-10
+OVERRIDE
+    chmod 0644 "${override}"
+}
+
+configure_low_latency_networking() {
+    local nm_config="/etc/NetworkManager/conf.d/90-pipedal-multifx-performance.conf"
+    backup_file_once "${nm_config}" optimization-networkmanager-performance
+    mkdir -p /etc/NetworkManager/conf.d
+    cat > "${nm_config}" <<'NMCONFIG'
+[connection]
+wifi.powersave=2
+NMCONFIG
+    chmod 0644 "${nm_config}"
+}
+
+configure_low_swappiness() {
+    local sysctl_file="/etc/sysctl.d/90-pipedal-multifx-performance.conf"
+    backup_file_once "${sysctl_file}" optimization-sysctl-performance
+    cat > "${sysctl_file}" <<'SYSCTL'
+# Prefer keeping PiPedal/audio working memory in RAM. Keep zram/swap available
+# as an emergency safety net instead of disabling it completely.
+vm.swappiness=10
+SYSCTL
+    chmod 0644 "${sysctl_file}"
+    sysctl -q -p "${sysctl_file}" || true
+}
+
+disable_completed_cloud_init_and_network_wait() {
+    local unit dependency cloud_status=""
+    local -a cloud_units=(
+        cloud-init-local.service
+        cloud-init-main.service
+        cloud-init-network.service
+        cloud-config.service
+        cloud-final.service
+    )
+
+    if grep -Eqs '^[[:space:]]*[^#].*[[:space:]](nfs|nfs4|cifs)[[:space:]]' /etc/fstab; then
+        echo "Network-mounted filesystems were found; keeping network-online waiting enabled."
+        return 0
+    fi
+
+    while read -r dependency _; do
+        case "${dependency}" in
+            ""|NetworkManager-wait-online.service|network-online.target|\
+            cloud-init-local.service|cloud-init-main.service|\
+            cloud-init-network.service|cloud-config.service|cloud-final.service)
+                ;;
+            *)
+                echo "${dependency} requires network-online; keeping the wait service enabled."
+                return 0
+                ;;
+        esac
+    done < <(systemctl list-dependencies --reverse --plain --no-legend \
+        NetworkManager-wait-online.service 2>/dev/null || true)
+
+    if command -v cloud-init >/dev/null 2>&1; then
+        cloud_status="$(cloud-init status 2>/dev/null || true)"
+        if ! grep -Eq 'status:[[:space:]]*(done|disabled)' <<< "${cloud_status}"; then
+            echo "Cloud-init has not confirmed completion; leaving it and network-online waiting unchanged."
+            return 0
+        fi
+        backup_file_once /etc/cloud/cloud-init.disabled optimization-cloud-init-disabled
+        mkdir -p /etc/cloud
+        touch /etc/cloud/cloud-init.disabled
+        for unit in "${cloud_units[@]}"; do
+            disable_optimization_unit "${unit}"
+        done
+    fi
+    disable_optimization_unit NetworkManager-wait-online.service
+}
+
+apply_recommended_optimizations() {
+    local model="unknown"
+    mkdir -p "${OPTIMIZATION_STATE_DIR}"
+    [ ! -r /proc/device-tree/model ] ||
+        model="$(tr -d '\0' < /proc/device-tree/model)"
+    echo "Detected hardware: ${model}"
+    case "${model}" in
+        *"Raspberry Pi 5"*) ;;
+        *)
+            confirm "This is not detected as a Raspberry Pi 5. Apply the portable PiPedal optimizations anyway?" || return 0
+            ;;
+    esac
+    confirm_default_yes "Apply the recommended, reversible PiPedal performance optimizations?" || return 0
+
+    disable_completed_cloud_init_and_network_wait
+    install_pipedal_performance_service
+    configure_pipedal_realtime_limits
+    configure_low_latency_networking
+    configure_low_swappiness
+    systemctl daemon-reload
+    if systemctl is-enabled ssh.service >/dev/null 2>&1; then
+        echo "SSH remains enabled."
+    else
+        echo "WARNING: SSH was not enabled before optimization; no SSH setting was changed."
+    fi
+    touch "${OPTIMIZATION_STATE_DIR}/recommended-applied"
+    mark_reboot_needed "recommended PiPedal performance optimizations were applied"
+    echo "Recommended optimizations are configured."
+}
+
+disable_bluetooth_optimization() {
+    mkdir -p "${OPTIMIZATION_STATE_DIR}"
+    confirm "Disable Bluetooth services? Do not choose this if a controller uses Bluetooth." || return 0
+    disable_optimization_unit bluetooth.service
+    disable_optimization_unit hciuart.service
+    touch "${OPTIMIZATION_STATE_DIR}/bluetooth-disabled"
+    echo "Bluetooth services were disabled."
+}
+
+disable_optional_service_group() {
+    local label="$1" warning="$2" mode="$3" unit found=0
+    shift 3
+    local -a units=("$@")
+    mkdir -p "${OPTIMIZATION_STATE_DIR}"
+    for unit in "${units[@]}"; do
+        optimization_unit_exists "${unit}" && found=1
+    done
+    if [ "${found}" -eq 0 ]; then
+        echo "No ${label} services are installed; nothing needs changing."
+        return 0
+    fi
+    echo "${warning}"
+    confirm "Disable the detected ${label} services? Packages will be kept for restoration." || return 0
+    for unit in "${units[@]}"; do
+        disable_optimization_unit "${unit}" "${mode}"
+    done
+    touch "${OPTIMIZATION_STATE_DIR}/unused-services-disabled"
+    echo "Detected ${label} services were disabled without removing packages."
+}
+
+disable_unneeded_pipedal_services() {
+    local unit description found=0
+    local -a disable_units=(
+        cups.service cups.socket cups.path cups-browsed.service
+        ModemManager.service
+    )
+    local -a mask_units=(
+        packagekit.service packagekit-offline-update.service
+        geoclue.service colord.service
+    )
+
+    mkdir -p "${OPTIMIZATION_STATE_DIR}"
+    echo
+    echo "Detected services not required by PiPedal or MultiFX:"
+    echo "-----------------------------------------------------"
+    for unit in "${disable_units[@]}" "${mask_units[@]}"; do
+        optimization_unit_exists "${unit}" || continue
+        found=1
+        case "${unit}" in
+            cups* ) description="printing and printer discovery" ;;
+            ModemManager.service) description="cellular modem management" ;;
+            packagekit*) description="desktop software-update daemon; APT remains available" ;;
+            geoclue.service) description="desktop geolocation" ;;
+            colord.service) description="monitor/printer color-profile management" ;;
+            *) description="unused background service" ;;
+        esac
+        printf '  %-42s %s\n' "${unit}" "${description}"
+    done
+    if [ "${found}" -eq 0 ]; then
+        echo "  None found. This Pi is already lean in these areas."
+        return 0
+    fi
+    echo
+    echo "SSH, networking, Avahi, PiPedal, MultiFX, Labwc, zram, time sync,"
+    echo "system logging, device management, and EEPROM updates are protected."
+    confirm "Disable every detected service listed above? Packages will remain installed." || return 0
+    for unit in "${disable_units[@]}"; do
+        disable_optimization_unit "${unit}" disable
+    done
+    for unit in "${mask_units[@]}"; do
+        disable_optimization_unit "${unit}" mask
+    done
+    touch "${OPTIMIZATION_STATE_DIR}/unused-services-disabled"
+    echo "Detected unnecessary services were disabled and recorded for restoration."
+}
+
+show_unused_services_menu() {
+    local -a options=(
+        "Disable detected services not needed by PiPedal / MultiFX"
+        "Optional: Bluetooth services"
+        "Optional: Windows/Samba file sharing servers"
+        "Optional: NFS/RPC file sharing servers"
+        "Optional: Remote desktop / VNC servers"
+        "Back"
+    )
+    while true; do
+        select_menu "Disable unnecessary services" 0 "${options[@]}" || return 0
+        case "${MENU_RESULT}" in
+            0) disable_unneeded_pipedal_services ;;
+            1) disable_bluetooth_optimization ;;
+            2) disable_optional_service_group \
+                "Samba file-sharing" \
+                "Do not choose this if the Pi shares files with Windows or other computers." \
+                disable smbd.service nmbd.service winbind.service ;;
+            3) disable_optional_service_group \
+                "NFS/RPC file-sharing" \
+                "Do not choose this if the Pi provides or mounts NFS/network filesystems." \
+                disable nfs-server.service rpcbind.service rpcbind.socket ;;
+            4) disable_optional_service_group \
+                "remote-desktop" \
+                "SSH is preserved, but graphical VNC/WayVNC access will stop." \
+                disable wayvnc.service vncserver-x11-serviced.service ;;
+            5) return 0 ;;
+        esac
+        pause_for_menu
+    done
+}
+
+set_boot_config_value() {
+    local file="$1" key="$2" value="$3"
+    if grep -Eq "^[#[:space:]]*${key}=" "${file}"; then
+        sed -i -E "0,/^[#[:space:]]*${key}=.*/s//${key}=${value}/" "${file}"
+    else
+        printf '\n%s=%s\n' "${key}" "${value}" >> "${file}"
+    fi
+}
+
+apply_boot_cosmetic_optimizations() {
+    local config=/boot/firmware/config.txt
+    [ -f "${config}" ] || die "Raspberry Pi boot configuration was not found at ${config}."
+    mkdir -p "${OPTIMIZATION_STATE_DIR}"
+    confirm "Disable the early splash and unused PoE-fan probe? Do not choose this with a PoE HAT." || return 0
+    backup_file_once "${config}" optimization-boot-config
+    set_boot_config_value "${config}" disable_splash 1
+    set_boot_config_value "${config}" disable_poe_fan 1
+    touch "${OPTIMIZATION_STATE_DIR}/boot-cosmetics-applied"
+    mark_reboot_needed "Raspberry Pi boot presentation settings changed"
+    echo "Boot presentation optimizations were applied."
+}
+
+restore_cpu_governors() {
+    local policy governor
+    [ -f "${OPTIMIZATION_STATE_DIR}/cpu-governors" ] || return 0
+    while IFS=$'\t' read -r policy governor; do
+        [ -w "${policy}/scaling_governor" ] || continue
+        printf '%s\n' "${governor}" > "${policy}/scaling_governor" || true
+    done < "${OPTIMIZATION_STATE_DIR}/cpu-governors"
+}
+
+restore_all_optimizations() {
+    local confirm_restore="${1:-1}" unit name
+    local -a units=(
+        NetworkManager-wait-online.service
+        cloud-init-local.service cloud-init-main.service
+        cloud-init-network.service cloud-config.service cloud-final.service
+        bluetooth.service hciuart.service
+        cups.service cups.socket cups.path cups-browsed.service
+        ModemManager.service
+        packagekit.service packagekit-offline-update.service
+        geoclue.service colord.service
+        smbd.service nmbd.service winbind.service
+        nfs-server.service rpcbind.service rpcbind.socket
+        wayvnc.service vncserver-x11-serviced.service
+    )
+    [ -d "${OPTIMIZATION_STATE_DIR}" ] || {
+        echo "No installer-managed optimizations were found."
+        return 0
+    }
+    if [ "${confirm_restore}" -eq 1 ]; then
+        confirm "Restore all operating-system settings changed by the optimization menu?" || return 0
+    fi
+
+    systemctl disable --now "${PERFORMANCE_SERVICE}" 2>/dev/null || true
+    restore_file_backup "${SERVICE_DIR}/${PERFORMANCE_SERVICE}" optimization-performance-service
+    restore_file_backup "${SERVICE_DIR}/pipedald.service.d/90-pipedal-multifx-performance.conf" optimization-pipedald-performance-override
+    restore_file_backup /etc/NetworkManager/conf.d/90-pipedal-multifx-performance.conf optimization-networkmanager-performance
+    restore_file_backup /etc/sysctl.d/90-pipedal-multifx-performance.conf optimization-sysctl-performance
+    restore_file_backup /etc/cloud/cloud-init.disabled optimization-cloud-init-disabled
+    [ ! -e "${INSTALLER_STATE_DIR}/optimization-boot-config.was-present" ] ||
+        restore_file_backup /boot/firmware/config.txt optimization-boot-config
+    for unit in "${units[@]}"; do
+        restore_optimization_unit "${unit}"
+    done
+    restore_cpu_governors
+    systemctl daemon-reload
+    rm -rf -- "${OPTIMIZATION_STATE_DIR}"
+    for name in \
+        optimization-performance-service \
+        optimization-pipedald-performance-override \
+        optimization-networkmanager-performance \
+        optimization-sysctl-performance \
+        optimization-cloud-init-disabled \
+        optimization-boot-config; do
+        rm -f -- \
+            "${INSTALLER_STATE_DIR}/${name}.was-present" \
+            "${INSTALLER_STATE_DIR}/${name}.was-absent" \
+            "${INSTALLER_STATE_DIR}/${name}.backup"
+    done
+    mark_reboot_needed "PiPedal operating-system optimizations were restored"
+    echo "Installer-managed optimizations were restored."
+}
+
+show_optimization_status() {
+    local ssh_state
+    echo
+    echo "PiPedal optimization status"
+    echo "---------------------------"
+    if [ -f "${OPTIMIZATION_STATE_DIR}/recommended-applied" ]; then
+        echo "Recommended profile: enabled"
+    else
+        echo "Recommended profile: not applied"
+    fi
+    [ ! -f "${OPTIMIZATION_STATE_DIR}/bluetooth-disabled" ] || echo "Bluetooth services: disabled by installer"
+    [ ! -f "${OPTIMIZATION_STATE_DIR}/unused-services-disabled" ] || echo "Optional background services: some disabled by installer"
+    [ ! -f "${OPTIMIZATION_STATE_DIR}/boot-cosmetics-applied" ] || echo "Boot presentation: optimized"
+    printf 'CPU governor:       '
+    cat /sys/devices/system/cpu/cpufreq/policy0/scaling_governor 2>/dev/null || echo unknown
+    ssh_state="$(systemctl is-enabled ssh.service 2>/dev/null || true)"
+    printf 'SSH service:        %s\n' "${ssh_state:-not-enabled}"
+    systemd-analyze 2>/dev/null || true
+}
+
+show_optimization_menu() {
+    local -a options=(
+        "Apply recommended Pi 5 / PiPedal optimizations"
+        "Disable unnecessary services (show detected list)"
+        "Optional: Reduce boot splash / unused PoE probe"
+        "Show optimization and boot status"
+        "Restore all installer-managed optimizations"
+        "Back"
+    )
+    while true; do
+        select_menu "Raspberry Pi optimizations" 0 "${options[@]}" || return 0
+        case "${MENU_RESULT}" in
+            0) apply_recommended_optimizations ;;
+            1) show_unused_services_menu ;;
+            2) apply_boot_cosmetic_optimizations ;;
+            3) show_optimization_status ;;
+            4) restore_all_optimizations ;;
+            5) return 0 ;;
+        esac
+        offer_reboot_if_needed
+        pause_for_menu
+    done
 }
 
 remove_legacy_squeekboard() {
@@ -1844,6 +2342,7 @@ show_menu() {
         "Completely remove MultiFX"
         "Completely remove PiPedal + MultiFX"
         "Set up touchscreen display"
+        "Raspberry Pi performance optimizations"
         "Status and diagnostics"
         "Exit"
     )
@@ -1858,8 +2357,9 @@ show_menu() {
             5) uninstall_multifx ;;
             6) uninstall_pipedal ;;
             7) configure_touchscreen_display ;;
-            8) show_status ;;
-            9) return 0 ;;
+            8) show_optimization_menu ;;
+            9) show_status ;;
+            10) return 0 ;;
         esac
         offer_reboot_if_needed
         pause_for_menu
@@ -1876,6 +2376,7 @@ main() {
     acquire_installer_lock
     command -v apt-get >/dev/null 2>&1 ||
         die "This installer requires Raspberry Pi OS, Debian or Ubuntu."
+    refresh_installer_before_action
     maybe_full_upgrade
     case "${ACTION}" in
         menu) show_menu ;;
@@ -1886,6 +2387,7 @@ main() {
         uninstall) uninstall_multifx ;;
         uninstall-pipedal) uninstall_pipedal ;;
         display) configure_touchscreen_display ;;
+        optimize) show_optimization_menu ;;
         all) run_full_setup ;;
         status) show_status ;;
     esac

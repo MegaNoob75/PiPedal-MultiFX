@@ -5,6 +5,7 @@ set -Eeuo pipefail
 # update, backup and validation logic now lives in the consolidated setup tool.
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 SETUP="${SCRIPT_DIR}/mfxinstaller.sh"
+[ -x "${SETUP}" ] || SETUP="${SCRIPT_DIR}/vite/mfxinstaller.sh"
 
 [ -x "${SETUP}" ] || {
     echo "ERROR: Missing executable setup utility: ${SETUP}" >&2

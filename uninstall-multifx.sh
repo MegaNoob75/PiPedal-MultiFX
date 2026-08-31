@@ -4,6 +4,7 @@ set -Eeuo pipefail
 # Compatibility entry point for older installation instructions.
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 LOCAL_SETUP="${SCRIPT_DIR}/mfxinstaller.sh"
+[ -x "${LOCAL_SETUP}" ] || LOCAL_SETUP="${SCRIPT_DIR}/vite/mfxinstaller.sh"
 INSTALLED_SETUP="/usr/local/sbin/pipedal-multifx-setup"
 
 if [ -x "${INSTALLED_SETUP}" ]; then
