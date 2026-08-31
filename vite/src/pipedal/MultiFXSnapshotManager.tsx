@@ -221,12 +221,6 @@ export default function MultiFXSnapshotManager() {
                     transition
                 );
                 const next = snapshotViewPress(current, index);
-                await writeMultiFXPresetSnapshotState(
-                    bankId,
-                    presetId,
-                    next,
-                    transition
-                );
                 if (next) {
                     await recallMultiFXSnapshot(model, index, transition);
                     setMessage(
@@ -236,6 +230,12 @@ export default function MultiFXSnapshotManager() {
                     await loadMultiFXBasePreset(model, presetId, transition);
                     setMessage(`SNAPSHOT ${index + 1} CLEARED • BASE PRESET`);
                 }
+                await writeMultiFXPresetSnapshotState(
+                    bankId,
+                    presetId,
+                    next,
+                    transition
+                );
             } catch (error) {
                 if (!isMultiFXTransitionCancellation(error)) {
                     model.showAlert(String(error));

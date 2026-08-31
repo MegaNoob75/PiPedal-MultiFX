@@ -5,7 +5,7 @@
  * hardware routing, temporary chain bypass bookkeeping, and Snapshot Mode UI.
  */
 
-import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { BankIndex } from "./Banks";
 import {
@@ -60,6 +60,7 @@ import {
     isMultiFXTransitionCancellation,
     loadMultiFXBasePreset,
     MultiFXPerformanceTransition,
+    persistMultiFXSnapshots,
     readMultiFXPresetSnapshotState,
     recallMultiFXSnapshot,
     writeMultiFXPresetSnapshotState
@@ -624,7 +625,7 @@ export default function FootControllerView({
             );
     };
 
-    const recordCleanBasePreset = (bankId: number, presetId: number) => {
+    const recordCleanBasePreset = useCallback((bankId: number, presetId: number) => {
         const currentPresets = model.presets.get();
         if (
             model.banks.get().selectedBank !== bankId
@@ -643,7 +644,21 @@ export default function FootControllerView({
         );
         setCleanPresetBaseline({ bankId, presetId, signature });
         previousNativePresetChangedRef.current = currentPresets.presetChanged;
-    };
+    }, [model]);
+
+    const initializeSnapshotSession = useCallback(async (
+        transition: MultiFXPerformanceTransition
+    ): Promise<void> => {
+        const bankId = model.banks.get().selectedBank;
+        const presetId = model.presets.get().selectedInstanceId;
+        const baseWasReloaded = await initializeMultiFXSnapshotSession(
+            model,
+            transition
+        );
+        if (baseWasReloaded) {
+            recordCleanBasePreset(bankId, presetId);
+        }
+    }, [model, recordCleanBasePreset]);
 
     const showStatusToast = (message: string) => {
         setStatusToast(message);
@@ -1259,7 +1274,7 @@ export default function FootControllerView({
         }
 
         const transition = beginMultiFXPerformanceTransition();
-        void initializeMultiFXSnapshotSession(model, transition)
+        void initializeSnapshotSession(transition)
             .catch((error) => {
                 if (!isMultiFXTransitionCancellation(error)) {
                     console.warn("PI-MULTIFX snapshot session initialization failed.", error);
@@ -1277,7 +1292,8 @@ export default function FootControllerView({
         snapshotSessionRevision,
         snapshotSessionInitAttempt,
         presets.selectedInstanceId,
-        banks.selectedBank
+        banks.selectedBank,
+        initializeSnapshotSession
     ]);
 
     useEffect(() => {
@@ -1314,7 +1330,7 @@ export default function FootControllerView({
         const transition = beginMultiFXPerformanceTransition();
         void (async () => {
             try {
-                await initializeMultiFXSnapshotSession(model, transition);
+                await initializeSnapshotSession(transition);
                 await restoreChainBypass(transition, false);
 
                 const bankId = model.banks.get().selectedBank;
@@ -1351,12 +1367,6 @@ export default function FootControllerView({
                         return;
                     }
 
-                    await writeMultiFXPresetSnapshotState(
-                        bankId,
-                        presetId,
-                        next,
-                        transition
-                    );
                     if (next.enabled) {
                         await recallMultiFXSnapshot(
                             model,
@@ -1378,6 +1388,12 @@ export default function FootControllerView({
                         recordCleanBasePreset(bankId, presetId);
                         showStatusToast("BASE PRESET");
                     }
+                    await writeMultiFXPresetSnapshotState(
+                        bankId,
+                        presetId,
+                        next,
+                        transition
+                    );
                     return;
                 }
 
@@ -1459,7 +1475,7 @@ export default function FootControllerView({
         const transition = beginMultiFXPerformanceTransition();
         void (async () => {
             try {
-                await initializeMultiFXSnapshotSession(model, transition);
+                await initializeSnapshotSession(transition);
                 await restoreChainBypass(transition, false);
 
                 const bankId = model.banks.get().selectedBank;
@@ -1470,13 +1486,6 @@ export default function FootControllerView({
                     transition
                 );
                 const next = snapshotViewPress(current, snapshotIndex);
-                await writeMultiFXPresetSnapshotState(
-                    bankId,
-                    presetId,
-                    next,
-                    transition
-                );
-
                 if (next) {
                     await recallMultiFXSnapshot(
                         model,
@@ -1493,6 +1502,12 @@ export default function FootControllerView({
                         `SNAPSHOT ${snapshotIndex + 1} CLEARED • BASE PRESET`
                     );
                 }
+                await writeMultiFXPresetSnapshotState(
+                    bankId,
+                    presetId,
+                    next,
+                    transition
+                );
             } catch (error) {
                 if (!isMultiFXTransitionCancellation(error)) {
                     model.showAlert(String(error));
@@ -1617,16 +1632,21 @@ export default function FootControllerView({
     };
 
     const editSelectedSlotPreset = () => {
-        if (blockPresetWriteWhileSnapshotActive("Editing the base preset")) return;
         const preset = getPresetForSlot(selectedPresetSlot);
         if (!preset) {
             void createNewPresetFromCurrent();
             return;
         }
+        const editingCurrentPreset =
+            preset.instanceId === model.presets.get().selectedInstanceId;
+        if (
+            editingCurrentPreset
+            && blockPresetWriteWhileSnapshotActive("Editing the base preset")
+        ) return;
         closePresetOptions();
-        if (preset.instanceId !== model.presets.get().selectedInstanceId) {
-            requestPresetLoad(preset.instanceId);
-        }
+        // MultiFXApp's shared editor safety gate loads the requested BASE
+        // preset and waits for confirmation. Starting a separate performance
+        // load here races that gate and can expose the previous preset briefly.
         onOpenEditor?.(undefined, preset.instanceId);
     };
 
@@ -2151,6 +2171,11 @@ export default function FootControllerView({
                     currentPresetId,
                     transition
                 );
+                // The reload above is the authoritative clean BASE. Refresh
+                // the semantic baseline before recalling any snapshot so a
+                // sticky native presetChanged flag from the bypass-only enable
+                // changes cannot light the preset as modified.
+                recordCleanBasePreset(currentBankId, currentPresetId);
                 if (originalSnapshotIndex !== null) {
                     await recallMultiFXSnapshot(
                         model,
@@ -2199,7 +2224,7 @@ export default function FootControllerView({
         const transition = beginMultiFXPerformanceTransition();
         void (async () => {
             try {
-                await initializeMultiFXSnapshotSession(model, transition);
+                await initializeSnapshotSession(transition);
                 if (chainBypassedRef.current) {
                     await restoreChainBypass(transition);
                     return;
@@ -2231,6 +2256,14 @@ export default function FootControllerView({
                 const originalWasDirty = currentSnapshot
                     ? currentSnapshot.isModified
                     : effectivePresetChanged;
+
+                if (!originalWasDirty && currentSnapshotIndex < 0) {
+                    // Factory presets can report a sticky native dirty flag
+                    // after temporary enable changes. Preserve the exact clean
+                    // sound that existed before Chain Bypass as the comparison
+                    // baseline; later real parameter edits still differ.
+                    recordCleanBasePreset(currentBankId, currentPresetId);
+                }
 
                 chainBypassSnapshotRef.current = enabledSnapshot;
                 chainBypassBankIdRef.current = currentBankId;
@@ -2279,7 +2312,7 @@ export default function FootControllerView({
         const transition = beginMultiFXPerformanceTransition();
         void (async () => {
             try {
-                await initializeMultiFXSnapshotSession(model, transition);
+                await initializeSnapshotSession(transition);
                 if (snapshotMode) {
                     snapshotModeBankIdRef.current = null;
                     snapshotModePresetIdRef.current = null;
@@ -2774,19 +2807,55 @@ export default function FootControllerView({
         onEditSnapshot?.(index);
     };
 
-    const updateSnapshotMetadata = (
+    const updateSnapshotMetadata = async (
         mutate: (snapshots: Array<Snapshot | null>) => void,
         successMessage: string
-    ) => {
+    ): Promise<void> => {
         if (presetActionBusy) return;
         setPresetActionBusy(true);
+        const transition = beginMultiFXPerformanceTransition();
         try {
+            await initializeSnapshotSession(transition);
+            await restoreChainBypass(transition, false);
+            const bankId = model.banks.get().selectedBank;
+            const presetId = model.presets.get().selectedInstanceId;
             const snapshots = Snapshot.cloneSnapshots(model.pedalboard.get().snapshots);
             mutate(snapshots);
-            model.setSnapshots(snapshots, -1);
+            const remembered = await readMultiFXPresetSnapshotState(
+                bankId,
+                presetId,
+                transition
+            );
+            const rememberedStillExists = remembered
+                && snapshots[remembered.snapshotIndex]
+                ? {
+                    ...remembered,
+                    // Never revive an unconfirmed stale active marker while
+                    // saving metadata. A deliberately toggled-off snapshot
+                    // remains remembered and off.
+                    enabled: remembered.enabled && snapshotPerformanceActive
+                }
+                : null;
+            await persistMultiFXSnapshots(
+                model,
+                bankId,
+                presetId,
+                snapshots,
+                rememberedStillExists,
+                transition
+            );
+            if (!rememberedStillExists?.enabled) {
+                recordCleanBasePreset(bankId, presetId);
+            }
             showStatusToast(successMessage);
-        } catch (error) { model.showAlert(String(error)); }
-        finally { setPresetActionBusy(false); }
+        } catch (error) {
+            if (!isMultiFXTransitionCancellation(error)) {
+                model.showAlert(String(error));
+            }
+        } finally {
+            finishMultiFXPerformanceTransition(transition);
+            setPresetActionBusy(false);
+        }
     };
 
     const savePerformanceSnapshotRename = () => {
@@ -2796,7 +2865,7 @@ export default function FootControllerView({
         const index = snapshotOptionsIndex;
         setSnapshotOptionsOpen(false);
         setSnapshotRenameOpen(false);
-        updateSnapshotMetadata((snapshots) => {
+        void updateSnapshotMetadata((snapshots) => {
             const existing = snapshots[index];
             if (!existing) throw new Error("Snapshot no longer exists.");
             const renamed = new Snapshot().deserialize(existing);
@@ -2808,7 +2877,7 @@ export default function FootControllerView({
     const deletePerformanceSnapshot = (index: number) => {
         setSnapshotOptionsOpen(false);
         setSnapshotRenameOpen(false);
-        updateSnapshotMetadata((snapshots) => { snapshots[index] = null; }, `SNAPSHOT ${index + 1} DELETED`);
+        void updateSnapshotMetadata((snapshots) => { snapshots[index] = null; }, `SNAPSHOT ${index + 1} DELETED`);
     };
 
     const renderSnapshotTile = (index: number) => {

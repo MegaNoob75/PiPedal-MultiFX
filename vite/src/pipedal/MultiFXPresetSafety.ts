@@ -9,13 +9,22 @@ import {
     updateMultiFXRuntimeState
 } from "./MultiFXRuntimeSync";
 
+const SAFETY_TIMEOUT_MS = 8000;
+
 export async function waitForCleanBasePreset(
     model: PiPedalModel,
     presetId: number
 ): Promise<void> {
     return new Promise<void>((resolve, reject) => {
         let settled = false;
+        const timer = globalThis.setTimeout(
+            () => fail(
+                "PiPedal did not confirm the clean base preset within 8 seconds."
+            ),
+            SAFETY_TIMEOUT_MS
+        );
         const cleanup = () => {
+            globalThis.clearTimeout(timer);
             model.presets.removeOnChangedHandler(check);
             model.selectedSnapshot.removeOnChangedHandler(check);
             model.presetChanged.removeOnChangedHandler(check);
@@ -70,7 +79,14 @@ async function waitForEnabledStates(
 ): Promise<void> {
     return new Promise<void>((resolve, reject) => {
         let settled = false;
+        const timer = globalThis.setTimeout(
+            () => fail(
+                "PiPedal did not confirm Chain Bypass restoration within 8 seconds."
+            ),
+            SAFETY_TIMEOUT_MS
+        );
         const cleanup = () => {
+            globalThis.clearTimeout(timer);
             model.pedalboard.removeOnChangedHandler(check);
             model.state.removeOnChangedHandler(onState);
         };

@@ -6,6 +6,7 @@ import {
     performancePresetLightState,
     performancePresetPress,
     presetSnapshotSessionKey,
+    snapshotSessionNeedsBaseReload,
     snapshotViewPress
 } from "../src/pipedal/MultiFXSnapshotSessionState.ts";
 
@@ -57,6 +58,31 @@ test("snapshot confirmation requires both remembered intent and native state", (
         isSnapshotSessionConfirmed({ snapshotIndex: 4, enabled: true }, -1),
         false
     );
+});
+
+test("session startup preserves unsaved BASE state unless a stale snapshot marker exists", () => {
+    assert.equal(snapshotSessionNeedsBaseReload(false, 42, -1), false);
+    assert.equal(snapshotSessionNeedsBaseReload(false, 42, 1), true);
+    assert.equal(snapshotSessionNeedsBaseReload(true, 42, 1), true);
+    assert.equal(
+        snapshotSessionNeedsBaseReload(
+            true,
+            42,
+            1,
+            { snapshotIndex: 1, enabled: true }
+        ),
+        false
+    );
+    assert.equal(
+        snapshotSessionNeedsBaseReload(
+            true,
+            42,
+            1,
+            { snapshotIndex: 1, enabled: false }
+        ),
+        true
+    );
+    assert.equal(snapshotSessionNeedsBaseReload(false, -1, 1), false);
 });
 
 test("preset indicator priority is bypass, snapshot, modified, active", () => {

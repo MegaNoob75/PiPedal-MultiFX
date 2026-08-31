@@ -66,6 +66,25 @@ export function isSnapshotSessionConfirmed(
     );
 }
 
+/**
+ * Starting MultiFX only needs a BASE reload when an old native/saved snapshot
+ * marker must be removed. A normal BASE state must be left untouched because
+ * it may contain legitimate unsaved edits from PiPedal's original UI.
+ */
+export function snapshotSessionNeedsBaseReload(
+    sessionAlreadyInitialized: boolean,
+    presetId: number,
+    nativeSelectedSnapshot: number,
+    rememberedState: PresetSnapshotSessionState | null = null
+): boolean {
+    if (presetId < 0 || nativeSelectedSnapshot < 0) return false;
+    if (!sessionAlreadyInitialized) return true;
+    return !isSnapshotSessionConfirmed(
+        rememberedState,
+        nativeSelectedSnapshot
+    );
+}
+
 export type PerformancePresetLightState =
     | "inactive"
     | "active"

@@ -17,7 +17,8 @@ import {
 } from "./MultiFXRuntimeSync";
 import {
     presetSnapshotSessionKey,
-    PresetSnapshotSessionState
+    PresetSnapshotSessionState,
+    snapshotSessionNeedsBaseReload
 } from "./MultiFXSnapshotSessionState";
 
 const TRANSITION_TIMEOUT_MS = 8000;
@@ -483,19 +484,44 @@ export async function initializeMultiFXSnapshotSession(
     assertTransitionCurrent(transition);
     const runtime = getLatestMultiFXRuntimeState()
         ?? await readMultiFXRuntimeState(transition.signal);
-    if (runtime.snapshotSessionInitialized) return false;
-
+    const bankId = model.banks.get().selectedBank;
     const presetId = model.presets.get().selectedInstanceId;
-    if (presetId >= 0) {
+    const rememberedState = getMultiFXPresetSnapshotState(
+        runtime,
+        bankId,
+        presetId
+    );
+
+    // Reload only when PiPedal is carrying a snapshot marker that is not a
+    // confirmed MultiFX session choice. An unconditional reload would silently
+    // discard legitimate unsaved BASE edits made in PiPedal's original UI.
+    const baseWasReloaded = snapshotSessionNeedsBaseReload(
+        runtime.snapshotSessionInitialized,
+        presetId,
+        model.selectedSnapshot.get(),
+        rememberedState
+    );
+    if (baseWasReloaded) {
         await loadMultiFXBasePreset(model, presetId, transition);
     }
 
-    await updateMultiFXRuntimeState({
-        snapshotSessionInitialized: true,
-        resetPresetSnapshotStates: true
-    }, transition.signal);
+    if (!runtime.snapshotSessionInitialized) {
+        await updateMultiFXRuntimeState({
+            snapshotSessionInitialized: true,
+            resetPresetSnapshotStates: true
+        }, transition.signal);
+    } else if (baseWasReloaded && rememberedState) {
+        // The native sound and shared intent disagreed. BASE is authoritative
+        // after reconciliation, so do not leave a ghost remembered snapshot.
+        await writeMultiFXPresetSnapshotState(
+            bankId,
+            presetId,
+            null,
+            transition
+        );
+    }
     assertTransitionCurrent(transition);
-    return true;
+    return baseWasReloaded;
 }
 
 export function asRuntimeSnapshotState(
