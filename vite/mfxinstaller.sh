@@ -3,7 +3,7 @@ set -Eeuo pipefail
 
 # PiPedal MultiFX end-user setup utility.
 # Increment this version whenever installer behavior changes.
-INSTALLER_VERSION="1.8"
+INSTALLER_VERSION="1.12"
 #
 # Normal use:
 #   sudo ./mfxinstaller.sh
@@ -41,6 +41,7 @@ PERFORMANCE_SERVICE="pipedal-performance.service"
 PLYMOUTH_THEME_NAME="pipedal-multifx"
 PLYMOUTH_THEME_DIR="/usr/share/plymouth/themes/${PLYMOUTH_THEME_NAME}"
 PLYMOUTH_LOGO_URL="https://raw.githubusercontent.com/${MULTIFX_REPOSITORY}/main/docs/PiPedal-logo.png"
+PLYMOUTH_MULTIFX_LOGO_URL="https://raw.githubusercontent.com/${MULTIFX_REPOSITORY}/main/docs/Pi-MultiFX-logo.png"
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 SCRIPT_FILE="${SCRIPT_DIR}/$(basename -- "${BASH_SOURCE[0]}")"
@@ -522,20 +523,25 @@ installer_version_from_file() {
 }
 
 refresh_installer_before_action() {
-    local latest current_version latest_version needs_restart=0
+    local latest current_version latest_version needs_restart=0 refresh_url
     local -a restart_arguments=("${ORIGINAL_ARGUMENTS[@]}")
 
     [ "${MFX_INSTALLER_REFRESHED:-0}" != "1" ] || return 0
     make_temp_dir "/tmp/pipedal-installer-refresh.XXXXXX"
     latest="${TEMP_DIR}/mfxinstaller.sh"
+    refresh_url="${INSTALLER_RAW_URL}?refresh=$(date +%s)"
 
     echo "Checking for the newest PiPedal MultiFX installer..."
     if command -v curl >/dev/null 2>&1; then
         curl -fL --connect-timeout 10 --max-time 45 \
-            "${INSTALLER_RAW_URL}" -o "${latest}" ||
+            --retry 3 --retry-delay 2 \
+            -H 'Cache-Control: no-cache' -H 'Pragma: no-cache' \
+            "${refresh_url}" -o "${latest}" ||
             die "Could not download the newest installer. Check the internet connection and try again."
     elif command -v wget >/dev/null 2>&1; then
-        wget -q --timeout=45 -O "${latest}" "${INSTALLER_RAW_URL}" ||
+        wget -q --timeout=45 \
+            --header='Cache-Control: no-cache' --header='Pragma: no-cache' \
+            -O "${latest}" "${refresh_url}" ||
             die "Could not download the newest installer. Check the internet connection and try again."
     else
         die "curl or wget is required to refresh the installer before use."
@@ -2040,10 +2046,12 @@ install_pipedal_plymouth_theme() {
     local theme_file="${PLYMOUTH_THEME_DIR}/${PLYMOUTH_THEME_NAME}.plymouth"
     local script_file="${PLYMOUTH_THEME_DIR}/${PLYMOUTH_THEME_NAME}.script"
     local logo_file="${PLYMOUTH_THEME_DIR}/pipedal-logo.png"
+    local multifx_logo_file="${PLYMOUTH_THEME_DIR}/pi-multifx-logo.png"
 
     mkdir -p "${PLYMOUTH_THEME_DIR}"
     curl -fL --retry 3 --retry-delay 2 "${PLYMOUTH_LOGO_URL}" -o "${logo_file}"
-    chmod 0644 "${logo_file}"
+    curl -fL --retry 3 --retry-delay 2 "${PLYMOUTH_MULTIFX_LOGO_URL}" -o "${multifx_logo_file}"
+    chmod 0644 "${logo_file}" "${multifx_logo_file}"
 
     cat > "${theme_file}" <<THEME
 [Plymouth Theme]
@@ -2061,16 +2069,34 @@ Window.SetBackgroundTopColor(0.0, 0.0, 0.0);
 Window.SetBackgroundBottomColor(0.0, 0.0, 0.0);
 
 logo_image = Image("pipedal-logo.png");
-maximum_width = Window.GetWidth() * 0.58;
-if (logo_image.GetWidth() > maximum_width) {
-    scale = maximum_width / logo_image.GetWidth();
-    logo_image = logo_image.Scale(logo_image.GetWidth() * scale,
-                                  logo_image.GetHeight() * scale);
+logo_maximum_width = Window.GetWidth() * 0.52;
+if (logo_image.GetWidth() > logo_maximum_width) {
+    logo_scale = logo_maximum_width / logo_image.GetWidth();
+    logo_image = logo_image.Scale(logo_image.GetWidth() * logo_scale,
+                                  logo_image.GetHeight() * logo_scale);
 }
+
+multifx_image = Image("pi-multifx-logo.png");
+multifx_maximum_width = Window.GetWidth() * 0.38;
+if (multifx_image.GetWidth() > multifx_maximum_width) {
+    multifx_scale = multifx_maximum_width / multifx_image.GetWidth();
+    multifx_image = multifx_image.Scale(multifx_image.GetWidth() * multifx_scale,
+                                        multifx_image.GetHeight() * multifx_scale);
+}
+
+logo_gap = Window.GetHeight() * 0.035;
+group_height = logo_image.GetHeight() + logo_gap + multifx_image.GetHeight();
+group_top = Window.GetHeight() / 2 - group_height / 2;
+
 logo_sprite = Sprite(logo_image);
 logo_sprite.SetX(Window.GetWidth() / 2 - logo_image.GetWidth() / 2);
-logo_sprite.SetY(Window.GetHeight() / 2 - logo_image.GetHeight() / 2);
+logo_sprite.SetY(group_top);
 logo_sprite.SetZ(10000);
+
+multifx_sprite = Sprite(multifx_image);
+multifx_sprite.SetX(Window.GetWidth() / 2 - multifx_image.GetWidth() / 2);
+multifx_sprite.SetY(group_top + logo_image.GetHeight() + logo_gap);
+multifx_sprite.SetZ(10000);
 
 # Intentionally ignore all status, question and password callbacks. Routine
 # boot and shutdown details remain in the journal instead of on the display.
