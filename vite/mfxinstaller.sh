@@ -3,7 +3,7 @@ set -Eeuo pipefail
 
 # PiPedal MultiFX end-user setup utility.
 # Increment this version whenever installer behavior changes.
-INSTALLER_VERSION="1.7"
+INSTALLER_VERSION="1.8"
 #
 # Normal use:
 #   sudo ./mfxinstaller.sh
@@ -38,6 +38,9 @@ UNINSTALL_COMMAND="/usr/local/sbin/uninstall-pipedal-multifx"
 INSTALLER_LOCK_FILE="/run/lock/pipedal-multifx-installer.lock"
 OPTIMIZATION_STATE_DIR="${INSTALLER_STATE_DIR}/optimizations"
 PERFORMANCE_SERVICE="pipedal-performance.service"
+PLYMOUTH_THEME_NAME="pipedal-multifx"
+PLYMOUTH_THEME_DIR="/usr/share/plymouth/themes/${PLYMOUTH_THEME_NAME}"
+PLYMOUTH_LOGO_URL="https://raw.githubusercontent.com/${MULTIFX_REPOSITORY}/main/docs/PiPedal-logo.png"
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 SCRIPT_FILE="${SCRIPT_DIR}/$(basename -- "${BASH_SOURCE[0]}")"
@@ -2023,6 +2026,139 @@ apply_boot_cosmetic_optimizations() {
     echo "Boot presentation optimizations were applied."
 }
 
+set_kernel_option() {
+    local file="$1" option="$2" key="${2%%=*}" escaped_key
+    escaped_key="${key//./\\.}"
+    if grep -Eq "(^|[[:space:]])${escaped_key}(=|[[:space:]]|$)" "${file}"; then
+        sed -i -E "1 s|(^|[[:space:]])${escaped_key}(=[^[:space:]]*)?|\\1${option}|g" "${file}"
+    else
+        sed -i "1 s|[[:space:]]*$| ${option}|" "${file}"
+    fi
+}
+
+install_pipedal_plymouth_theme() {
+    local theme_file="${PLYMOUTH_THEME_DIR}/${PLYMOUTH_THEME_NAME}.plymouth"
+    local script_file="${PLYMOUTH_THEME_DIR}/${PLYMOUTH_THEME_NAME}.script"
+    local logo_file="${PLYMOUTH_THEME_DIR}/pipedal-logo.png"
+
+    mkdir -p "${PLYMOUTH_THEME_DIR}"
+    curl -fL --retry 3 --retry-delay 2 "${PLYMOUTH_LOGO_URL}" -o "${logo_file}"
+    chmod 0644 "${logo_file}"
+
+    cat > "${theme_file}" <<THEME
+[Plymouth Theme]
+Name=PiPedal MultiFX
+Description=Text-free PiPedal MultiFX boot and shutdown screen
+ModuleName=script
+
+[script]
+ImageDir=${PLYMOUTH_THEME_DIR}
+ScriptFile=${script_file}
+THEME
+
+    cat > "${script_file}" <<'SCRIPT'
+Window.SetBackgroundTopColor(0.0, 0.0, 0.0);
+Window.SetBackgroundBottomColor(0.0, 0.0, 0.0);
+
+logo_image = Image("pipedal-logo.png");
+maximum_width = Window.GetWidth() * 0.58;
+if (logo_image.GetWidth() > maximum_width) {
+    scale = maximum_width / logo_image.GetWidth();
+    logo_image = logo_image.Scale(logo_image.GetWidth() * scale,
+                                  logo_image.GetHeight() * scale);
+}
+logo_sprite = Sprite(logo_image);
+logo_sprite.SetX(Window.GetWidth() / 2 - logo_image.GetWidth() / 2);
+logo_sprite.SetY(Window.GetHeight() / 2 - logo_image.GetHeight() / 2);
+logo_sprite.SetZ(10000);
+
+# Intentionally ignore all status, question and password callbacks. Routine
+# boot and shutdown details remain in the journal instead of on the display.
+SCRIPT
+    chmod 0644 "${theme_file}" "${script_file}"
+}
+
+apply_quiet_branded_splash() {
+    local config="/boot/firmware/config.txt"
+    local cmdline="/boot/firmware/cmdline.txt"
+    local old_theme=""
+    local option
+    local -a quiet_options=(
+        quiet splash loglevel=3 systemd.show_status=false
+        rd.systemd.show_status=false udev.log_level=3 rd.udev.log_level=3
+        vt.global_cursor_default=0 logo.nologo plymouth.ignore-serial-consoles
+    )
+
+    [ -f "${config}" ] || die "Raspberry Pi boot configuration was not found at ${config}."
+    [ -f "${cmdline}" ] || die "Raspberry Pi kernel command line was not found at ${cmdline}."
+    if [ -f /etc/crypttab ] && grep -Eqs '^[[:space:]]*[^#[:space:]]' /etc/crypttab; then
+        die "The text-free splash is not enabled on encrypted-root systems because it could hide an unlock prompt."
+    fi
+    confirm_default_yes "Install the text-free PiPedal MultiFX boot, reboot and shutdown splash?" || return 0
+
+    mkdir -p "${OPTIMIZATION_STATE_DIR}"
+    backup_file_once "${config}" optimization-quiet-splash-config
+    backup_file_once "${cmdline}" optimization-quiet-splash-cmdline
+    if command -v plymouth-set-default-theme >/dev/null 2>&1; then
+        old_theme="$(plymouth-set-default-theme 2>/dev/null || true)"
+    fi
+    if [ ! -e "${OPTIMIZATION_STATE_DIR}/plymouth-theme-before" ]; then
+        printf '%s\n' "${old_theme}" > "${OPTIMIZATION_STATE_DIR}/plymouth-theme-before"
+    fi
+    for option in plymouth plymouth-themes; do
+        if ! package_is_installed "${option}"; then
+            touch "${OPTIMIZATION_STATE_DIR}/package-${option}.was-absent"
+        fi
+    done
+
+    apt_update_once
+    apt-get install -y --no-install-recommends plymouth plymouth-themes
+    install_pipedal_plymouth_theme
+    plymouth-set-default-theme "${PLYMOUTH_THEME_NAME}"
+
+    set_boot_config_value "${config}" disable_splash 1
+    set_boot_config_value "${config}" auto_initramfs 1
+    for option in "${quiet_options[@]}"; do
+        set_kernel_option "${cmdline}" "${option}"
+    done
+
+    update-initramfs -u -k all
+    touch "${OPTIMIZATION_STATE_DIR}/quiet-splash-applied"
+    mark_reboot_needed "the text-free PiPedal MultiFX splash was installed"
+    echo "The display will now show only the PiPedal graphic during normal boot, reboot and shutdown."
+    echo "Boot details remain available through journalctl."
+}
+
+restore_quiet_branded_splash() {
+    local old_theme=""
+    [ -f "${OPTIMIZATION_STATE_DIR}/quiet-splash-applied" ] || return 0
+
+    restore_file_backup /boot/firmware/config.txt optimization-quiet-splash-config
+    restore_file_backup /boot/firmware/cmdline.txt optimization-quiet-splash-cmdline
+    if [ -f "${OPTIMIZATION_STATE_DIR}/plymouth-theme-before" ]; then
+        old_theme="$(cat "${OPTIMIZATION_STATE_DIR}/plymouth-theme-before")"
+    fi
+    if command -v plymouth-set-default-theme >/dev/null 2>&1; then
+        if [ -n "${old_theme}" ]; then
+            plymouth-set-default-theme "${old_theme}" || true
+        elif [ -d /usr/share/plymouth/themes/details ]; then
+            plymouth-set-default-theme details || true
+        fi
+    fi
+    rm -rf -- "${PLYMOUTH_THEME_DIR}"
+    update-initramfs -u -k all || true
+    local -a remove_packages=()
+    for old_theme in plymouth-themes plymouth; do
+        if [ -f "${OPTIMIZATION_STATE_DIR}/package-${old_theme}.was-absent" ] &&
+            package_is_installed "${old_theme}"; then
+            remove_packages+=("${old_theme}")
+        fi
+    done
+    if [ "${#remove_packages[@]}" -gt 0 ]; then
+        apt-get purge -y "${remove_packages[@]}"
+    fi
+}
+
 restore_cpu_governors() {
     local policy governor
     [ -f "${OPTIMIZATION_STATE_DIR}/cpu-governors" ] || return 0
@@ -2061,6 +2197,7 @@ restore_all_optimizations() {
     restore_file_backup /etc/NetworkManager/conf.d/90-pipedal-multifx-performance.conf optimization-networkmanager-performance
     restore_file_backup /etc/sysctl.d/90-pipedal-multifx-performance.conf optimization-sysctl-performance
     restore_file_backup /etc/cloud/cloud-init.disabled optimization-cloud-init-disabled
+    restore_quiet_branded_splash
     [ ! -e "${INSTALLER_STATE_DIR}/optimization-boot-config.was-present" ] ||
         restore_file_backup /boot/firmware/config.txt optimization-boot-config
     for unit in "${units[@]}"; do
@@ -2075,7 +2212,9 @@ restore_all_optimizations() {
         optimization-networkmanager-performance \
         optimization-sysctl-performance \
         optimization-cloud-init-disabled \
-        optimization-boot-config; do
+        optimization-boot-config \
+        optimization-quiet-splash-config \
+        optimization-quiet-splash-cmdline; do
         rm -f -- \
             "${INSTALLER_STATE_DIR}/${name}.was-present" \
             "${INSTALLER_STATE_DIR}/${name}.was-absent" \
@@ -2098,6 +2237,7 @@ show_optimization_status() {
     [ ! -f "${OPTIMIZATION_STATE_DIR}/bluetooth-disabled" ] || echo "Bluetooth services: disabled by installer"
     [ ! -f "${OPTIMIZATION_STATE_DIR}/unused-services-disabled" ] || echo "Optional background services: some disabled by installer"
     [ ! -f "${OPTIMIZATION_STATE_DIR}/boot-cosmetics-applied" ] || echo "Boot presentation: optimized"
+    [ ! -f "${OPTIMIZATION_STATE_DIR}/quiet-splash-applied" ] || echo "Quiet branded splash: enabled"
     printf 'CPU governor:       '
     cat /sys/devices/system/cpu/cpufreq/policy0/scaling_governor 2>/dev/null || echo unknown
     ssh_state="$(systemctl is-enabled ssh.service 2>/dev/null || true)"
@@ -2109,6 +2249,7 @@ show_optimization_menu() {
     local -a options=(
         "Apply recommended Pi 5 / PiPedal optimizations"
         "Disable unnecessary services (show detected list)"
+        "Install text-free PiPedal boot / shutdown splash"
         "Optional: Reduce boot splash / unused PoE probe"
         "Show optimization and boot status"
         "Restore all installer-managed optimizations"
@@ -2119,10 +2260,11 @@ show_optimization_menu() {
         case "${MENU_RESULT}" in
             0) apply_recommended_optimizations ;;
             1) show_unused_services_menu ;;
-            2) apply_boot_cosmetic_optimizations ;;
-            3) show_optimization_status ;;
-            4) restore_all_optimizations ;;
-            5) return 0 ;;
+            2) apply_quiet_branded_splash ;;
+            3) apply_boot_cosmetic_optimizations ;;
+            4) show_optimization_status ;;
+            5) restore_all_optimizations ;;
+            6) return 0 ;;
         esac
         offer_reboot_if_needed
         pause_for_menu

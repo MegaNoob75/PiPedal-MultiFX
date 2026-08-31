@@ -123,7 +123,11 @@ Wi-Fi power saving, and lowers swapping pressure without removing zram/swap.
 Optional actions can disable Bluetooth or detected unused service groups
 without removing packages. Available groups cover printing, cellular modem
 management, PackageKit, desktop location/color management, Samba/NFS sharing,
-and graphical remote-desktop servers. Each group has its own warning so users
+and graphical remote-desktop servers. A separate text-free display option
+installs a black PiPedal Plymouth screen for normal boot, reboot and shutdown,
+hides the cursor and routine kernel/systemd status output, and keeps those
+details available in `journalctl`. Catastrophic failures that occur before the
+splash starts may still use the console. Each service group has its own warning so users
 do not disable hardware or sharing features they rely on. SSH, NetworkManager,
 Ethernet, Wi-Fi configuration, Avahi, users, passwords, and SSH keys are
 preserved. A restore action returns every installer-managed setting to its

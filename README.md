@@ -378,7 +378,10 @@ The streamlined setup menu provides:
 
 The optimization menu provides a reversible recommended Pi 5 audio profile
 plus separate choices for Bluetooth, unused background-service groups, and
-minor boot-display changes. Optional groups include printing, cellular modem,
+boot-display changes. Its text-free splash option shows only a centered PiPedal
+graphic on black during normal boot, reboot, and shutdown; routine details are
+hidden from the display but remain available in `journalctl`. Optional service
+groups include printing, cellular modem,
 PackageKit, desktop location/color, file-sharing, and remote-desktop services.
 It preserves SSH and networking, keeps packages installed, and can restore
 every installer-managed operating-system setting.
