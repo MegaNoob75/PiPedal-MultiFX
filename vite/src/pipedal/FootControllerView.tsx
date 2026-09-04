@@ -555,6 +555,23 @@ export default function FootControllerView({
         useState(false);
     const [snapshotSessionInitAttempt, setSnapshotSessionInitAttempt] =
         useState(0);
+    const [performanceTransitionActive, setPerformanceTransitionActive] =
+        useState(false);
+
+    const beginPerformanceTransition = (): MultiFXPerformanceTransition => {
+        const transition = beginMultiFXPerformanceTransition();
+        setPerformanceTransitionActive(true);
+        return transition;
+    };
+
+    const finishPerformanceTransition = (
+        transition: MultiFXPerformanceTransition
+    ): void => {
+        finishMultiFXPerformanceTransition(transition);
+        setPerformanceTransitionActive(
+            isMultiFXPerformanceTransitionActive()
+        );
+    };
 
     const initialPresetState = model.presets.get();
     const initialBankId = model.banks.get().selectedBank;
@@ -1130,10 +1147,27 @@ export default function FootControllerView({
             || cleanPresetBaseline?.presetId !== presetId;
         const presetWasJustSavedOrReloaded =
             previousChanged && !presets.presetChanged;
+        const cleanPedalboardSignature =
+            stablePedalboardStateSignature(snapshotPedalboard);
+        const cleanPedalboardAdvanced =
+            cleanPresetBaseline?.bankId === bankId
+            && cleanPresetBaseline?.presetId === presetId
+            && cleanPresetBaseline.signature !== cleanPedalboardSignature;
 
-        if (!presets.presetChanged && (needsNewPresetBaseline || presetWasJustSavedOrReloaded)) {
+        if (
+            !presets.presetChanged
+            && (
+                needsNewPresetBaseline
+                || presetWasJustSavedOrReloaded
+                || cleanPedalboardAdvanced
+            )
+        ) {
             // Preset and pedalboard notifications can arrive in either order.
-            // Defer one turn, then read the model's current authoritative state.
+            // Some stateful plugins also publish additional pedalboard updates
+            // after the initial load acknowledgement. While PiPedal still says
+            // the preset is clean, follow those updates so a partially restored
+            // plugin state cannot become the comparison baseline. The baseline
+            // freezes as soon as a real edit sets presetChanged.
             const timer = window.setTimeout(() => {
                 const current = model.presets.get();
                 if (
@@ -1165,8 +1199,10 @@ export default function FootControllerView({
         presets.presetChanged,
         selectedSnapshot,
         chainBypassed,
+        snapshotPedalboard,
         cleanPresetBaseline?.bankId,
-        cleanPresetBaseline?.presetId
+        cleanPresetBaseline?.presetId,
+        cleanPresetBaseline?.signature
     ]);
 
     useEffect(() => {
@@ -1273,7 +1309,7 @@ export default function FootControllerView({
             return () => { cancelled = true; };
         }
 
-        const transition = beginMultiFXPerformanceTransition();
+        const transition = beginPerformanceTransition();
         void initializeSnapshotSession(transition)
             .catch((error) => {
                 if (!isMultiFXTransitionCancellation(error)) {
@@ -1281,7 +1317,7 @@ export default function FootControllerView({
                 }
                 retry();
             })
-            .finally(() => finishMultiFXPerformanceTransition(transition));
+            .finally(() => finishPerformanceTransition(transition));
 
         return () => {
             cancelled = true;
@@ -1327,7 +1363,7 @@ export default function FootControllerView({
     const selectedSlotPreset = getPresetForSlot(selectedPresetSlot);
 
     const requestPresetLoad = (presetId: number) => {
-        const transition = beginMultiFXPerformanceTransition();
+        const transition = beginPerformanceTransition();
         void (async () => {
             try {
                 await initializeSnapshotSession(transition);
@@ -1460,7 +1496,7 @@ export default function FootControllerView({
                     model.showAlert(String(error));
                 }
             } finally {
-                finishMultiFXPerformanceTransition(transition);
+                finishPerformanceTransition(transition);
             }
         })();
     };
@@ -1472,7 +1508,7 @@ export default function FootControllerView({
             return;
         }
 
-        const transition = beginMultiFXPerformanceTransition();
+        const transition = beginPerformanceTransition();
         void (async () => {
             try {
                 await initializeSnapshotSession(transition);
@@ -1513,7 +1549,7 @@ export default function FootControllerView({
                     model.showAlert(String(error));
                 }
             } finally {
-                finishMultiFXPerformanceTransition(transition);
+                finishPerformanceTransition(transition);
             }
         })();
     };
@@ -2052,6 +2088,7 @@ export default function FootControllerView({
         && (presets.presetChanged || differsFromCleanPresetBaseline);
     const showPresetChanged =
         effectivePresetChanged
+        && !performanceTransitionActive
         && selectedSnapshot < 0
         && (!chainBypassed || chainBypassWasPresetChangedRef.current);
 
@@ -2221,7 +2258,7 @@ export default function FootControllerView({
     };
 
     const toggleChainBypass = () => {
-        const transition = beginMultiFXPerformanceTransition();
+        const transition = beginPerformanceTransition();
         void (async () => {
             try {
                 await initializeSnapshotSession(transition);
@@ -2303,13 +2340,13 @@ export default function FootControllerView({
                     model.showAlert(String(error));
                 }
             } finally {
-                finishMultiFXPerformanceTransition(transition);
+                finishPerformanceTransition(transition);
             }
         })();
     };
 
     const toggleSnapshotMode = () => {
-        const transition = beginMultiFXPerformanceTransition();
+        const transition = beginPerformanceTransition();
         void (async () => {
             try {
                 await initializeSnapshotSession(transition);
@@ -2371,7 +2408,7 @@ export default function FootControllerView({
                     model.showAlert(String(error));
                 }
             } finally {
-                finishMultiFXPerformanceTransition(transition);
+                finishPerformanceTransition(transition);
             }
         })();
     };
@@ -2813,7 +2850,7 @@ export default function FootControllerView({
     ): Promise<void> => {
         if (presetActionBusy) return;
         setPresetActionBusy(true);
-        const transition = beginMultiFXPerformanceTransition();
+        const transition = beginPerformanceTransition();
         try {
             await initializeSnapshotSession(transition);
             await restoreChainBypass(transition, false);
@@ -2853,7 +2890,7 @@ export default function FootControllerView({
                 model.showAlert(String(error));
             }
         } finally {
-            finishMultiFXPerformanceTransition(transition);
+            finishPerformanceTransition(transition);
             setPresetActionBusy(false);
         }
     };

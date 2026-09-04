@@ -22,6 +22,8 @@ import {
 } from "./MultiFXSnapshotSessionState";
 
 const TRANSITION_TIMEOUT_MS = 8000;
+const PEDALBOARD_SETTLE_QUIET_MS = 120;
+const PEDALBOARD_SETTLE_MAX_MS = 1000;
 
 export type MultiFXPerformanceTransition = {
     id: number;
@@ -232,6 +234,56 @@ async function waitForFreshSnapshotSelection(
     assertTransitionCurrent(transition);
 }
 
+async function waitForPedalboardSettled(
+    model: PiPedalModel,
+    transition: MultiFXPerformanceTransition
+): Promise<void> {
+    assertTransitionCurrent(transition);
+
+    await new Promise<void>((resolve, reject) => {
+        let settled = false;
+        let quietTimer: ReturnType<typeof globalThis.setTimeout>;
+        let removeAbort: () => void = () => undefined;
+        const maximumTimer = globalThis.setTimeout(
+            finish,
+            PEDALBOARD_SETTLE_MAX_MS
+        );
+
+        const cleanup = () => {
+            globalThis.clearTimeout(quietTimer);
+            globalThis.clearTimeout(maximumTimer);
+            removeAbort();
+            model.pedalboard.removeOnChangedHandler(onPedalboard);
+        };
+        function finish() {
+            if (settled) return;
+            settled = true;
+            cleanup();
+            resolve();
+        }
+        const fail = (reason: unknown) => {
+            if (settled) return;
+            settled = true;
+            cleanup();
+            reject(reason);
+        };
+        const armQuietTimer = () => {
+            globalThis.clearTimeout(quietTimer);
+            quietTimer = globalThis.setTimeout(
+                finish,
+                PEDALBOARD_SETTLE_QUIET_MS
+            );
+        };
+        const onPedalboard = () => armQuietTimer();
+
+        model.pedalboard.addOnChangedHandler(onPedalboard);
+        removeAbort = attachAbort(transition.signal, fail, cleanup);
+        armQuietTimer();
+    });
+
+    assertTransitionCurrent(transition);
+}
+
 export async function loadMultiFXBasePreset(
     model: PiPedalModel,
     presetId: number,
@@ -250,6 +302,11 @@ export async function loadMultiFXBasePreset(
             "clearing the saved snapshot marker"
         );
     }
+
+    // Loading stateful plugins and clearing a saved native snapshot marker can
+    // produce more pedalboard notifications after the first load acknowledgement.
+    // Do not let callers record a clean comparison until that sequence is quiet.
+    await waitForPedalboardSettled(model, transition);
 }
 
 export async function recallMultiFXSnapshot(
