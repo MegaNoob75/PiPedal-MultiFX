@@ -26,12 +26,12 @@ import {
     ControllerPerformanceControlDescriptor,
     minimumPerformanceControlSize
 } from "./ControllerConfig";
-import MidiBinding from "./MidiBinding";
+import MidiBinding from "../pipedal/MidiBinding";
 import {
     ControlValueChangedHandle,
     PiPedalModelFactory
-} from "./PiPedalModel";
-import { Pedalboard } from "./Pedalboard";
+} from "../pipedal/PiPedalModel";
+import { Pedalboard } from "../pipedal/Pedalboard";
 import {
     loadMultiFXUIBehaviorSettings,
     MULTIFX_UI_BEHAVIOR_CHANGED_EVENT,
@@ -41,6 +41,7 @@ import "./MultiFXPerformanceAppearance.css";
 
 interface Props {
     controllerConfig: ControllerLayoutConfig;
+    disabled?: boolean;
 }
 
 interface ResolvedParameter {
@@ -262,7 +263,8 @@ function resolveParameters(
 
 /** Render every placed hardware control with its active-preset assignment. */
 export default function MultiFXPerformanceControls({
-    controllerConfig
+    controllerConfig,
+    disabled = false
 }: Props) {
     const model = PiPedalModelFactory.getInstance();
     const [structureSignature, setStructureSignature] = useState(
@@ -323,6 +325,7 @@ export default function MultiFXPerformanceControls({
         assignments: ResolvedParameter[],
         keepPopoutOpen: boolean
     ) => {
+        if (disabled) return;
         if (event.pointerType === "mouse" && event.button !== 0) return;
 
         // The control layer owns this gesture. In particular, a newly opened
@@ -360,7 +363,13 @@ export default function MultiFXPerformanceControls({
                 1 - (event.clientY - bounds.top) / Math.max(1, bounds.height)
             );
         }
-    }, [applyControlRange, holdControlPopout]);
+    }, [applyControlRange, disabled, holdControlPopout]);
+
+    useEffect(() => {
+        if (!disabled) return;
+        activeAdjustmentRef.current = null;
+        setPopoutControlId(null);
+    }, [disabled]);
 
     const moveControlAdjustment = useCallback((
         event: ReactPointerEvent<HTMLDivElement>
@@ -492,6 +501,8 @@ export default function MultiFXPerformanceControls({
             <div
                 className="mfx-performance-controls"
                 aria-label="Hardware controls"
+                aria-disabled={disabled}
+                style={{ pointerEvents: disabled ? "none" : "auto" }}
             >
                 {descriptors.map((descriptor) => {
                     const rect = controllerConfig.performanceLayout.controls[
@@ -553,7 +564,7 @@ export default function MultiFXPerformanceControls({
                 })}
             </div>
 
-            {popoutDescriptor && createPortal(
+            {!disabled && popoutDescriptor && createPortal(
                 <div
                     className="mfx-performance-control-popout"
                     aria-label={`${popoutDescriptor.label} enlarged control`}

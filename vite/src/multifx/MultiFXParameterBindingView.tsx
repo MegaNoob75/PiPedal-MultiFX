@@ -14,18 +14,18 @@ import {
     loadControllerConfig,
     saveControllerConfig
 } from "./ControllerConfig";
-import { UiControl, UiPlugin } from "./Lv2Plugin";
-import MidiBinding from "./MidiBinding";
+import { UiControl, UiPlugin } from "../pipedal/Lv2Plugin";
+import MidiBinding from "../pipedal/MidiBinding";
 import {
     MidiControlType,
     getMidiControlType
-} from "./MidiBindingView";
+} from "../pipedal/MidiBindingView";
 import {
     ListenHandle,
     MidiMessage,
     PiPedalModelFactory
-} from "./PiPedalModel";
-import { PedalboardItem } from "./Pedalboard";
+} from "../pipedal/PiPedalModel";
+import { PedalboardItem } from "../pipedal/Pedalboard";
 import {
     describeMultiFXMidiBinding,
     findMultiFXMidiSource,
@@ -36,6 +36,13 @@ import {
     MFX_SURFACES,
     multiFXSurfaceBackground
 } from "./MultiFXTheme";
+import {
+    beginMultiFXPerformanceTransition,
+    finishMultiFXPerformanceTransition,
+    isMultiFXTransitionCancellation,
+    saveCurrentPresetAndWait
+} from "./MultiFXPerformanceSession";
+import { restoreChainBypassForSafeWrite } from "./MultiFXPresetSafety";
 
 interface MultiFXParameterBindingViewProps {
     item: PedalboardItem;
@@ -305,9 +312,37 @@ export default function MultiFXParameterBindingView({
     };
 
     const savePreset = () => {
-        saveRequestedRef.current = true;
-        model.saveCurrentPreset();
-        setStatus("Saving the current preset…");
+        if (saveRequestedRef.current) return;
+        const transition = beginMultiFXPerformanceTransition();
+        void (async () => {
+            try {
+                await transition.sharedReady;
+                if (model.selectedSnapshot.get() >= 0) {
+                    throw new Error(
+                        "A snapshot is active. Return to the base preset before saving controller bindings."
+                    );
+                }
+                await restoreChainBypassForSafeWrite(model);
+                if (model.selectedSnapshot.get() >= 0) {
+                    throw new Error(
+                        "A snapshot became active before the save. The preset was not overwritten."
+                    );
+                }
+                saveRequestedRef.current = true;
+                setStatus("Saving the current preset…");
+                await saveCurrentPresetAndWait(model, transition);
+                saveRequestedRef.current = false;
+                setStatus("Preset saved with its controller bindings.");
+            } catch (error) {
+                saveRequestedRef.current = false;
+                if (!isMultiFXTransitionCancellation(error)) {
+                    model.showAlert(String(error));
+                    setStatus("Preset was not saved.");
+                }
+            } finally {
+                finishMultiFXPerformanceTransition(transition);
+            }
+        })();
     };
 
     const reverseBinding = () => {

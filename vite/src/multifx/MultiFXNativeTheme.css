@@ -746,3 +746,7 @@ body.multifx-active .MuiInputBase-input {
     -webkit-user-select: text;
     user-select: text;
 }
+@keyframes mfx-update-progress {
+    from { transform: translateX(-45%); }
+    to { transform: translateX(45%); }
+}

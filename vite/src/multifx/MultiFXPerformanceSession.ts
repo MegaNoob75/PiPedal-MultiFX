@@ -6,8 +6,8 @@
  * session, shared by the touchscreen and PC browser.
  */
 
-import { PiPedalModel, State } from "./PiPedalModel";
-import { Snapshot } from "./Pedalboard";
+import { PiPedalModel, State } from "../pipedal/PiPedalModel";
+import { Snapshot } from "../pipedal/Pedalboard";
 import {
     getLatestMultiFXRuntimeState,
     MultiFXPresetSnapshotState,
@@ -28,6 +28,7 @@ const PEDALBOARD_SETTLE_MAX_MS = 1000;
 export type MultiFXPerformanceTransition = {
     id: number;
     signal: AbortSignal;
+    sharedReady: Promise<void>;
 };
 
 let nextTransitionId = 0;
@@ -35,6 +36,13 @@ let activeTransition: {
     id: number;
     controller: AbortController;
 } | null = null;
+
+const performanceOwnerId = (() => {
+    if (typeof window === "undefined") return `test-${Math.random()}`;
+    return typeof crypto !== "undefined" && "randomUUID" in crypto
+        ? crypto.randomUUID()
+        : `browser-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+})();
 
 export class MultiFXTransitionCancelledError extends Error {
     constructor() {
@@ -48,7 +56,18 @@ export function beginMultiFXPerformanceTransition(): MultiFXPerformanceTransitio
     const controller = new AbortController();
     const id = ++nextTransitionId;
     activeTransition = { id, controller };
-    return { id, signal: controller.signal };
+    const transition: MultiFXPerformanceTransition = {
+        id,
+        signal: controller.signal,
+        sharedReady: Promise.resolve()
+    };
+    transition.sharedReady = updateMultiFXRuntimeState({
+        performanceOperationStart: {
+            ownerId: performanceOwnerId,
+            operationId: id
+        }
+    }, controller.signal).then(() => undefined);
+    return transition;
 }
 
 export function finishMultiFXPerformanceTransition(
@@ -57,6 +76,24 @@ export function finishMultiFXPerformanceTransition(
     if (activeTransition?.id === transition.id) {
         activeTransition = null;
     }
+    void transition.sharedReady
+        .catch(() => undefined)
+        .then(() => updateMultiFXRuntimeState({
+            performanceOperationFinish: {
+                ownerId: performanceOwnerId,
+                operationId: transition.id
+            }
+        }))
+        .catch(() => undefined);
+}
+
+export function cancelMultiFXPerformanceTransition(
+    transition: MultiFXPerformanceTransition
+): void {
+    if (activeTransition?.id === transition.id) {
+        activeTransition.controller.abort();
+    }
+    finishMultiFXPerformanceTransition(transition);
 }
 
 export function isMultiFXPerformanceTransitionActive(): boolean {
@@ -77,6 +114,20 @@ function assertTransitionCurrent(
     ) {
         throw new MultiFXTransitionCancelledError();
     }
+}
+
+async function ensureSharedTransition(
+    transition: MultiFXPerformanceTransition
+): Promise<void> {
+    await transition.sharedReady;
+    assertTransitionCurrent(transition);
+    await updateMultiFXRuntimeState({
+        performanceOperationTouch: {
+            ownerId: performanceOwnerId,
+            operationId: transition.id
+        }
+    }, transition.signal);
+    assertTransitionCurrent(transition);
 }
 
 function attachAbort(
@@ -101,7 +152,7 @@ async function waitForFreshPresetLoad(
     presetId: number,
     transition: MultiFXPerformanceTransition
 ): Promise<void> {
-    assertTransitionCurrent(transition);
+    await ensureSharedTransition(transition);
 
     await new Promise<void>((resolve, reject) => {
         let settled = false;
@@ -177,7 +228,7 @@ async function waitForFreshSnapshotSelection(
     transition: MultiFXPerformanceTransition,
     action: string
 ): Promise<void> {
-    assertTransitionCurrent(transition);
+    await ensureSharedTransition(transition);
 
     await new Promise<void>((resolve, reject) => {
         let settled = false;
@@ -238,7 +289,7 @@ async function waitForPedalboardSettled(
     model: PiPedalModel,
     transition: MultiFXPerformanceTransition
 ): Promise<void> {
-    assertTransitionCurrent(transition);
+    await ensureSharedTransition(transition);
 
     await new Promise<void>((resolve, reject) => {
         let settled = false;
@@ -307,6 +358,13 @@ export async function loadMultiFXBasePreset(
     // produce more pedalboard notifications after the first load acknowledgement.
     // Do not let callers record a clean comparison until that sequence is quiet.
     await waitForPedalboardSettled(model, transition);
+    await updateMultiFXRuntimeState({
+        cleanBaseReady: {
+            bankId: model.banks.get().selectedBank,
+            presetId
+        }
+    }, transition.signal);
+    assertTransitionCurrent(transition);
 }
 
 export async function recallMultiFXSnapshot(
@@ -314,6 +372,7 @@ export async function recallMultiFXSnapshot(
     snapshotIndex: number,
     transition: MultiFXPerformanceTransition
 ): Promise<void> {
+    await ensureSharedTransition(transition);
     const snapshot = model.pedalboard.get().snapshots[snapshotIndex];
     if (!snapshot) {
         throw new Error(`Snapshot ${snapshotIndex + 1} is empty.`);
@@ -348,7 +407,7 @@ async function replaceSnapshotsAndWait(
     snapshots: Array<Snapshot | null>,
     transition: MultiFXPerformanceTransition
 ): Promise<void> {
-    assertTransitionCurrent(transition);
+    await ensureSharedTransition(transition);
     await new Promise<void>((resolve, reject) => {
         let settled = false;
         let armed = false;
@@ -402,18 +461,18 @@ async function replaceSnapshotsAndWait(
     assertTransitionCurrent(transition);
 }
 
-async function saveCurrentPresetAndWait(
+export async function saveCurrentPresetAndWait(
     model: PiPedalModel,
     transition: MultiFXPerformanceTransition
 ): Promise<void> {
-    assertTransitionCurrent(transition);
+    await ensureSharedTransition(transition);
     await new Promise<void>((resolve, reject) => {
         let settled = false;
         let armed = false;
         let sawPresetChanged = false;
         let removeAbort: () => void = () => undefined;
         const timer = globalThis.setTimeout(
-            () => fail(timeoutError("the snapshot save")),
+            () => fail(timeoutError("the preset save")),
             TRANSITION_TIMEOUT_MS
         );
         const cleanup = () => {
@@ -440,7 +499,7 @@ async function saveCurrentPresetAndWait(
         };
         const onState = (state: State) => {
             if (armed && state === State.Error) {
-                fail(new Error("PiPedal disconnected while saving snapshots."));
+                fail(new Error("PiPedal disconnected while saving the preset."));
             }
         };
 
@@ -450,6 +509,13 @@ async function saveCurrentPresetAndWait(
         armed = true;
         model.saveCurrentPreset();
     });
+    assertTransitionCurrent(transition);
+    await updateMultiFXRuntimeState({
+        cleanBaseReady: {
+            bankId: model.banks.get().selectedBank,
+            presetId: model.presets.get().selectedInstanceId
+        }
+    }, transition.signal);
     assertTransitionCurrent(transition);
 }
 
@@ -508,7 +574,7 @@ export async function readMultiFXPresetSnapshotState(
     presetId: number,
     transition: MultiFXPerformanceTransition
 ): Promise<PresetSnapshotSessionState | null> {
-    assertTransitionCurrent(transition);
+    await ensureSharedTransition(transition);
     const runtime = getLatestMultiFXRuntimeState()
         ?? await readMultiFXRuntimeState(transition.signal);
     assertTransitionCurrent(transition);
@@ -521,7 +587,7 @@ export async function writeMultiFXPresetSnapshotState(
     snapshotState: PresetSnapshotSessionState | null,
     transition: MultiFXPerformanceTransition
 ): Promise<MultiFXRuntimeState> {
-    assertTransitionCurrent(transition);
+    await ensureSharedTransition(transition);
     const state = await updateMultiFXRuntimeState({
         presetSnapshotStateUpdate: {
             bankId,
@@ -538,7 +604,7 @@ export async function initializeMultiFXSnapshotSession(
     model: PiPedalModel,
     transition: MultiFXPerformanceTransition
 ): Promise<boolean> {
-    assertTransitionCurrent(transition);
+    await ensureSharedTransition(transition);
     const runtime = getLatestMultiFXRuntimeState()
         ?? await readMultiFXRuntimeState(transition.signal);
     const bankId = model.banks.get().selectedBank;

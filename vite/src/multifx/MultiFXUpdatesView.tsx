@@ -1,93 +1,19 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { PiPedalModelFactory } from "./PiPedalModel";
-import { UpdateStatus } from "./Updater";
+import { PiPedalModelFactory } from "../pipedal/PiPedalModel";
+import { UpdateStatus } from "../pipedal/Updater";
 import {
     MFX_COLORS,
     MFX_SURFACES,
     multiFXSurfaceBackground
 } from "./MultiFXTheme";
+import {
+    MultiFXUpdateStatus,
+    requestMultiFXUpdate
+} from "./MultiFXUpdateClient";
 
 const UPDATE_CHECK_TIMEOUT_MS = 15000;
 const REINSTALL_COMMAND = "sudo pipedal-multifx-setup multifx";
 const MULTIFX_UPDATE_POLL_MS = 2000;
-const MULTIFX_COMPLETED_RELOAD_KEY = "pipedal-multifx-completed-reload";
-
-type MultiFXUpdateJobState = "idle" | "installing" | "complete" | "failed";
-
-interface MultiFXUpdateStatus {
-    installedVersion: string;
-    latestVersion: string;
-    latestName: string;
-    releaseUrl: string;
-    updateAvailable: boolean;
-    jobState: MultiFXUpdateJobState;
-    message: string;
-    error: string;
-}
-
-function multiFXUpdateUrl(refresh = false): string {
-    const hostname = window.location.hostname.includes(":")
-        ? `[${window.location.hostname}]`
-        : window.location.hostname;
-    return `http://${hostname}:8877/multifx-update${refresh ? "?refresh=1" : ""}`;
-}
-
-function normalizeMultiFXUpdateStatus(value: unknown): MultiFXUpdateStatus {
-    const source = value && typeof value === "object"
-        ? value as Record<string, unknown>
-        : {};
-    const rawJobState = source.jobState;
-    const jobState: MultiFXUpdateJobState = rawJobState === "installing"
-        || rawJobState === "complete"
-        || rawJobState === "failed"
-        ? rawJobState
-        : "idle";
-    const text = (key: string) => typeof source[key] === "string"
-        ? source[key] as string
-        : "";
-    return {
-        installedVersion: text("installedVersion"),
-        latestVersion: text("latestVersion"),
-        latestName: text("latestName"),
-        releaseUrl: text("releaseUrl"),
-        updateAvailable: source.updateAvailable === true,
-        jobState,
-        message: text("message"),
-        error: text("error")
-    };
-}
-
-async function requestMultiFXUpdate(
-    method: "GET" | "POST",
-    refresh = false
-): Promise<MultiFXUpdateStatus> {
-    const controller = new AbortController();
-    const timer = window.setTimeout(() => controller.abort(), 15000);
-    try {
-        const response = await fetch(multiFXUpdateUrl(refresh), {
-            method,
-            cache: "no-store",
-            headers: method === "POST"
-                ? { "Content-Type": "application/json" }
-                : undefined,
-            body: method === "POST"
-                ? JSON.stringify({ action: "installLatest" })
-                : undefined,
-            signal: controller.signal
-        });
-        const payload = await response.json() as unknown;
-        if (!response.ok) {
-            const detail = payload && typeof payload === "object"
-                && typeof (payload as Record<string, unknown>).error === "string"
-                ? (payload as Record<string, string>).error
-                : `HTTP ${response.status}`;
-            throw new Error(detail);
-        }
-        return normalizeMultiFXUpdateStatus(payload);
-    } finally {
-        window.clearTimeout(timer);
-    }
-}
 
 interface MultiFXUpdatesViewProps {
     onClose?: () => void;
@@ -172,29 +98,6 @@ export default function MultiFXUpdatesView({ onClose }: MultiFXUpdatesViewProps)
             window.clearInterval(timer);
         };
     }, [multiFXInstalling]);
-
-    useEffect(() => {
-        if (multiFXStatus?.jobState !== "complete") return;
-        const completedVersion = multiFXStatus.installedVersion;
-        if (completedVersion
-            && window.sessionStorage.getItem(MULTIFX_COMPLETED_RELOAD_KEY)
-                === completedVersion) {
-            return;
-        }
-        const timer = window.setTimeout(
-            () => {
-                if (completedVersion) {
-                    window.sessionStorage.setItem(
-                        MULTIFX_COMPLETED_RELOAD_KEY,
-                        completedVersion
-                    );
-                }
-                window.location.reload();
-            },
-            2500
-        );
-        return () => window.clearTimeout(timer);
-    }, [multiFXStatus?.installedVersion, multiFXStatus?.jobState]);
 
     const release = status.getActiveRelease();
     const updateAvailable = status.isValid
@@ -352,6 +255,14 @@ export default function MultiFXUpdatesView({ onClose }: MultiFXUpdatesViewProps)
                             && multiFXStatus.message}
                     </div>
 
+                    {multiFXStatus?.progressMessages.length ? (
+                        <div style={progressStyle}>
+                            {multiFXStatus.progressMessages.map((line, index) => (
+                                <div key={`${index}-${line}`}>{line}</div>
+                            ))}
+                        </div>
+                    ) : null}
+
                     <div style={{ ...bodyStyle, marginTop: 16 }}>
                         PI-MULTIFX updates use the existing verified setup utility.
                         Release checks require a Raspberry Pi package and matching
@@ -495,6 +406,18 @@ const accentButtonStyle: React.CSSProperties = {
 };
 
 const messageStyle: React.CSSProperties = { marginTop: 14, color: MFX_SURFACES.panel.label };
+
+const progressStyle: React.CSSProperties = {
+    marginTop: 14,
+    padding: 12,
+    borderRadius: 8,
+    background: MFX_COLORS.panelAlt,
+    color: MFX_SURFACES.panel.label,
+    fontFamily: "monospace",
+    fontSize: "0.82rem",
+    lineHeight: 1.45,
+    overflowWrap: "anywhere"
+};
 
 const commandStyle: React.CSSProperties = {
     margin: "14px 0 0",

@@ -1,9 +1,9 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
-import PresetSelector from "./PresetSelector";
-import MainPage from "./MainPage";
-import { GetControlView } from "./ControlViewFactory";
-import { Pedalboard, PedalboardItem } from "./Pedalboard";
-import { PiPedalModelFactory } from "./PiPedalModel";
+import PresetSelector from "../pipedal/PresetSelector";
+import MainPage from "../pipedal/MainPage";
+import { GetControlView } from "../pipedal/ControlViewFactory";
+import { Pedalboard, PedalboardItem } from "../pipedal/Pedalboard";
+import { PiPedalModelFactory } from "../pipedal/PiPedalModel";
 import MultiFXPluginBrowser from "./MultiFXPluginBrowser";
 import MultiFXParameterBindingView from "./MultiFXParameterBindingView";
 import {

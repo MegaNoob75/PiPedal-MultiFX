@@ -15,11 +15,11 @@ import {
 import { validateMultiFXPresetAssignments } from "./MultiFXPresetAssignments";
 import { validateControllerLayoutConfig } from "./ControllerConfig";
 import { validateMultiFXUIBehaviorSettings } from "./MultiFXUIBehavior";
-import { MULTIFX_KEYBOARD_SETTINGS_STORAGE_KEY } from "./multifx-keyboard/MultiFXKeyboardMode";
+import { MULTIFX_KEYBOARD_SETTINGS_STORAGE_KEY } from "./keyboard/MultiFXKeyboardMode";
 import {
     CUSTOM_KEYBOARD_THEMES_STORAGE_KEY,
     validateMultiFXKeyboardTheme
-} from "./multifx-keyboard/MultiFXKeyboardTheme";
+} from "./keyboard/MultiFXKeyboardTheme";
 
 export const MULTIFX_BACKUP_FORMAT = "pipedal-multifx-ui-backup";
 export const MULTIFX_BACKUP_VERSION = 9;

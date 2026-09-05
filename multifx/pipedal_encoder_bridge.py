@@ -94,7 +94,8 @@ MULTIFX_RELEASE_PATTERN = re.compile(
 )
 MULTIFX_RELEASE_CACHE_SECONDS = 300
 STATE_SCHEMA_VERSION = 3
-RUNTIME_VERSION = 9
+RUNTIME_VERSION = 10
+PERFORMANCE_OPERATION_LEASE_SECONDS = 20
 MAX_PRESET_SNAPSHOT_STATES = 512
 MAX_SNAPSHOT_INDEX = 5
 
@@ -196,6 +197,17 @@ state = {
     "snapshotPresetId": None,
     "snapshotSessionInitialized": False,
     "presetSnapshotStates": {},
+    "performanceOperation": {
+        "active": False,
+        "ownerId": "",
+        "operationId": 0,
+        "startedAt": 0,
+    },
+    "cleanBaseGeneration": 0,
+    "cleanBaseBankId": None,
+    "cleanBasePresetId": None,
+    "cleanBaseOwnerId": "",
+    "cleanBaseOperationId": 0,
     "chainBypassed": False,
     "chainBypassBankId": None,
     "chainBypassPresetId": None,
@@ -851,8 +863,25 @@ def load_persistent_state():
                 _save_persistent_locked()
 
 
+def _expire_performance_operation_locked():
+    operation = state["performanceOperation"]
+    if (
+        operation.get("active")
+        and time.time() - int(operation.get("startedAt") or 0)
+            >= PERFORMANCE_OPERATION_LEASE_SECONDS
+    ):
+        state["performanceOperation"] = {
+            "active": False,
+            "ownerId": "",
+            "operationId": 0,
+            "startedAt": 0,
+        }
+        state["revision"] += 1
+
+
 def get_state():
     with state_lock:
+        _expire_performance_operation_locked()
         return _deepcopy(state)
 
 
@@ -943,6 +972,87 @@ def update_state(patch):
                 raise ValueError("resetPresetSnapshotStates must be boolean")
             if value:
                 state["presetSnapshotStates"] = {}
+        if "performanceOperationStart" in patch:
+            op = patch["performanceOperationStart"]
+            if not isinstance(op, dict) or set(op) != {"ownerId", "operationId"}:
+                raise ValueError("performanceOperationStart must use the complete schema")
+            owner_id = op.get("ownerId")
+            operation_id = op.get("operationId")
+            if (
+                not isinstance(owner_id, str)
+                or not owner_id
+                or len(owner_id) > 80
+                or not _valid_nonnegative_int(operation_id)
+            ):
+                raise ValueError("performanceOperationStart is invalid")
+            _expire_performance_operation_locked()
+            active = state["performanceOperation"]
+            active_is_fresh = (
+                active.get("active")
+                and time.time() - int(active.get("startedAt") or 0)
+                    < PERFORMANCE_OPERATION_LEASE_SECONDS
+            )
+            if active_is_fresh and active.get("ownerId") != owner_id:
+                raise ValueError(
+                    "Another PI-MULTIFX screen is finishing a performance action. Try again."
+                )
+            if (
+                active_is_fresh
+                and active.get("ownerId") == owner_id
+                and int(active.get("operationId") or 0) > operation_id
+            ):
+                raise ValueError(
+                    "A newer PI-MULTIFX performance action replaced this one."
+                )
+            state["performanceOperation"] = {
+                "active": True,
+                "ownerId": owner_id,
+                "operationId": operation_id,
+                "startedAt": int(time.time()),
+            }
+        if "performanceOperationFinish" in patch:
+            op = patch["performanceOperationFinish"]
+            if not isinstance(op, dict) or set(op) != {"ownerId", "operationId"}:
+                raise ValueError("performanceOperationFinish must use the complete schema")
+            active = state["performanceOperation"]
+            if (
+                active.get("ownerId") == op.get("ownerId")
+                and active.get("operationId") == op.get("operationId")
+            ):
+                state["performanceOperation"] = {
+                    "active": False,
+                    "ownerId": "",
+                    "operationId": 0,
+                    "startedAt": 0,
+                }
+        if "performanceOperationTouch" in patch:
+            op = patch["performanceOperationTouch"]
+            if not isinstance(op, dict) or set(op) != {"ownerId", "operationId"}:
+                raise ValueError("performanceOperationTouch must use the complete schema")
+            active = state["performanceOperation"]
+            if (
+                not active.get("active")
+                or active.get("ownerId") != op.get("ownerId")
+                or active.get("operationId") != op.get("operationId")
+            ):
+                raise ValueError("The PI-MULTIFX performance operation expired.")
+            active["startedAt"] = int(time.time())
+        if "cleanBaseReady" in patch:
+            op = patch["cleanBaseReady"]
+            if not isinstance(op, dict) or set(op) != {"bankId", "presetId"}:
+                raise ValueError("cleanBaseReady must use the complete schema")
+            bank_id = op.get("bankId")
+            preset_id = op.get("presetId")
+            if not _valid_nonnegative_int(bank_id) or not _valid_nonnegative_int(preset_id):
+                raise ValueError("cleanBaseReady is invalid")
+            active = state["performanceOperation"]
+            if not active.get("active"):
+                raise ValueError("cleanBaseReady requires an active performance operation")
+            state["cleanBaseGeneration"] += 1
+            state["cleanBaseBankId"] = bank_id
+            state["cleanBasePresetId"] = preset_id
+            state["cleanBaseOwnerId"] = active["ownerId"]
+            state["cleanBaseOperationId"] = active["operationId"]
         if "chainBypassed" in patch:
             state["chainBypassed"] = bool(patch["chainBypassed"])
         if "chainBypassBankId" in patch:
@@ -1948,6 +2058,42 @@ def _multifx_update_unit_state():
         return "unknown"
 
 
+def _multifx_update_progress_messages(started_at=0):
+    """Return recent, user-readable output from the restricted update unit."""
+    try:
+        command = [
+            "journalctl",
+            "--unit", MULTIFX_UPDATE_UNIT,
+            "--no-pager",
+            "--output=cat",
+            "--lines=60",
+        ]
+        if started_at:
+            command.extend(["--since", f"@{started_at}"])
+        result = subprocess.run(
+            command,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            text=True,
+            timeout=3,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return []
+
+    messages = []
+    for raw_line in result.stdout.splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("Running as unit:"):
+            continue
+        # Keep the response bounded even if a package manager emits a very
+        # long line. Consecutive duplicates add no useful UI feedback.
+        line = line[:240]
+        if not messages or messages[-1] != line:
+            messages.append(line)
+    return messages[-8:]
+
+
 def get_multifx_update_status(force_check=False):
     installed = _read_text_file(MULTIFX_INSTALLED_RELEASE_FILE)
     release, release_error = _fetch_latest_multifx_release(force_check)
@@ -1962,18 +2108,31 @@ def get_multifx_update_status(force_check=False):
     job = _read_multifx_update_job()
     job_state = "idle"
     message = ""
+    target = ""
+    started_at = 0
+    unit_state = ""
+    progress_messages = []
+    completed_at = 0
 
     if job:
         target = job["targetVersion"]
+        raw_started_at = job.get("startedAt")
+        started_at = raw_started_at if isinstance(raw_started_at, int) else 0
         if installed == target:
-            job_state = "complete"
-            message = f"PI-MULTIFX {target} was installed successfully."
+            try:
+                completed_at = int(os.path.getmtime(MULTIFX_INSTALLED_RELEASE_FILE))
+            except OSError:
+                completed_at = int(time.time())
+            completion_is_recent = time.time() - completed_at < 600
+            if completion_is_recent:
+                job_state = "complete"
+                message = f"PI-MULTIFX {target} was installed successfully."
+                if time.time() - completed_at < 60:
+                    progress_messages = _multifx_update_progress_messages(started_at)
         else:
             unit_state = _multifx_update_unit_state()
-            started_at = job.get("startedAt")
             recently_started = (
-                isinstance(started_at, int)
-                and time.time() - started_at < 15
+                started_at > 0 and time.time() - started_at < 15
             )
             if (
                 unit_state in {"active", "activating", "reloading"}
@@ -1987,6 +2146,7 @@ def get_multifx_update_status(force_check=False):
                     f"PI-MULTIFX {target} was not installed. "
                     "Check the pipedal-multifx-ui-update journal for details."
                 )
+            progress_messages = _multifx_update_progress_messages(started_at)
 
     if not installed:
         message = message or (
@@ -2001,6 +2161,11 @@ def get_multifx_update_status(force_check=False):
         "releaseUrl": release["url"] if release else "",
         "updateAvailable": update_available,
         "jobState": job_state,
+        "targetVersion": target,
+        "startedAt": started_at,
+        "completedAt": completed_at,
+        "unitState": unit_state,
+        "progressMessages": progress_messages,
         "message": message,
         "error": release_error,
     }
@@ -2019,6 +2184,7 @@ def start_multifx_update():
             )
 
         target = current["latestVersion"]
+        started_at = int(time.time())
         try:
             subprocess.run(
                 ["systemctl", "reset-failed", MULTIFX_UPDATE_UNIT],
@@ -2030,7 +2196,7 @@ def start_multifx_update():
             _write_multifx_update_job({
                 "targetVersion": target,
                 "unit": MULTIFX_UPDATE_UNIT,
-                "startedAt": int(time.time()),
+                "startedAt": started_at,
             })
             result = subprocess.run(
                 [
@@ -2039,6 +2205,7 @@ def start_multifx_update():
                     "--collect",
                     "--no-block",
                     "--property=Type=exec",
+                    "--property=RuntimeMaxSec=1800",
                     MULTIFX_SETUP_COMMAND,
                     "multifx",
                     "--tag", target,
@@ -2060,6 +2227,13 @@ def start_multifx_update():
             )
 
         current["jobState"] = "installing"
+        current["targetVersion"] = target
+        current["startedAt"] = started_at
+        current["completedAt"] = 0
+        current["unitState"] = "activating"
+        current["progressMessages"] = [
+            f"Starting the PI-MULTIFX {target} installer..."
+        ]
         current["message"] = f"Installing PI-MULTIFX {target}..."
         return current
 

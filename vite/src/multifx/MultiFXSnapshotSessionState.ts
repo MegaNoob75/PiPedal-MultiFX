@@ -104,3 +104,20 @@ export function performancePresetLightState(options: {
     if (options.presetModified) return "modified";
     return "active";
 }
+
+export function shouldShowPresetModified(options: {
+    semanticModified: boolean;
+    localTransitionActive: boolean;
+    sharedOperationActive: boolean;
+    cleanBaseCapturePending: boolean;
+    nativeSelectedSnapshot: number;
+    chainBypassed: boolean;
+    bypassStartedModified: boolean;
+}): boolean {
+    return options.semanticModified
+        && !options.localTransitionActive
+        && !options.sharedOperationActive
+        && !options.cleanBaseCapturePending
+        && options.nativeSelectedSnapshot < 0
+        && (!options.chainBypassed || options.bypassStartedModified);
+}

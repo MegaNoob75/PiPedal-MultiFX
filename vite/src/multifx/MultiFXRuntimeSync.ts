@@ -28,12 +28,12 @@ import {
     MULTIFX_KEYBOARD_SETTINGS_STORAGE_KEY,
     MultiFXKeyboardSettings,
     validateMultiFXKeyboardSettings
-} from "./multifx-keyboard/MultiFXKeyboardMode";
+} from "./keyboard/MultiFXKeyboardMode";
 import {
     MultiFXKeyboardThemeDefinition,
     saveCustomMultiFXKeyboardTheme,
     validateMultiFXKeyboardTheme
-} from "./multifx-keyboard/MultiFXKeyboardTheme";
+} from "./keyboard/MultiFXKeyboardTheme";
 
 export type MultiFXControllerInputCapability = "digital" | "analog";
 export type MultiFXControllerLearnCapability =
@@ -116,6 +116,17 @@ export type MultiFXRuntimeState = {
     snapshotPresetId: number | null;
     snapshotSessionInitialized: boolean;
     presetSnapshotStates: Record<string, MultiFXPresetSnapshotState>;
+    performanceOperation: {
+        active: boolean;
+        ownerId: string;
+        operationId: number;
+        startedAt: number;
+    };
+    cleanBaseGeneration: number;
+    cleanBaseBankId: number | null;
+    cleanBasePresetId: number | null;
+    cleanBaseOwnerId: string;
+    cleanBaseOperationId: number;
     chainBypassed: boolean;
     chainBypassBankId: number | null;
     chainBypassPresetId: number | null;
@@ -172,6 +183,22 @@ export type MultiFXRuntimeStatePatch = Partial<Pick<
 >> & {
     presetSnapshotStateUpdate?: MultiFXPresetSnapshotStateUpdate;
     resetPresetSnapshotStates?: boolean;
+    performanceOperationStart?: {
+        ownerId: string;
+        operationId: number;
+    };
+    performanceOperationFinish?: {
+        ownerId: string;
+        operationId: number;
+    };
+    performanceOperationTouch?: {
+        ownerId: string;
+        operationId: number;
+    };
+    cleanBaseReady?: {
+        bankId: number;
+        presetId: number;
+    };
     presetAssignmentUpdate?: MultiFXPresetAssignmentUpdate;
     presetAssignmentSwap?: { bankId: number; leftSwitchId: string; rightSwitchId: string };
     replacePresetAssignments?: unknown;
@@ -491,6 +518,35 @@ function normalizeRuntimeState(value: unknown): MultiFXRuntimeState {
                 ? source.snapshotSessionInitialized
                 : false,
         presetSnapshotStates,
+        performanceOperation: (() => {
+            const operation = source.performanceOperation
+                && typeof source.performanceOperation === "object"
+                ? source.performanceOperation as Record<string, unknown>
+                : {};
+            return {
+                active: Boolean(operation.active),
+                ownerId: typeof operation.ownerId === "string"
+                    ? operation.ownerId
+                    : "",
+                operationId: typeof operation.operationId === "number"
+                    ? operation.operationId
+                    : 0,
+                startedAt: typeof operation.startedAt === "number"
+                    ? operation.startedAt
+                    : 0
+            };
+        })(),
+        cleanBaseGeneration: typeof source.cleanBaseGeneration === "number"
+            ? source.cleanBaseGeneration
+            : 0,
+        cleanBaseBankId: nonnegativeIntegerOrNull(source.cleanBaseBankId),
+        cleanBasePresetId: nonnegativeIntegerOrNull(source.cleanBasePresetId),
+        cleanBaseOwnerId: typeof source.cleanBaseOwnerId === "string"
+            ? source.cleanBaseOwnerId
+            : "",
+        cleanBaseOperationId: typeof source.cleanBaseOperationId === "number"
+            ? source.cleanBaseOperationId
+            : 0,
         chainBypassed: Boolean(source.chainBypassed),
         chainBypassBankId: nonnegativeIntegerOrNull(
             source.chainBypassBankId
@@ -545,13 +601,16 @@ async function fetchRuntimeState(
         signal
     });
 
+    const payload = await response.json() as unknown;
     if (!response.ok) {
-        throw new Error(
-            `MultiFX runtime ${method} failed: HTTP ${response.status}`
-        );
+        const detail = payload && typeof payload === "object"
+            && typeof (payload as Record<string, unknown>).error === "string"
+            ? (payload as Record<string, string>).error
+            : `HTTP ${response.status}`;
+        throw new Error(`MultiFX runtime ${method} failed: ${detail}`);
     }
 
-    return normalizeRuntimeState(await response.json());
+    return normalizeRuntimeState(payload);
 }
 
 let latestState: MultiFXRuntimeState | null = null;

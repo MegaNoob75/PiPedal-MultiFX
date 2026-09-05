@@ -7,12 +7,12 @@
  */
 
 import React, { useEffect, useRef, useState } from "react";
-import { BankIndex } from "./Banks";
+import { BankIndex } from "../pipedal/Banks";
 import {
     PiPedalModelFactory,
     PresetIndex,
     PresetIndexEntry
-} from "./PiPedalModel";
+} from "../pipedal/PiPedalModel";
 import {
     clearPresetAssignmentsForPreset,
     deletePresetAssignmentsForBank
@@ -44,11 +44,17 @@ type ActiveDrag = DragCandidate & { x: number; y: number };
 
 export interface BankPresetManagerProps {
     bankTools?: React.ReactNode;
+    onOpenBank?: (bankId: number) => Promise<void>;
+    onLoadPreset?: (presetId: number) => Promise<void>;
 }
 
 const DRAG_HOLD_MS = 450;
 
-export default function BankPresetManager({ bankTools }: BankPresetManagerProps) {
+export default function BankPresetManager({
+    bankTools,
+    onOpenBank,
+    onLoadPreset
+}: BankPresetManagerProps) {
     const model = PiPedalModelFactory.getInstance();
     const [banks, setBanks] = useState<BankIndex>(() => model.banks.get().clone());
     const [presets, setPresets] = useState<PresetIndex>(() => model.presets.get().clone());
@@ -112,7 +118,17 @@ export default function BankPresetManager({ bankTools }: BankPresetManagerProps)
     const selectBank = async (bankId: number) => {
         if (busyRef.current || bankId === model.banks.get().selectedBank) return;
         await runMutation(async () => {
-            await model.openBank(bankId);
+            if (onOpenBank) await onOpenBank(bankId);
+            else await model.openBank(bankId);
+            refresh();
+        });
+    };
+
+    const loadPreset = async (presetId: number) => {
+        if (busyRef.current || presetId < 0) return;
+        await runMutation(async () => {
+            if (onLoadPreset) await onLoadPreset(presetId);
+            else model.loadPreset(presetId);
             refresh();
         });
     };
@@ -168,7 +184,8 @@ export default function BankPresetManager({ bankTools }: BankPresetManagerProps)
                     throw new Error("A bank with that name already exists.");
                 }
                 const newBankId = await model.saveBankAs(selectedBankId, name);
-                await model.openBank(newBankId);
+                if (onOpenBank) await onOpenBank(newBankId);
+                else await model.openBank(newBankId);
                 const copied = model.presets.get().presets.map((p) => p.instanceId);
                 if (copied.length) await model.deletePresetItems(new Set(copied));
             }
@@ -183,7 +200,10 @@ export default function BankPresetManager({ bankTools }: BankPresetManagerProps)
         await runMutation(async () => {
             const next = await model.deleteBankItem(deletedBankId);
             await deletePresetAssignmentsForBank(deletedBankId);
-            if (next !== -1) await model.openBank(next);
+            if (next !== -1) {
+                if (onOpenBank) await onOpenBank(next);
+                else await model.openBank(next);
+            }
         });
     };
 
@@ -274,7 +294,7 @@ export default function BankPresetManager({ bankTools }: BankPresetManagerProps)
             const direction = event.key === "ArrowDown" ? 1 : -1;
             if (event.key === "Enter") {
                 if (focusedPane === "banks") void selectBank(bankCursorId);
-                else if (selectedPresetId >= 0) model.loadPreset(selectedPresetId);
+                else if (selectedPresetId >= 0) void loadPreset(selectedPresetId);
                 return;
             }
             if (focusedPane === "banks" && banks.entries.length) {
@@ -331,7 +351,7 @@ export default function BankPresetManager({ bankTools }: BankPresetManagerProps)
                             <div key={preset.instanceId} data-mfx-preset-index={index}
                                 style={presetRowStyle(preset.instanceId === selectedPresetId)}
                                 onClick={() => setSelectedPresetId(preset.instanceId)}
-                                onDoubleClick={() => model.loadPreset(preset.instanceId)}>
+                                onDoubleClick={() => void loadPreset(preset.instanceId)}>
                                 <span style={{ flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis" }}>{preset.name}</span>
                                 <button type="button" aria-label={`Move ${preset.name}`} title="Hold and drag to reorder or move to another bank"
                                     onPointerDown={(event) => beginDrag(event, preset, index)}

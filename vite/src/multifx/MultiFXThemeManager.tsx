@@ -36,7 +36,7 @@ import {
     MultiFXKeyboardThemeDefinition,
     saveCustomMultiFXKeyboardTheme,
     validateMultiFXKeyboardTheme
-} from "./multifx-keyboard/MultiFXKeyboardTheme";
+} from "./keyboard/MultiFXKeyboardTheme";
 
 type ThemeBrowseMode = "STYLE" | "COLOR";
 

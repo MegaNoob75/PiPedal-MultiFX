@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useState } from "react";
-import { PiPedalModelFactory } from "./PiPedalModel";
-import { UiPlugin } from "./Lv2Plugin";
+import { PiPedalModelFactory } from "../pipedal/PiPedalModel";
+import { UiPlugin } from "../pipedal/Lv2Plugin";
 import { MFX_COLORS, MFX_SURFACES } from "./MultiFXTheme";
 
 interface MultiFXPluginBrowserProps {

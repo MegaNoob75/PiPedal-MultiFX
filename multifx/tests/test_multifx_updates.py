@@ -84,6 +84,9 @@ class MultiFXUpdateTests(unittest.TestCase):
         status = bridge.start_multifx_update()
 
         self.assertEqual(status["jobState"], "installing")
+        self.assertEqual(status["targetVersion"], "multifx-v0.4.3")
+        self.assertGreater(status["startedAt"], 0)
+        self.assertTrue(status["progressMessages"])
         write_job.assert_called_once()
         command = run.call_args_list[-1].args[0]
         self.assertEqual(command, [
@@ -92,6 +95,7 @@ class MultiFXUpdateTests(unittest.TestCase):
             "--collect",
             "--no-block",
             "--property=Type=exec",
+            "--property=RuntimeMaxSec=1800",
             bridge.MULTIFX_SETUP_COMMAND,
             "multifx",
             "--tag", "multifx-v0.4.3",
@@ -127,6 +131,38 @@ class MultiFXUpdateTests(unittest.TestCase):
 
         self.assertEqual(status["jobState"], "complete")
         unlink.assert_not_called()
+
+    @mock.patch.object(bridge.os.path, "getmtime", return_value=1000)
+    @mock.patch.object(bridge.time, "time", return_value=2000)
+    @mock.patch.object(bridge, "_read_multifx_update_job")
+    @mock.patch.object(bridge, "_fetch_latest_multifx_release")
+    @mock.patch.object(bridge, "_read_text_file", return_value="multifx-v0.4.3")
+    def test_old_completed_update_returns_to_idle_without_reading_journal(
+        self,
+        _read_text,
+        fetch_release,
+        read_job,
+        _time,
+        _mtime,
+    ):
+        fetch_release.return_value = ({
+            "tag": "multifx-v0.4.3",
+            "name": "PI-MULTIFX 0.4.3",
+            "publishedAt": "2026-08-29T00:00:00Z",
+            "url": "https://example.invalid/release",
+        }, "")
+        read_job.return_value = {
+            "targetVersion": "multifx-v0.4.3",
+            "unit": bridge.MULTIFX_UPDATE_UNIT,
+            "startedAt": 900,
+        }
+        with mock.patch.object(
+            bridge,
+            "_multifx_update_progress_messages",
+        ) as progress:
+            status = bridge.get_multifx_update_status()
+        self.assertEqual(status["jobState"], "idle")
+        progress.assert_not_called()
 
 
 if __name__ == "__main__":

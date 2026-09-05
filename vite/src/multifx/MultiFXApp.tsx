@@ -19,15 +19,23 @@ import MultiFXSettingsHub from "./MultiFXSettingsHub";
 import MultiFXControllerSettings from "./MultiFXControllerSettings";
 import MultiFXThemeManager from "./MultiFXThemeManager";
 import MultiFXUISettings from "./MultiFXUISettings";
-import MultiFXKeyboardSettingsView from "./multifx-keyboard/MultiFXKeyboardSettingsView";
+import MultiFXKeyboardSettingsView from "./keyboard/MultiFXKeyboardSettingsView";
 import MultiFXSnapshotManager from "./MultiFXSnapshotManager";
 import MultiFXSnapshotEditView from "./MultiFXSnapshotEditView";
-import FxAmplifierIcon from "./svg/fx_amplifier.svg?react";
-import { PiPedalModelFactory } from "./PiPedalModel";
+import MultiFXUpdateMonitor from "./MultiFXUpdateMonitor";
+import FxAmplifierIcon from "../pipedal/svg/fx_amplifier.svg?react";
+import { PiPedalModelFactory } from "../pipedal/PiPedalModel";
 import { setPresetAssignment } from "./MultiFXPresetAssignments";
 import { installMultiFXResponsiveSizing } from "./MultiFXResponsive";
 import { updateMultiFXRuntimeState } from "./MultiFXRuntimeSync";
 import { prepareBasePresetForWrite } from "./MultiFXPresetSafety";
+import {
+    applyMultiFXPresetSnapshotState,
+    beginMultiFXPerformanceTransition,
+    finishMultiFXPerformanceTransition,
+    getLatestMultiFXPresetSnapshotState,
+    saveCurrentPresetAndWait
+} from "./MultiFXPerformanceSession";
 import {
     applyMultiFXTheme,
     clearAppliedMultiFXTheme,
@@ -139,9 +147,11 @@ export default function MultiFXApp({ onExitToOriginal }: MultiFXAppProps) {
             draft?.presetId
             ?? requestedPresetId
             ?? model.presets.get().selectedInstanceId;
+        const transition = beginMultiFXPerformanceTransition();
 
         try {
             if (targetPresetId < 0) throw new Error("No preset is available to edit.");
+            await transition.sharedReady;
             await prepareBasePresetForWrite(model, targetPresetId);
             setPerformanceSnapshotMode(false);
             setNewPresetDraft(draft ?? null);
@@ -149,6 +159,7 @@ export default function MultiFXApp({ onExitToOriginal }: MultiFXAppProps) {
         } catch (error) {
             model.showAlert(String(error));
         } finally {
+            finishMultiFXPerformanceTransition(transition);
             openingBaseEditorRef.current = false;
         }
     };
@@ -166,17 +177,28 @@ export default function MultiFXApp({ onExitToOriginal }: MultiFXAppProps) {
             return;
         }
         const model = PiPedalModelFactory.getInstance();
+        const transition = beginMultiFXPerformanceTransition();
         try {
+            await transition.sharedReady;
             await model.deletePresetItems(new Set<number>([draft.presetId]));
             if (
                 draft.previousPresetId >= 0
                 && model.presets.get().getItem(draft.previousPresetId)
             ) {
-                model.loadPreset(draft.previousPresetId);
+                await applyMultiFXPresetSnapshotState(
+                    model,
+                    draft.previousPresetId,
+                    getLatestMultiFXPresetSnapshotState(
+                        draft.bankId,
+                        draft.previousPresetId
+                    ),
+                    transition
+                );
             }
         } catch (error) {
             model.showAlert(String(error));
         } finally {
+            finishMultiFXPerformanceTransition(transition);
             setNewPresetDraft(null);
             finishBackNavigation();
         }
@@ -201,15 +223,17 @@ export default function MultiFXApp({ onExitToOriginal }: MultiFXAppProps) {
         }
 
         setSavingNewPresetDraft(true);
+        const transition = beginMultiFXPerformanceTransition();
         try {
             // Re-run the shared safety gate in case temporary Performance state
             // changed while the editor was open.
+            await transition.sharedReady;
             await prepareBasePresetForWrite(model, draft.presetId);
             const currentPreset = model.presets.get().getItem(draft.presetId);
             if (currentPreset && currentPreset.name !== name) {
                 await model.renamePresetItem(draft.presetId, name);
             }
-            model.saveCurrentPreset();
+            await saveCurrentPresetAndWait(model, transition);
 
             // Assign the new native preset to exactly one logical switch. No
             // page/slot-array reshaping is involved.
@@ -228,6 +252,7 @@ export default function MultiFXApp({ onExitToOriginal }: MultiFXAppProps) {
         } catch (error) {
             model.showAlert(String(error));
         } finally {
+            finishMultiFXPerformanceTransition(transition);
             setSavingNewPresetDraft(false);
         }
     };
@@ -261,12 +286,16 @@ export default function MultiFXApp({ onExitToOriginal }: MultiFXAppProps) {
         setMenuOpen(false);
         const model = PiPedalModelFactory.getInstance();
         const presetId = model.presets.get().selectedInstanceId;
+        const transition = beginMultiFXPerformanceTransition();
         try {
+            await transition.sharedReady;
             if (presetId >= 0) await prepareBasePresetForWrite(model, presetId);
             setPerformanceSnapshotMode(false);
             onExitToOriginal();
         } catch (error) {
             model.showAlert(String(error));
+        } finally {
+            finishMultiFXPerformanceTransition(transition);
         }
     };
 
@@ -423,6 +452,7 @@ export default function MultiFXApp({ onExitToOriginal }: MultiFXAppProps) {
                     onAbout={() => goTo("about")}
                 />
             )}
+            <MultiFXUpdateMonitor />
         </div>
     );
 }

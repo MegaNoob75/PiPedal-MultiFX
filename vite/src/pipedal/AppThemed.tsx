@@ -19,7 +19,7 @@
 
 
 import './AppThemed.css';
-import MultiFXKeyboardProvider from './multifx-keyboard/MultiFXKeyboardProvider';
+import MultiFXKeyboardProvider from '../multifx/keyboard/MultiFXKeyboardProvider';
 
 //import {alpha} from '@mui/material/styles';
 import AppBar from '@mui/material/AppBar';
@@ -74,7 +74,7 @@ import EditBanksIcon from './svg/ic_edit_banks.svg?react';
 import SettingsIcon from './svg/ic_settings.svg?react';
 import HelpOutlineIcon from './svg/ic_help_outline.svg?react';
 import FxAmplifierIcon from './svg/fx_amplifier.svg?react';
-import MultiFXApp from './MultiFXApp';
+import MultiFXApp from '../multifx/MultiFXApp';
 
 import DialogEx from './DialogEx';
 

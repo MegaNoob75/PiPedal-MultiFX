@@ -22,7 +22,7 @@
  */
 
 import { useState } from "react";
-import { PiPedalModelFactory } from "./PiPedalModel";
+import { PiPedalModelFactory } from "../pipedal/PiPedalModel";
 import {
     MFX_COLORS,
     MFX_HEADER_HEIGHT,

@@ -6,9 +6,10 @@ import {
     performancePresetLightState,
     performancePresetPress,
     presetSnapshotSessionKey,
+    shouldShowPresetModified,
     snapshotSessionNeedsBaseReload,
     snapshotViewPress
-} from "../src/pipedal/MultiFXSnapshotSessionState.ts";
+} from "../src/multifx/MultiFXSnapshotSessionState.ts";
 
 test("a preset with no selected snapshot does not toggle", () => {
     assert.equal(performancePresetPress(null), null);
@@ -110,4 +111,39 @@ test("preset indicator priority is bypass, snapshot, modified, active", () => {
         snapshotConfirmed: false,
         presetModified: false
     }), "active");
+});
+
+test("modified light waits for shared operations and clean-base capture", () => {
+    const clean = {
+        semanticModified: true,
+        localTransitionActive: false,
+        sharedOperationActive: false,
+        cleanBaseCapturePending: false,
+        nativeSelectedSnapshot: -1,
+        chainBypassed: false,
+        bypassStartedModified: false
+    };
+    assert.equal(shouldShowPresetModified(clean), true);
+    assert.equal(shouldShowPresetModified({
+        ...clean,
+        sharedOperationActive: true
+    }), false);
+    assert.equal(shouldShowPresetModified({
+        ...clean,
+        cleanBaseCapturePending: true
+    }), false);
+    assert.equal(shouldShowPresetModified({
+        ...clean,
+        nativeSelectedSnapshot: 2
+    }), false);
+    assert.equal(shouldShowPresetModified({
+        ...clean,
+        chainBypassed: true,
+        bypassStartedModified: false
+    }), false);
+    assert.equal(shouldShowPresetModified({
+        ...clean,
+        chainBypassed: true,
+        bypassStartedModified: true
+    }), true);
 });

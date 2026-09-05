@@ -11,12 +11,12 @@ import { createPortal } from "react-dom";
 import {
     ControllerLayoutConfig
 } from "./ControllerConfig";
-import MidiBinding from "./MidiBinding";
+import MidiBinding from "../pipedal/MidiBinding";
 import {
     ControlValueChangedHandle,
     PiPedalModelFactory
-} from "./PiPedalModel";
-import { Pedalboard } from "./Pedalboard";
+} from "../pipedal/PiPedalModel";
+import { Pedalboard } from "../pipedal/Pedalboard";
 import {
     describeMultiFXMidiBinding,
     findMultiFXMidiSource,

@@ -34,17 +34,28 @@
  */
 
 import { useEffect, useMemo, useRef, useState } from "react";
-import { GetControlView } from "./ControlViewFactory";
+import { GetControlView } from "../pipedal/ControlViewFactory";
 import {
     Pedalboard,
     PedalboardItem,
     Snapshot
-} from "./Pedalboard";
+} from "../pipedal/Pedalboard";
 import {
     PiPedalModelFactory,
     PresetIndex
-} from "./PiPedalModel";
+} from "../pipedal/PiPedalModel";
 import { MFX_COLORS, MFX_SURFACES } from "./MultiFXTheme";
+import {
+    beginMultiFXPerformanceTransition,
+    cancelMultiFXPerformanceTransition,
+    finishMultiFXPerformanceTransition,
+    initializeMultiFXSnapshotSession,
+    isMultiFXTransitionCancellation,
+    loadMultiFXBasePreset,
+    persistMultiFXSnapshots,
+    recallMultiFXSnapshot,
+    writeMultiFXPresetSnapshotState
+} from "./MultiFXPerformanceSession";
 import "./MultiFXEffectControls.css";
 
 const DEFAULT_SNAPSHOT_COLORS = [
@@ -78,6 +89,7 @@ type MultiFXSnapshotEditViewProps = {
  * the prior native selection on Cancel and to preserve existing metadata.
  */
 type SnapshotEditSession = {
+    bankId: number;
     presetId: number;
     originalSelectedSnapshot: number;
     originalSnapshot: Snapshot | null;
@@ -102,12 +114,6 @@ export default function MultiFXSnapshotEditView({
     const [phase, setPhase] = useState<SnapshotEditPhase>("preparing");
     const phaseRef = useRef<SnapshotEditPhase>("preparing");
     const sessionRef = useRef<SnapshotEditSession | null>(null);
-
-    // Snapshot data captured before the base reload must survive that reload.
-    // This ref is transient editor coordination only; PiPedal remains the owner
-    // of the actual snapshot array once setSnapshots() is called.
-    const pendingSaveSnapshotsRef =
-        useRef<Array<Snapshot | null> | null>(null);
 
     const completionTimerRef = useRef<number | null>(null);
 
@@ -151,17 +157,15 @@ export default function MultiFXSnapshotEditView({
         };
     }, []);
 
-    // Establish the editing session once.
-    //
-    // Existing snapshot: recall it natively so edits start from that sound.
-    // Empty slot: if another snapshot is currently selected, a real preset
-    // reload is required because selectSnapshot(-1) only clears selection and
-    // does not restore base control values.
+    // Establish the editing session through the same acknowledged transition
+    // path used by Performance and Snapshot Manager.
     useEffect(() => {
+        let cancelled = false;
         const currentPresets = model.presets.get();
         const currentPedalboard = model.pedalboard.get();
 
         sessionRef.current = {
+            bankId: model.banks.get().selectedBank,
             presetId: currentPresets.selectedInstanceId,
             originalSelectedSnapshot: model.selectedSnapshot.get(),
             originalSnapshot:
@@ -173,168 +177,77 @@ export default function MultiFXSnapshotEditView({
         };
 
         const session = sessionRef.current;
-
-        if (session.originalSnapshot) {
-            model.selectSnapshot(snapshotIndex);
-            return;
-        }
-
-        const alreadyCleanBase =
-            model.selectedSnapshot.get() < 0
-            && !model.presets.get().presetChanged;
-
-        if (alreadyCleanBase) {
-            phaseRef.current = "ready";
-            setPhase("ready");
-            return;
-        }
-
-        model.loadPreset(session.presetId);
+        const transition = beginMultiFXPerformanceTransition();
+        void (async () => {
+            try {
+                await initializeMultiFXSnapshotSession(model, transition);
+                if (session.originalSnapshot) {
+                    await recallMultiFXSnapshot(model, snapshotIndex, transition);
+                    await writeMultiFXPresetSnapshotState(
+                        session.bankId,
+                        session.presetId,
+                        { snapshotIndex, enabled: true },
+                        transition
+                    );
+                } else {
+                    await loadMultiFXBasePreset(model, session.presetId, transition);
+                }
+                if (!cancelled) {
+                    phaseRef.current = "ready";
+                    setPhase("ready");
+                }
+            } catch (error) {
+                if (!cancelled && !isMultiFXTransitionCancellation(error)) {
+                    model.showAlert(String(error));
+                    finishSoon();
+                }
+            } finally {
+                finishMultiFXPerformanceTransition(transition);
+            }
+        })();
+        return () => {
+            cancelled = true;
+            cancelMultiFXPerformanceTransition(transition);
+        };
     }, [model, snapshotIndex]);
 
-    // Native subscriptions drive the small sequencing state machine. We wait
-    // only for states PiPedal can authoritatively report; there are no polling
-    // loops and no duplicated active-snapshot state.
+    // Native subscriptions are rendering inputs. If another browser changes
+    // the preset, close this editor instead of ever saving into that new state.
     useEffect(() => {
         const handlePedalboardChanged = (value: Pedalboard) => {
             setPedalboard(value.clone());
-            advanceSnapshotEditState();
         };
 
         const handlePresetsChanged = () => {
-            setPresets(model.presets.get().clone());
-            advanceSnapshotEditState();
-        };
-
-        const handleSelectedSnapshotChanged = () => {
-            advanceSnapshotEditState();
-        };
-
-        const finish = () => {
-            phaseRef.current = "finishing";
-            setPhase("finishing");
-            finishSoon();
-        };
-
-        const cleanBaseIsLoaded = (
-            session: SnapshotEditSession
-        ): boolean => {
-            return (
-                model.presets.get().selectedInstanceId === session.presetId
-                && model.selectedSnapshot.get() < 0
-                && !model.presets.get().presetChanged
-            );
-        };
-
-        function advanceSnapshotEditState() {
             const session = sessionRef.current;
-            if (!session) {
-                return;
+            const next = model.presets.get().clone();
+            setPresets(next);
+            if (
+                session
+                && phaseRef.current === "ready"
+                && (
+                    next.selectedInstanceId !== session.presetId
+                    || model.banks.get().selectedBank !== session.bankId
+                )
+            ) {
+                phaseRef.current = "finishing";
+                setPhase("finishing");
+                model.showAlert(
+                    "Snapshot Editor closed because another screen changed the preset."
+                );
+                finishSoon();
             }
-
-            const currentPhase = phaseRef.current;
-
-            if (currentPhase === "preparing") {
-                if (session.originalSnapshot) {
-                    if (model.selectedSnapshot.get() === snapshotIndex) {
-                        phaseRef.current = "ready";
-                        setPhase("ready");
-                    }
-                } else if (cleanBaseIsLoaded(session)) {
-                    phaseRef.current = "ready";
-                    setPhase("ready");
-                }
-                return;
-            }
-
-            if (currentPhase === "save-loading-base") {
-                if (!cleanBaseIsLoaded(session)) {
-                    return;
-                }
-
-                const snapshots = pendingSaveSnapshotsRef.current;
-                if (!snapshots) {
-                    phaseRef.current = "ready";
-                    setPhase("ready");
-                    model.showAlert(
-                        "Snapshot save data was lost before persistence."
-                    );
-                    return;
-                }
-
-                phaseRef.current = "save-persisting";
-                setPhase("save-persisting");
-
-                // WebSocket messages are ordered. Install the captured snapshot
-                // array onto the freshly reloaded BASE pedalboard, then save
-                // that base+snapshot-data preset before recalling the snapshot.
-                //
-                // selectedSnapshot=-1 is deliberate: saveCurrentPreset() must
-                // execute while base controls—not snapshot controls—are live.
-                model.setSnapshots(snapshots, -1);
-                model.saveCurrentPreset();
-                model.selectSnapshot(snapshotIndex);
-
-                phaseRef.current = "save-recalling";
-                setPhase("save-recalling");
-                return;
-            }
-
-            if (currentPhase === "save-recalling") {
-                if (
-                    model.presets.get().selectedInstanceId === session.presetId
-                    && !model.presets.get().presetChanged
-                    && model.selectedSnapshot.get() === snapshotIndex
-                ) {
-                    pendingSaveSnapshotsRef.current = null;
-                    finish();
-                }
-                return;
-            }
-
-            if (currentPhase === "cancel-loading-base") {
-                if (!cleanBaseIsLoaded(session)) {
-                    return;
-                }
-
-                if (session.originalSelectedSnapshot >= 0) {
-                    phaseRef.current = "cancel-recalling";
-                    setPhase("cancel-recalling");
-                    model.selectSnapshot(
-                        session.originalSelectedSnapshot
-                    );
-                } else {
-                    finish();
-                }
-                return;
-            }
-
-            if (currentPhase === "cancel-recalling") {
-                if (
-                    model.selectedSnapshot.get()
-                    === session.originalSelectedSnapshot
-                ) {
-                    finish();
-                }
-            }
-        }
+        };
 
         model.pedalboard.addOnChangedHandler(handlePedalboardChanged);
         model.presets.addOnChangedHandler(handlePresetsChanged);
-        model.selectedSnapshot.addOnChangedHandler(
-            handleSelectedSnapshotChanged
-        );
 
         handlePedalboardChanged(model.pedalboard.get());
         handlePresetsChanged();
-        handleSelectedSnapshotChanged();
 
         return () => {
             model.pedalboard.removeOnChangedHandler(handlePedalboardChanged);
             model.presets.removeOnChangedHandler(handlePresetsChanged);
-            model.selectedSnapshot.removeOnChangedHandler(
-                handleSelectedSnapshotChanged
-            );
         };
     }, [model, snapshotIndex]);
 
@@ -347,6 +260,16 @@ export default function MultiFXSnapshotEditView({
 
         const session = sessionRef.current;
         if (!session) {
+            return;
+        }
+        if (
+            model.presets.get().selectedInstanceId !== session.presetId
+            || model.banks.get().selectedBank !== session.bankId
+        ) {
+            model.showAlert(
+                "Snapshot save cancelled because another screen changed the preset."
+            );
+            finishSoon();
             return;
         }
 
@@ -372,16 +295,29 @@ export default function MultiFXSnapshotEditView({
                 livePedalboard.snapshots
             );
             snapshots[snapshotIndex] = captured;
-            pendingSaveSnapshotsRef.current = snapshots;
-
             phaseRef.current = "save-loading-base";
             setPhase("save-loading-base");
 
-            // A real same-preset reload is required to restore the saved base
-            // controls before saveCurrentPreset() is ever allowed to run.
-            model.loadPreset(session.presetId);
+            const transition = beginMultiFXPerformanceTransition();
+            void persistMultiFXSnapshots(
+                model,
+                session.bankId,
+                session.presetId,
+                snapshots,
+                { snapshotIndex, enabled: true },
+                transition
+            ).then(() => {
+                phaseRef.current = "finishing";
+                setPhase("finishing");
+                finishSoon();
+            }).catch((error) => {
+                if (!isMultiFXTransitionCancellation(error)) {
+                    model.showAlert(String(error));
+                }
+                phaseRef.current = "ready";
+                setPhase("ready");
+            }).finally(() => finishMultiFXPerformanceTransition(transition));
         } catch (error) {
-            pendingSaveSnapshotsRef.current = null;
             phaseRef.current = "ready";
             setPhase("ready");
             model.showAlert(String(error));
@@ -404,11 +340,47 @@ export default function MultiFXSnapshotEditView({
             finishSoon();
             return;
         }
+        if (
+            model.presets.get().selectedInstanceId !== session.presetId
+            || model.banks.get().selectedBank !== session.bankId
+        ) {
+            finishSoon();
+            return;
+        }
 
-        pendingSaveSnapshotsRef.current = null;
         phaseRef.current = "cancel-loading-base";
         setPhase("cancel-loading-base");
-        model.loadPreset(session.presetId);
+        const transition = beginMultiFXPerformanceTransition();
+        void (async () => {
+            try {
+                await loadMultiFXBasePreset(model, session.presetId, transition);
+                const originalIndex = session.originalSelectedSnapshot;
+                const originalStillExists = originalIndex >= 0
+                    && Boolean(model.pedalboard.get().snapshots[originalIndex]);
+                if (originalStillExists) {
+                    await recallMultiFXSnapshot(model, originalIndex, transition);
+                }
+                await writeMultiFXPresetSnapshotState(
+                    session.bankId,
+                    session.presetId,
+                    originalStillExists
+                        ? { snapshotIndex: originalIndex, enabled: true }
+                        : null,
+                    transition
+                );
+                phaseRef.current = "finishing";
+                setPhase("finishing");
+                finishSoon();
+            } catch (error) {
+                if (!isMultiFXTransitionCancellation(error)) {
+                    model.showAlert(String(error));
+                }
+                phaseRef.current = "ready";
+                setPhase("ready");
+            } finally {
+                finishMultiFXPerformanceTransition(transition);
+            }
+        })();
     };
 
     const previousSaveRequestRef = useRef(saveRequest);

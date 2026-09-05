@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
-import SettingsDialog from "./SettingsDialog";
+import SettingsDialog from "../pipedal/SettingsDialog";
 import MultiFXUpdatesView from "./MultiFXUpdatesView";
-import { PiPedalModelFactory } from "./PiPedalModel";
+import { PiPedalModelFactory } from "../pipedal/PiPedalModel";
 
 interface MultiFXSettingsViewProps {
     onClose: () => void;

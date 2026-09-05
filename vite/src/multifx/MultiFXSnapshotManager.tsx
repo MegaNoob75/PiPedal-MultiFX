@@ -7,8 +7,8 @@
 
 import React, { useEffect, useState } from "react";
 import { createPortal } from "react-dom";
-import { Pedalboard, Snapshot } from "./Pedalboard";
-import { PiPedalModelFactory } from "./PiPedalModel";
+import { Pedalboard, Snapshot } from "../pipedal/Pedalboard";
+import { PiPedalModelFactory } from "../pipedal/PiPedalModel";
 import {
     beginMultiFXPerformanceTransition,
     finishMultiFXPerformanceTransition,

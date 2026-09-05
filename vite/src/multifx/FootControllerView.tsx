@@ -7,7 +7,7 @@
 
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import { BankIndex } from "./Banks";
+import { BankIndex } from "../pipedal/Banks";
 import {
     clearPresetAssignmentsForPreset,
     getBankPresetAssignments,
@@ -20,9 +20,9 @@ import {
     PresetIndex,
     PresetIndexEntry,
     State
-} from "./PiPedalModel";
-import JackHostStatus from "./JackHostStatus";
-import { Pedalboard, Snapshot } from "./Pedalboard";
+} from "../pipedal/PiPedalModel";
+import JackHostStatus from "../pipedal/JackHostStatus";
+import { Pedalboard, Snapshot } from "../pipedal/Pedalboard";
 import {
     CONTROLLER_LAYOUT_ELEMENT_IDS,
     CONTROLLER_LAYOUT_ELEMENT_LABELS,
@@ -52,6 +52,7 @@ import {
 } from "./MultiFXPresetSafety";
 import { loadMultiFXUIBehaviorSettings } from "./MultiFXUIBehavior";
 import {
+    applyMultiFXPresetSnapshotState,
     beginMultiFXPerformanceTransition,
     finishMultiFXPerformanceTransition,
     getLatestMultiFXPresetSnapshotState,
@@ -63,6 +64,7 @@ import {
     persistMultiFXSnapshots,
     readMultiFXPresetSnapshotState,
     recallMultiFXSnapshot,
+    saveCurrentPresetAndWait,
     writeMultiFXPresetSnapshotState
 } from "./MultiFXPerformanceSession";
 import {
@@ -70,6 +72,7 @@ import {
     performancePresetLightState,
     performancePresetPress,
     presetSnapshotSessionKey,
+    shouldShowPresetModified,
     snapshotViewPress
 } from "./MultiFXSnapshotSessionState";
 
@@ -557,6 +560,19 @@ export default function FootControllerView({
         useState(0);
     const [performanceTransitionActive, setPerformanceTransitionActive] =
         useState(false);
+    const [sharedPerformanceOperationActive, setSharedPerformanceOperationActive] =
+        useState(false);
+    const [cleanBaseCaptureRequest, setCleanBaseCaptureRequest] = useState(0);
+    const [cleanBaseCapturePending, setCleanBaseCapturePending] = useState(false);
+    const cleanBaseRuntimeInstanceRef = useRef("");
+    const cleanBaseGenerationInitializedRef = useRef(false);
+    const lastCleanBaseGenerationRef = useRef(0);
+    const pendingCleanBaseRef = useRef<{
+        generation: number;
+        bankId: number;
+        presetId: number;
+    } | null>(null);
+    const cleanBaseCaptureTimerRef = useRef<number | null>(null);
 
     const beginPerformanceTransition = (): MultiFXPerformanceTransition => {
         const transition = beginMultiFXPerformanceTransition();
@@ -627,6 +643,36 @@ export default function FootControllerView({
         chainBypassSnapshotRef.current = enabledStates;
         chainBypassedRef.current = state.chainBypassed;
         setChainBypassed(state.chainBypassed);
+        setSharedPerformanceOperationActive(state.performanceOperation.active);
+        if (cleanBaseRuntimeInstanceRef.current !== state.instanceId) {
+            cleanBaseRuntimeInstanceRef.current = state.instanceId;
+            cleanBaseGenerationInitializedRef.current = false;
+            pendingCleanBaseRef.current = null;
+            setCleanBaseCapturePending(false);
+        }
+        if (!cleanBaseGenerationInitializedRef.current) {
+            // A generation that predates this Performance view is history, not
+            // proof that the pedalboard currently on screen is still clean.
+            cleanBaseGenerationInitializedRef.current = true;
+            lastCleanBaseGenerationRef.current = state.cleanBaseGeneration;
+        }
+        if (
+            state.cleanBaseGeneration > lastCleanBaseGenerationRef.current
+            && state.cleanBaseBankId !== null
+            && state.cleanBasePresetId !== null
+        ) {
+            // The clean generation survives the short operation lease. That
+            // lets another browser observe a completed action even when its
+            // 250 ms poll did not happen during the active operation itself.
+            lastCleanBaseGenerationRef.current = state.cleanBaseGeneration;
+            pendingCleanBaseRef.current = {
+                generation: state.cleanBaseGeneration,
+                bankId: state.cleanBaseBankId,
+                presetId: state.cleanBasePresetId
+            };
+            setCleanBaseCapturePending(true);
+            setCleanBaseCaptureRequest(state.cleanBaseGeneration);
+        }
         snapshotModeBankIdRef.current = state.snapshotModeBankId;
         snapshotModePresetIdRef.current = state.snapshotPresetId;
         setSnapshotMode(state.snapshotMode);
@@ -1205,6 +1251,65 @@ export default function FootControllerView({
         cleanPresetBaseline?.signature
     ]);
 
+    // A clean-base generation is small shared metadata, not a copy of the
+    // pedalboard. Each browser waits for its own PiPedal notifications to go
+    // quiet and then captures the identical clean sound locally.
+    useEffect(() => {
+        const pending = pendingCleanBaseRef.current;
+        if (!pending || pending.generation !== cleanBaseCaptureRequest) return;
+        if (
+            banks.selectedBank !== pending.bankId
+            || presets.selectedInstanceId !== pending.presetId
+            || selectedSnapshot >= 0
+            || chainBypassed
+        ) {
+            return;
+        }
+
+        if (cleanBaseCaptureTimerRef.current !== null) {
+            window.clearTimeout(cleanBaseCaptureTimerRef.current);
+        }
+        cleanBaseCaptureTimerRef.current = window.setTimeout(() => {
+            cleanBaseCaptureTimerRef.current = null;
+            const current = pendingCleanBaseRef.current;
+            if (
+                !current
+                || current.generation !== pending.generation
+                || model.banks.get().selectedBank !== current.bankId
+                || model.presets.get().selectedInstanceId !== current.presetId
+                || model.selectedSnapshot.get() >= 0
+            ) {
+                return;
+            }
+            if (model.presets.get().presetChanged) {
+                // A genuine edit won the race after the clean-base event. Do
+                // not bless that edited state as the new clean comparison.
+                pendingCleanBaseRef.current = null;
+                setCleanBaseCapturePending(false);
+                return;
+            }
+            recordCleanBasePreset(current.bankId, current.presetId);
+            pendingCleanBaseRef.current = null;
+            setCleanBaseCapturePending(false);
+        }, 180);
+
+        return () => {
+            if (cleanBaseCaptureTimerRef.current !== null) {
+                window.clearTimeout(cleanBaseCaptureTimerRef.current);
+                cleanBaseCaptureTimerRef.current = null;
+            }
+        };
+    }, [
+        model,
+        cleanBaseCaptureRequest,
+        banks.selectedBank,
+        presets.selectedInstanceId,
+        selectedSnapshot,
+        chainBypassed,
+        snapshotPedalboard,
+        recordCleanBasePreset
+    ]);
+
     useEffect(() => {
         let cancelled = false;
         let waiting = false;
@@ -1630,8 +1735,8 @@ export default function FootControllerView({
         // Crossing the first/last preset switch moves to the adjacent PiPedal
         // bank. Banks are the only grouping layer; there is no nested paging.
         pendingBankSlotRef.current = direction > 0 ? 0 : -1;
-        if (direction > 0) model.nextBank();
-        else model.previousBank();
+        if (direction > 0) requestBankChange(() => model.nextBank());
+        else requestBankChange(() => model.previousBank());
     };
 
     const createNewPresetFromCurrent = async () => {
@@ -1641,14 +1746,16 @@ export default function FootControllerView({
         const bankId = model.banks.get().selectedBank;
         const targetSwitchId = switchIdForPresetSlot(selectedPresetSlot);
         if (!targetSwitchId || selectedId < 0) return;
+        const transition = beginPerformanceTransition();
 
         try {
+            await transition.sharedReady;
             // A new preset must be copied from the real base sound, never from
             // a temporary Chain Bypass state. Dirty base edits are preserved.
             await restoreChainBypassForSafeWrite(model);
             closePresetOptions();
             const instanceId = await model.newPresetItem(selectedId);
-            model.loadPreset(instanceId);
+            await loadMultiFXBasePreset(model, instanceId, transition);
             onOpenEditor?.({
                 presetId: instanceId,
                 previousPresetId: selectedId,
@@ -1657,6 +1764,8 @@ export default function FootControllerView({
             });
         } catch (error) {
             model.showAlert(String(error));
+        } finally {
+            finishPerformanceTransition(transition);
         }
     };
 
@@ -1718,9 +1827,22 @@ export default function FootControllerView({
                 if (!blockPresetWriteWhileSnapshotActive("Saving the preset")) {
                     const presetId = model.presets.get().selectedInstanceId;
                     closePresetOptions();
-                    void prepareBasePresetForWrite(model, presetId)
-                        .then(() => model.saveCurrentPreset())
-                        .catch((error) => model.showAlert(String(error)));
+                    const transition = beginPerformanceTransition();
+                    void (async () => {
+                        try {
+                            await transition.sharedReady;
+                            await prepareBasePresetForWrite(model, presetId);
+                            await saveCurrentPresetAndWait(model, transition);
+                            recordCleanBasePreset(
+                                model.banks.get().selectedBank,
+                                presetId
+                            );
+                        } catch (error) {
+                            model.showAlert(String(error));
+                        } finally {
+                            finishPerformanceTransition(transition);
+                        }
+                    })();
                 }
                 break;
             case "Create New Preset": void createNewPresetFromCurrent(); break;
@@ -1822,7 +1944,13 @@ export default function FootControllerView({
             event.stopPropagation();
 
             if (isPhysicalSwitchKey) {
-                if (presetOptionsOpen || bankMenuOpen || presetMenuOpen || event.repeat) return;
+                if (
+                    presetOptionsOpen
+                    || bankMenuOpen
+                    || presetMenuOpen
+                    || event.repeat
+                    || sharedPerformanceOperationActive
+                ) return;
                 const physicalSwitchConfig = controllerConfig.switches.find(
                     (s) => s.hardwareSwitch === physicalSwitchNumber
                 );
@@ -1878,7 +2006,10 @@ export default function FootControllerView({
                     const bank = banks.entries[menuIndex];
                     if (bank) {
                         setBankMenuOpen(false);
-                        model.openBank(bank.instanceId).catch((error) => model.showAlert(error.toString()));
+                        requestBankChange(
+                            () => model.openBank(bank.instanceId),
+                            bank.instanceId
+                        );
                     }
                 } else {
                     const preset = presets.presets[menuIndex];
@@ -1934,7 +2065,8 @@ export default function FootControllerView({
         bankMenuOpen, presetMenuOpen, presetOptionsOpen, presetOptionIndex, menuIndex,
         selectedPresetSlot, presetSlotCount, presetAssignmentsBySlot,
         controllerConfig, banks, presets, chainBypassed, snapshotMode,
-        snapshotPedalboard, selectedSnapshot, model
+        snapshotPedalboard, selectedSnapshot, model,
+        sharedPerformanceOperationActive
     ]);
 
     useEffect(() => {
@@ -2086,11 +2218,19 @@ export default function FootControllerView({
     const effectivePresetChanged =
         !matchesCleanPresetBaseline
         && (presets.presetChanged || differsFromCleanPresetBaseline);
-    const showPresetChanged =
-        effectivePresetChanged
-        && !performanceTransitionActive
-        && selectedSnapshot < 0
-        && (!chainBypassed || chainBypassWasPresetChangedRef.current);
+    const pendingCleanBaseForCurrentPreset =
+        cleanBaseCapturePending
+        && pendingCleanBaseRef.current?.bankId === banks.selectedBank
+        && pendingCleanBaseRef.current?.presetId === presets.selectedInstanceId;
+    const showPresetChanged = shouldShowPresetModified({
+        semanticModified: effectivePresetChanged,
+        localTransitionActive: performanceTransitionActive,
+        sharedOperationActive: sharedPerformanceOperationActive,
+        cleanBaseCapturePending: pendingCleanBaseForCurrentPreset,
+        nativeSelectedSnapshot: selectedSnapshot,
+        chainBypassed,
+        bypassStartedModified: chainBypassWasPresetChangedRef.current
+    });
 
     const getSwitchVisualState = (
         action: ControllerSwitchAction,
@@ -2123,9 +2263,77 @@ export default function FootControllerView({
         requestPresetLoad(preset.instanceId);
     };
 
+    const waitForBankSelection = (
+        previousBankId: number,
+        targetBankId: number | null
+    ): Promise<void> => new Promise((resolve, reject) => {
+        let settled = false;
+        const timer = window.setTimeout(
+            () => finish(new Error("PiPedal did not confirm the bank change within 8 seconds.")),
+            8000
+        );
+        const changed = () => {
+            const selected = model.banks.get().selectedBank;
+            if (
+                (targetBankId !== null && selected === targetBankId)
+                || (targetBankId === null && selected !== previousBankId)
+            ) {
+                finish();
+            }
+        };
+        const finish = (error?: Error) => {
+            if (settled) return;
+            settled = true;
+            window.clearTimeout(timer);
+            model.banks.removeOnChangedHandler(changed);
+            if (error) reject(error); else resolve();
+        };
+        model.banks.addOnChangedHandler(changed);
+        changed();
+    });
+
+    const requestBankChange = (
+        command: () => void | Promise<void>,
+        targetBankId: number | null = null
+    ) => {
+        const transition = beginPerformanceTransition();
+        void (async () => {
+            try {
+                await transition.sharedReady;
+                await restoreChainBypass(transition, false);
+                const previousBankId = model.banks.get().selectedBank;
+                if (targetBankId === previousBankId) return;
+                await command();
+                await waitForBankSelection(previousBankId, targetBankId);
+
+                const bankId = model.banks.get().selectedBank;
+                const presetId = model.presets.get().selectedInstanceId;
+                if (presetId >= 0) {
+                    const remembered = await readMultiFXPresetSnapshotState(
+                        bankId,
+                        presetId,
+                        transition
+                    );
+                    await applyMultiFXPresetSnapshotState(
+                        model,
+                        presetId,
+                        remembered,
+                        transition
+                    );
+                }
+            } catch (error) {
+                if (!isMultiFXTransitionCancellation(error)) {
+                    model.showAlert(String(error));
+                }
+            } finally {
+                finishPerformanceTransition(transition);
+            }
+        })();
+    };
+
     const selectBank = (bankId: number) => {
         setBankMenuOpen(false);
-        model.openBank(bankId).catch((error) => model.showAlert(error.toString()));
+        requestBankChange(() => model.openBank(bankId), bankId);
     };
 
     const dropdownPanelStyle = {
@@ -2448,10 +2656,12 @@ export default function FootControllerView({
                 selectPreset(preset);
                 return;
             case "bankUp":
-                if (snapshotMode) void toggleSnapshotMode(); else model.nextBank();
+                if (snapshotMode) void toggleSnapshotMode();
+                else requestBankChange(() => model.nextBank());
                 return;
             case "bankDown":
-                if (snapshotMode) void toggleSnapshotMode(); else model.previousBank();
+                if (snapshotMode) void toggleSnapshotMode();
+                else requestBankChange(() => model.previousBank());
                 return;
             case "chainBypass":
                 void toggleChainBypass();
@@ -2555,7 +2765,8 @@ export default function FootControllerView({
                     : false);
         const isPressed = pressedSwitchId === switchConfig.id;
         const isVisualActive = isActive || isPressed;
-        const isDisabled = switchConfig.action.type === "none";
+        const isDisabled = switchConfig.action.type === "none"
+            || sharedPerformanceOperationActive;
         const longPressLabel = isPresetAction && !preset
             ? undefined
             : getLongPressLabel(switchConfig.longPressAction);
@@ -3764,6 +3975,7 @@ export default function FootControllerView({
             {useFreeformPerformanceLayout && (
                 <MultiFXPerformanceControls
                     controllerConfig={controllerConfig}
+                    disabled={sharedPerformanceOperationActive}
                 />
             )}
 

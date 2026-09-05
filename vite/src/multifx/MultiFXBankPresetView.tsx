@@ -1,8 +1,8 @@
 /* Bank/preset manager wrapper for native PiPedal bank-file operations. */
 import React, { useEffect, useRef, useState } from "react";
 import BankPresetManager from "./BankPresetManager";
-import { BankIndex } from "./Banks";
-import { PiPedalModelFactory } from "./PiPedalModel";
+import { BankIndex } from "../pipedal/Banks";
+import { PiPedalModelFactory } from "../pipedal/PiPedalModel";
 import {
     getBankPresetAssignments,
     setPresetAssignment
@@ -12,6 +12,15 @@ import {
     MFX_SURFACES,
     multiFXSurfaceBackground
 } from "./MultiFXTheme";
+import {
+    applyMultiFXPresetSnapshotState,
+    beginMultiFXPerformanceTransition,
+    finishMultiFXPerformanceTransition,
+    MultiFXPerformanceTransition,
+    readMultiFXPresetSnapshotState
+} from "./MultiFXPerformanceSession";
+import { restoreChainBypassForSafeWrite } from "./MultiFXPresetSafety";
+import { updateMultiFXRuntimeState } from "./MultiFXRuntimeSync";
 
 export default function MultiFXBankPresetView() {
     const model = PiPedalModelFactory.getInstance();
@@ -41,6 +50,95 @@ export default function MultiFXBankPresetView() {
         return candidate;
     };
 
+    const waitForBankSelection = (bankId: number): Promise<void> =>
+        new Promise((resolve, reject) => {
+            let settled = false;
+            const finish = (error?: Error) => {
+                if (settled) return;
+                settled = true;
+                window.clearTimeout(timer);
+                model.banks.removeOnChangedHandler(changed);
+                if (error) reject(error);
+                else resolve();
+            };
+            const changed = () => {
+                if (model.banks.get().selectedBank === bankId) finish();
+            };
+            const timer = window.setTimeout(
+                () => finish(new Error(
+                    "PiPedal did not confirm the bank change within 8 seconds."
+                )),
+                8000
+            );
+            model.banks.addOnChangedHandler(changed);
+            changed();
+        });
+
+    const reconcileSelectedPreset = async (
+        transition: MultiFXPerformanceTransition
+    ) => {
+        const bankId = model.banks.get().selectedBank;
+        const presetId = model.presets.get().selectedInstanceId;
+        if (presetId >= 0) {
+            const remembered = await readMultiFXPresetSnapshotState(
+                bankId,
+                presetId,
+                transition
+            );
+            await applyMultiFXPresetSnapshotState(
+                model,
+                presetId,
+                remembered,
+                transition
+            );
+        }
+        await updateMultiFXRuntimeState({
+            snapshotMode: false,
+            snapshotModeBankId: null,
+            snapshotPresetId: null
+        }, transition.signal);
+    };
+
+    const openBankSafely = async (bankId: number) => {
+        const transition = beginMultiFXPerformanceTransition();
+        try {
+            await transition.sharedReady;
+            await restoreChainBypassForSafeWrite(model);
+            await model.openBank(bankId);
+            await waitForBankSelection(bankId);
+            await reconcileSelectedPreset(transition);
+        } finally {
+            finishMultiFXPerformanceTransition(transition);
+        }
+    };
+
+    const loadPresetSafely = async (presetId: number) => {
+        const transition = beginMultiFXPerformanceTransition();
+        try {
+            await transition.sharedReady;
+            await restoreChainBypassForSafeWrite(model);
+            const bankId = model.banks.get().selectedBank;
+            const remembered = await readMultiFXPresetSnapshotState(
+                bankId,
+                presetId,
+                transition
+            );
+            await applyMultiFXPresetSnapshotState(
+                model,
+                presetId,
+                remembered,
+                transition
+            );
+            await updateMultiFXRuntimeState({
+                snapshotMode: false,
+                snapshotModeBankId: null,
+                snapshotPresetId: null
+            }, transition.signal);
+        } finally {
+            finishMultiFXPerformanceTransition(transition);
+        }
+    };
+
     const cloneBank = async () => {
         if (!selectedBank || busy) return;
         const name = cloneName.trim();
@@ -56,7 +154,7 @@ export default function MultiFXBankPresetView() {
             const sourceAssignments = getBankPresetAssignments(sourceBankId);
 
             const newBankId = await model.saveBankAs(sourceBankId, name);
-            await model.openBank(newBankId);
+            await openBankSafely(newBankId);
             const clonedPresetIds = model.presets.get().presets.map((preset) => preset.instanceId);
 
             // PiPedal clones presets in bank order. Translate assignment IDs by
@@ -90,7 +188,7 @@ export default function MultiFXBankPresetView() {
             for (let index = 0; index < files.length; ++index) {
                 after = await model.uploadBank(files[index], after);
             }
-            if (after >= 0) await model.openBank(after);
+            if (after >= 0) await openBankSafely(after);
         } catch (error) {
             model.showAlert(String(error));
         } finally {
@@ -113,7 +211,11 @@ export default function MultiFXBankPresetView() {
     );
 
     return <>
-        <BankPresetManager bankTools={tools} />
+        <BankPresetManager
+            bankTools={tools}
+            onOpenBank={openBankSafely}
+            onLoadPreset={loadPresetSafely}
+        />
         {cloneOpen && selectedBank && (
             <div style={overlayStyle} onClick={() => !busy && setCloneOpen(false)}>
                 <div style={dialogStyle} onClick={(event) => event.stopPropagation()}>

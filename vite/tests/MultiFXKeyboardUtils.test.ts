@@ -3,7 +3,7 @@ import test from "node:test";
 import {
     eraseSelection,
     replaceSelection
-} from "../src/pipedal/multifx-keyboard/MultiFXKeyboardUtils.ts";
+} from "../src/multifx/keyboard/MultiFXKeyboardUtils.ts";
 
 test("inserts at the current cursor instead of appending", () => {
     assert.deepEqual(

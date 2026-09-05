@@ -7,7 +7,7 @@
  */
 
 import { ControllerLayoutConfig } from "./ControllerConfig";
-import MidiBinding from "./MidiBinding";
+import MidiBinding from "../pipedal/MidiBinding";
 
 export type MultiFXMidiSourceKind =
     | "analog"

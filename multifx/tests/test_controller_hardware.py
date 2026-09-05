@@ -307,6 +307,99 @@ class ControllerHardwareConfigTests(unittest.TestCase):
             bridge.state.clear()
             bridge.state.update(original_state)
 
+    def test_performance_operations_are_serialized_across_browsers(self):
+        """A second display cannot overlap an active musical-state change."""
+        original_state = bridge._deepcopy(bridge.state)
+        try:
+            started = bridge.update_state({
+                "performanceOperationStart": {
+                    "ownerId": "controller",
+                    "operationId": 1,
+                }
+            })
+            self.assertTrue(started["performanceOperation"]["active"])
+            newer = bridge.update_state({
+                "performanceOperationStart": {
+                    "ownerId": "controller",
+                    "operationId": 2,
+                }
+            })
+            self.assertEqual(newer["performanceOperation"]["operationId"], 2)
+            with self.assertRaisesRegex(ValueError, "newer PI-MULTIFX"):
+                bridge.update_state({
+                    "performanceOperationStart": {
+                        "ownerId": "controller",
+                        "operationId": 1,
+                    }
+                })
+            with self.assertRaisesRegex(ValueError, "Another PI-MULTIFX screen"):
+                bridge.update_state({
+                    "performanceOperationStart": {
+                        "ownerId": "pc",
+                        "operationId": 1,
+                    }
+                })
+
+            # A stale completion cannot release another operation.
+            still_active = bridge.update_state({
+                "performanceOperationFinish": {
+                    "ownerId": "pc",
+                    "operationId": 1,
+                }
+            })
+            self.assertTrue(still_active["performanceOperation"]["active"])
+            finished = bridge.update_state({
+                "performanceOperationFinish": {
+                    "ownerId": "controller",
+                    "operationId": 2,
+                }
+            })
+            self.assertFalse(finished["performanceOperation"]["active"])
+        finally:
+            bridge.state.clear()
+            bridge.state.update(original_state)
+
+    def test_abandoned_performance_operation_expires(self):
+        """A closed browser cannot suppress indicators or actions forever."""
+        original_state = bridge._deepcopy(bridge.state)
+        try:
+            bridge.state["performanceOperation"] = {
+                "active": True,
+                "ownerId": "closed-browser",
+                "operationId": 3,
+                "startedAt": 1,
+            }
+            with mock.patch.object(bridge.time, "time", return_value=100):
+                result = bridge.get_state()
+            self.assertFalse(result["performanceOperation"]["active"])
+        finally:
+            bridge.state.clear()
+            bridge.state.update(original_state)
+
+    def test_clean_base_ready_uses_small_monotonic_metadata(self):
+        """Cross-browser dirty-state sync never stores a pedalboard payload."""
+        original_state = bridge._deepcopy(bridge.state)
+        try:
+            before = bridge.state["cleanBaseGeneration"]
+            bridge.update_state({
+                "performanceOperationStart": {
+                    "ownerId": "controller",
+                    "operationId": 9,
+                }
+            })
+            result = bridge.update_state({
+                "cleanBaseReady": {"bankId": 4, "presetId": 12}
+            })
+            self.assertEqual(result["cleanBaseGeneration"], before + 1)
+            self.assertEqual(result["cleanBaseBankId"], 4)
+            self.assertEqual(result["cleanBasePresetId"], 12)
+            self.assertEqual(result["cleanBaseOwnerId"], "controller")
+            self.assertEqual(result["cleanBaseOperationId"], 9)
+            self.assertNotIn("cleanPresetSignature", result)
+        finally:
+            bridge.state.clear()
+            bridge.state.update(original_state)
+
     def test_i2c_module_scan_request_and_results_are_correlated(self):
         """Discovery sends selected pins and accepts only its matching token."""
         original_state = bridge._deepcopy(bridge.state)

@@ -3,7 +3,7 @@
  * preset editor/save path. PiPedal remains the musical-state authority.
  */
 
-import { PiPedalModel, State } from "./PiPedalModel";
+import { PiPedalModel, State } from "../pipedal/PiPedalModel";
 import {
     readMultiFXRuntimeState,
     updateMultiFXRuntimeState
@@ -70,6 +70,12 @@ export async function loadCleanBasePreset(
 ): Promise<void> {
     model.loadPreset(presetId);
     await waitForCleanBasePreset(model, presetId);
+    await updateMultiFXRuntimeState({
+        cleanBaseReady: {
+            bankId: model.banks.get().selectedBank,
+            presetId
+        }
+    });
 }
 
 
@@ -141,7 +147,14 @@ export async function restoreChainBypassForSafeWrite(
         runtime.chainBypassBankId === currentBankId
         && runtime.chainBypassPresetId === currentPresetId;
 
-    if (samePreset) {
+    if (samePreset && !runtime.chainBypassWasPresetChanged) {
+        // Bypass was the only reason this otherwise-clean preset became dirty.
+        // A real reload clears PiPedal's sticky modified flag and also restores
+        // any plugin state that changed while plugins were disabled.
+        await loadCleanBasePreset(model, currentPresetId);
+    } else if (samePreset) {
+        // Preserve genuine edits that existed before bypass. Only the enabled
+        // flags owned by the temporary overlay are restored.
         const enabled = runtime.chainBypassEnabledStates;
         for (const item of model.pedalboard.get().items) {
             if (item.isEmpty() || item.isSyntheticItem()) continue;
