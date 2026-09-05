@@ -51,6 +51,7 @@ import {
     restoreChainBypassForSafeWrite
 } from "./MultiFXPresetSafety";
 import { loadMultiFXUIBehaviorSettings } from "./MultiFXUIBehavior";
+import { performanceSwitchVisualActive } from "./MultiFXSwitchVisualState";
 import {
     applyMultiFXPresetSnapshotState,
     beginMultiFXPerformanceTransition,
@@ -2764,7 +2765,11 @@ export default function FootControllerView({
                     ? snapshotMode
                     : false);
         const isPressed = pressedSwitchId === switchConfig.id;
-        const isVisualActive = isActive || isPressed;
+        const isVisualActive = performanceSwitchVisualActive({
+            presetAction: isPresetAction,
+            active: isActive,
+            pressed: isPressed
+        });
         const isUnused = switchConfig.action.type === "none";
         const isDisabled = isUnused || sharedPerformanceOperationActive;
         // Keep configured switches visible while the temporary operation lock
