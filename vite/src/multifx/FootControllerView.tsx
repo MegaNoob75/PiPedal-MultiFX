@@ -2765,8 +2765,10 @@ export default function FootControllerView({
                     : false);
         const isPressed = pressedSwitchId === switchConfig.id;
         const isVisualActive = isActive || isPressed;
-        const isDisabled = switchConfig.action.type === "none"
-            || sharedPerformanceOperationActive;
+        const isUnused = switchConfig.action.type === "none";
+        const isDisabled = isUnused || sharedPerformanceOperationActive;
+        // Keep configured switches visible while the temporary operation lock
+        // blocks input. Only unused switches get the disabled appearance.
         const longPressLabel = isPresetAction && !preset
             ? undefined
             : getLongPressLabel(switchConfig.longPressAction);
@@ -2902,7 +2904,7 @@ export default function FootControllerView({
                     cursor: isDisabled ? "default" : "pointer",
                     minHeight: 0,
                     overflow: "hidden",
-                    opacity: isDisabled
+                    opacity: isUnused
                         ? colors.disabledSwitchOpacity
                         : presetDrag && absolutePresetIndex === presetDrag.slotIndex
                             ? 0.38
@@ -2919,7 +2921,7 @@ export default function FootControllerView({
             >
                 <MultiFXFootswitchGraphic color={hardwareIndicatorColor} />
                 <MultiFXArcadeButtonGraphic color={hardwareIndicatorColor} />
-                {!isDisabled && (
+                {!isUnused && (
                     <span aria-hidden="true" className="mfx-performance-indicator" style={{
                         position: "absolute",
                         top: adaptiveTile ? "clamp(1px, 3cqh, 6px)" : 6,
