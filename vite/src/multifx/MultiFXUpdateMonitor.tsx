@@ -15,12 +15,16 @@ function updateIdentity(status: MultiFXUpdateStatus): string {
     return `${status.targetVersion || status.installedVersion}:${status.startedAt}`;
 }
 
+function refreshCompletedUpdate(identity: string): void {
+    window.sessionStorage.setItem(COMPLETED_RELOAD_KEY, identity);
+    window.location.reload();
+}
+
 export default function MultiFXUpdateMonitor() {
     const [status, setStatus] = useState<MultiFXUpdateStatus | null>(null);
     const [connectionLost, setConnectionLost] = useState(false);
     const [dismissedFailure, setDismissedFailure] = useState(false);
     const activeUpdateRef = useRef("");
-    const reloadScheduledRef = useRef("");
 
     useEffect(() => {
         let stopped = false;
@@ -74,21 +78,24 @@ export default function MultiFXUpdateMonitor() {
         };
     }, []);
 
+    const completedIdentity = status?.jobState === "complete"
+        ? updateIdentity(status)
+        : "";
+
     useEffect(() => {
-        if (!status || status.jobState !== "complete" || !activeUpdateRef.current) return;
-        const identity = updateIdentity(status);
+        if (!completedIdentity || !activeUpdateRef.current) return;
+        const identity = completedIdentity;
         if (identity !== activeUpdateRef.current
-            || reloadScheduledRef.current === identity
             || window.sessionStorage.getItem(COMPLETED_RELOAD_KEY) === identity) {
             return;
         }
-        reloadScheduledRef.current = identity;
-        const timer = window.setTimeout(() => {
-            window.sessionStorage.setItem(COMPLETED_RELOAD_KEY, identity);
-            window.location.reload();
-        }, RELOAD_DELAY_MS);
+        const timer = window.setTimeout(
+            () => refreshCompletedUpdate(identity), RELOAD_DELAY_MS
+        );
         return () => window.clearTimeout(timer);
-    }, [status]);
+        // Polls replace the status object every second. Only a different job
+        // may cancel this timer, not another status response for the same job.
+    }, [completedIdentity]);
 
     const updateWasSeen = Boolean(activeUpdateRef.current);
     const visible = updateWasSeen && Boolean(status) && (
@@ -128,6 +135,11 @@ export default function MultiFXUpdateMonitor() {
                             <div key={`${index}-${line}`}>{line}</div>
                         ))}
                     </div>
+                )}
+                {complete && (
+                    <button type="button" onClick={() => refreshCompletedUpdate(updateIdentity(status))} style={buttonStyle}>
+                        REFRESH NOW
+                    </button>
                 )}
                 {failed && (
                     <button type="button" onClick={() => {
